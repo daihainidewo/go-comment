@@ -7,8 +7,8 @@
 #endif
 
 #ifdef GOARCH_amd64
-#define	get_tls(r)	MOVQ TLS, r
-#define	g(r)	0(r)(TLS*1)
+#define	get_tls(r)	MOVQ TLS, r // 将TLS寄存器存入r中
+#define	g(r)	0(r)(TLS*1)     // 通过tls获取当前g
 #endif
 
 #ifdef GOARCH_386

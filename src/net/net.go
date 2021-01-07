@@ -372,6 +372,7 @@ var listenerBacklogCache struct {
 	val int
 }
 
+// listenerBacklog 读取系统配置获取somaxconn
 // listenerBacklog is a caching wrapper around maxListenerBacklog.
 func listenerBacklog() int {
 	listenerBacklogCache.Do(func() { listenerBacklogCache.val = maxListenerBacklog() })

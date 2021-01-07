@@ -93,6 +93,7 @@ type pollDesc struct {
 	self    *pollDesc // storage for indirect interface. See (*pollDesc).makeArg.
 }
 
+// pollCache pollDesc 缓存链表
 type pollCache struct {
 	lock  mutex
 	first *pollDesc
@@ -140,6 +141,7 @@ func poll_runtime_isPollServerDescriptor(fd uintptr) bool {
 	return netpollIsPollDescriptor(fd)
 }
 
+// poll_runtime_pollOpen 将fd加入pollDesc中 并返回
 //go:linkname poll_runtime_pollOpen internal/poll.runtime_pollOpen
 func poll_runtime_pollOpen(fd uintptr) (*pollDesc, int) {
 	pd := pollcache.alloc()
@@ -189,6 +191,7 @@ func (c *pollCache) free(pd *pollDesc) {
 	unlock(&c.lock)
 }
 
+// poll_runtime_pollReset 检测以 r 或 w 模式进行轮询的描述符
 // poll_runtime_pollReset, which is internal/poll.runtime_pollReset,
 // prepares a descriptor for polling in mode, which is 'r' or 'w'.
 // This returns an error code; the codes are defined above.
@@ -377,6 +380,7 @@ func netpollready(toRun *gList, pd *pollDesc, mode int32) {
 	}
 }
 
+// netpollcheckerr 检测当前 pd 针对 mode 的状态
 func netpollcheckerr(pd *pollDesc, mode int32) int {
 	if pd.closing {
 		return pollErrClosing
@@ -409,6 +413,7 @@ func netpollgoready(gp *g, traceskip int) {
 	goready(gp, traceskip+1)
 }
 
+// netpollblock 如果就绪就返回true 关闭或超时就返回false
 // returns true if IO is ready, or false if timedout or closed
 // waitio - wait only for completed IO, ignore errors
 func netpollblock(pd *pollDesc, mode int32, waitio bool) bool {
@@ -527,6 +532,7 @@ func netpollWriteDeadline(arg interface{}, seq uintptr) {
 	netpolldeadlineimpl(arg.(*pollDesc), seq, false, true)
 }
 
+// alloc 从缓存中获取pollDesc
 func (c *pollCache) alloc() *pollDesc {
 	lock(&c.lock)
 	if c.first == nil {

@@ -107,6 +107,7 @@ func (c *TCPConn) ReadFrom(r io.Reader) (int64, error) {
 	return n, err
 }
 
+// CloseRead 禁止再从连接中读取数据
 // CloseRead shuts down the reading side of the TCP connection.
 // Most callers should just use Close.
 func (c *TCPConn) CloseRead() error {
@@ -119,6 +120,7 @@ func (c *TCPConn) CloseRead() error {
 	return nil
 }
 
+// CloseWrite 禁止向连接中写入数据
 // CloseWrite shuts down the writing side of the TCP connection.
 // Most callers should just use Close.
 func (c *TCPConn) CloseWrite() error {
@@ -131,6 +133,10 @@ func (c *TCPConn) CloseWrite() error {
 	return nil
 }
 
+// SetLinger 将在关闭连接后继续发送已有的数据
+// sec<0 由操作系统后台发送
+// sec==0 直接丢弃未发送的内容
+// sec>0 会在sec秒后丢弃未发送的内容
 // SetLinger sets the behavior of Close on a connection which still
 // has data waiting to be sent or to be acknowledged.
 //
@@ -153,6 +159,7 @@ func (c *TCPConn) SetLinger(sec int) error {
 	return nil
 }
 
+// SetKeepAlive 是否由操作系统支持 TCP keep alive
 // SetKeepAlive sets whether the operating system should send
 // keep-alive messages on the connection.
 func (c *TCPConn) SetKeepAlive(keepalive bool) error {
@@ -165,6 +172,7 @@ func (c *TCPConn) SetKeepAlive(keepalive bool) error {
 	return nil
 }
 
+// SetKeepAlivePeriod TCP keep alive 发送周期
 // SetKeepAlivePeriod sets period between keep-alives.
 func (c *TCPConn) SetKeepAlivePeriod(d time.Duration) error {
 	if !c.ok() {
@@ -176,6 +184,9 @@ func (c *TCPConn) SetKeepAlivePeriod(d time.Duration) error {
 	return nil
 }
 
+// SetNoDelay控制操作系统是否应延迟数据包传输
+// 以希望发送更少的数据包（Nagle算法）
+// 缺省值为true（无延迟）这意味着在写操作之后尽快发送数据
 // SetNoDelay controls whether the operating system should delay
 // packet transmission in hopes of sending fewer packets (Nagle's
 // algorithm).  The default is true (no delay), meaning that data is
@@ -190,6 +201,7 @@ func (c *TCPConn) SetNoDelay(noDelay bool) error {
 	return nil
 }
 
+// newTCPConn 通过 fd 创建一个没有延迟的TCP连接
 func newTCPConn(fd *netFD) *TCPConn {
 	c := &TCPConn{conn{fd}}
 	setNoDelay(c.fd, true)

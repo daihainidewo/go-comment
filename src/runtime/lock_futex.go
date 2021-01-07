@@ -48,6 +48,7 @@ func lock(l *mutex) {
 	lockWithRank(l, getLockRank(l))
 }
 
+// lock2 锁住l 阻塞锁住
 func lock2(l *mutex) {
 	gp := getg()
 
@@ -56,6 +57,7 @@ func lock2(l *mutex) {
 	}
 	gp.m.locks++
 
+	// 尝试锁住锁
 	// Speculative grab for lock.
 	v := atomic.Xchg(key32(&l.key), mutex_locked)
 	if v == mutex_unlocked {
@@ -78,6 +80,7 @@ func lock2(l *mutex) {
 		spin = active_spin
 	}
 	for {
+		// 尝试锁spin次
 		// Try for lock, spinning.
 		for i := 0; i < spin; i++ {
 			for l.key == mutex_unlocked {
@@ -88,6 +91,7 @@ func lock2(l *mutex) {
 			procyield(active_spin_cnt)
 		}
 
+		// 获取不到锁 就让出CPU
 		// Try for lock, rescheduling.
 		for i := 0; i < passive_spin; i++ {
 			for l.key == mutex_unlocked {
@@ -98,13 +102,14 @@ func lock2(l *mutex) {
 			osyield()
 		}
 
+		// 休眠
 		// Sleep.
 		v = atomic.Xchg(key32(&l.key), mutex_sleeping)
 		if v == mutex_unlocked {
 			return
 		}
 		wait = mutex_sleeping
-		futexsleep(key32(&l.key), mutex_sleeping, -1)
+		futexsleep(key32(&l.key), mutex_sleeping, -1) // 一直锁
 	}
 }
 
@@ -132,13 +137,13 @@ func unlock2(l *mutex) {
 }
 
 // One-time notifications.
-func noteclear(n *note) {
+func noteclear(n *note) { // 置空
 	n.key = 0
 }
 
 func notewakeup(n *note) {
 	old := atomic.Xchg(key32(&n.key), 1)
-	if old != 0 {
+	if old != 0 { // wakeup 时 n.key 必须是0
 		print("notewakeup - double wakeup (", old, ")\n")
 		throw("notewakeup - double wakeup")
 	}
@@ -147,7 +152,7 @@ func notewakeup(n *note) {
 
 func notesleep(n *note) {
 	gp := getg()
-	if gp != gp.m.g0 {
+	if gp != gp.m.g0 { // 必须是g0
 		throw("notesleep not on g0")
 	}
 	ns := int64(-1)
@@ -155,9 +160,9 @@ func notesleep(n *note) {
 		// Sleep for an arbitrary-but-moderate interval to poll libc interceptors.
 		ns = 10e6
 	}
-	for atomic.Load(key32(&n.key)) == 0 {
+	for atomic.Load(key32(&n.key)) == 0 { // wakeup 时 置1
 		gp.m.blocked = true
-		futexsleep(key32(&n.key), 0, ns)
+		futexsleep(key32(&n.key), 0, ns) // 休眠
 		if *cgo_yield != nil {
 			asmcgocall(*cgo_yield, nil)
 		}

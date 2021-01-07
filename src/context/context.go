@@ -325,6 +325,7 @@ func removeChild(parent Context, child canceler) {
 	p.mu.Unlock()
 }
 
+// canceler 发送已取消信号
 // A canceler is a context type that can be canceled directly. The
 // implementations are *cancelCtx and *timerCtx.
 type canceler interface {
@@ -339,6 +340,7 @@ func init() {
 	close(closedchan)
 }
 
+// cancelCtx 可以取消的ctx 会取消所有派生出的ctx
 // A cancelCtx can be canceled. When canceled, it also cancels any children
 // that implement canceler.
 type cancelCtx struct {

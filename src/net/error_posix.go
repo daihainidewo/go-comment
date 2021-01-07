@@ -12,6 +12,7 @@ import (
 	"syscall"
 )
 
+// wrapSyscallError 将系统调用和err包装成一个系统调用错误
 // wrapSyscallError takes an error and a syscall name. If the error is
 // a syscall.Errno, it wraps it in a os.SyscallError using the syscall name.
 func wrapSyscallError(name string, err error) error {

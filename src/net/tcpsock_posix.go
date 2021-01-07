@@ -45,6 +45,8 @@ func (a *TCPAddr) toLocal(net string) sockaddr {
 	return &TCPAddr{loopbackIP(net), a.Port, a.Zone}
 }
 
+// readFrom 尝试使用系统调用从内核态复制数据实现零拷贝
+// 如果失败就使用简单的读写复制
 func (c *TCPConn) readFrom(r io.Reader) (int64, error) {
 	if n, err, handled := splice(c.fd, r); handled {
 		return n, err

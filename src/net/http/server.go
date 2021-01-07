@@ -244,6 +244,7 @@ var (
 	LocalAddrContextKey = &contextKey{"local-addr"}
 )
 
+// conn 描述HTTP协议的链接对象
 // A conn represents the server side of an HTTP connection.
 type conn struct {
 	// server is the server on which the connection arrived.

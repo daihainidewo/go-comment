@@ -190,6 +190,7 @@ type mheap struct {
 	// it can be read safely.
 	markArenas []arenaIdx
 
+	// curArena 是堆当前区域，这应该始终与physPageSize对齐。
 	// curArena is the arena that the heap is currently growing
 	// into. This should always be physPageSize-aligned.
 	curArena struct {
@@ -293,6 +294,7 @@ type heapArena struct {
 	zeroedBase uintptr
 }
 
+// arenaHint 记录堆的增长位置，是一个单链表
 // arenaHint is a hint for where to grow the heap arenas. See
 // mheap_.arenaHints.
 //
@@ -384,10 +386,10 @@ type mspan struct {
 	prev *mspan     // previous span in list, or nil if none
 	list *mSpanList // For debugging. TODO: Remove.
 
-	startAddr uintptr // address of first byte of span aka s.base()
-	npages    uintptr // number of pages in span
+	startAddr uintptr // 基址地址 // address of first byte of span aka s.base()
+	npages    uintptr // 页数 // number of pages in span
 
-	manualFreeList gclinkptr // list of free objects in mSpanManual spans
+	manualFreeList gclinkptr // 手动释放的span链表 // list of free objects in mSpanManual spans
 
 	// freeindex is the slot index between 0 and nelems at which to begin scanning
 	// for the next free object in this span.
@@ -404,10 +406,10 @@ type mspan struct {
 	// undefined and should never be referenced.
 	//
 	// Object n starts at address n*elemsize + (start << pageShift).
-	freeindex uintptr
+	freeindex uintptr // 标记下一个扫描空闲对象的起始点
 	// TODO: Look up nelems from sizeclass and remove this field if it
 	// helps performance.
-	nelems uintptr // number of object in the span.
+	nelems uintptr // span 有多少元素 // number of object in the span.
 
 	// Cache of the allocBits at freeindex. allocCache is shifted
 	// such that the lowest bit corresponds to the bit freeindex.
@@ -415,7 +417,7 @@ type mspan struct {
 	// ctz (count trailing zero) to use it directly.
 	// allocCache may contain bits beyond s.nelems; the caller must ignore
 	// these.
-	allocCache uint64
+	allocCache uint64 // 按位标记是否分配出去了 startAddr 相对的地址
 
 	// allocBits and gcmarkBits hold pointers to a span's mark and
 	// allocation bits. The pointers are 8 byte aligned.
@@ -454,8 +456,8 @@ type mspan struct {
 	divMul      uint16        // for divide by elemsize - divMagic.mul
 	baseMask    uint16        // if non-0, elemsize is a power of 2, & this will get object allocation base
 	allocCount  uint16        // number of allocated objects
-	spanclass   spanClass     // size class and noscan (uint8)
-	state       mSpanStateBox // mSpanInUse etc; accessed atomically (get/set methods)
+	spanclass   spanClass     // 当前span的尺寸 // size class and noscan (uint8)
+	state       mSpanStateBox // 当前的span状态 // mSpanInUse etc; accessed atomically (get/set methods)
 	needzero    uint8         // needs to be zeroed before allocation
 	divShift    uint8         // for divide by elemsize - divMagic.shift
 	divShift2   uint8         // for divide by elemsize - divMagic.shift2
@@ -531,6 +533,7 @@ func recordspan(vh unsafe.Pointer, p unsafe.Pointer) {
 // collector.
 type spanClass uint8
 
+// 奇数noscan 偶数scan
 const (
 	numSpanClasses = _NumSizeClasses << 1
 	tinySpanClass  = spanClass(tinySizeClass<<1 | 1)
@@ -548,6 +551,7 @@ func (sc spanClass) noscan() bool {
 	return sc&1 != 0
 }
 
+// arenaIndex 地址索引
 // arenaIndex returns the index into mheap_.arenas of the arena
 // containing metadata for p. This index combines of an index into the
 // L1 map and an index into the L2 map and should be used as
@@ -919,6 +923,7 @@ func (h *mheap) alloc(npages uintptr, spanclass spanClass, needzero bool) *mspan
 	return s
 }
 
+// allocManual 手动申请 span
 // allocManual allocates a manually-managed span of npage pages.
 // allocManual returns nil if allocation fails.
 //
@@ -937,7 +942,7 @@ func (h *mheap) alloc(npages uintptr, spanclass spanClass, needzero bool) *mspan
 //
 //go:systemstack
 func (h *mheap) allocManual(npages uintptr, typ spanAllocType) *mspan {
-	if !typ.manual() {
+	if !typ.manual() { // 手动管理的内存不能是堆内存
 		throw("manual span allocation called with non-manually-managed type")
 	}
 	return h.allocSpan(npages, typ, 0)
@@ -1022,6 +1027,7 @@ func (h *mheap) allocNeedsZero(base, npage uintptr) (needZero bool) {
 	return
 }
 
+// tryAllocMSpan 尝试从p获取mspan
 // tryAllocMSpan attempts to allocate an mspan object from
 // the P-local cache, but may fail.
 //
@@ -1042,7 +1048,7 @@ func (h *mheap) tryAllocMSpan() *mspan {
 		return nil
 	}
 	// Pull off the last entry in the cache.
-	s := pp.mspancache.buf[pp.mspancache.len-1]
+	s := pp.mspancache.buf[pp.mspancache.len-1] // 获取最后一个mspan
 	pp.mspancache.len--
 	return s
 }
@@ -1131,24 +1137,28 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 	// size, we already manage to do this by default.
 	needPhysPageAlign := physPageAlignedStacks && typ == spanAllocStack && pageSize < physPageSize
 
+	// 如果申请少量page，则尝试从p.pcache申请
 	// If the allocation is small enough, try the page cache!
 	// The page cache does not support aligned allocations, so we cannot use
 	// it if we need to provide a physical page aligned stack allocation.
 	pp := gp.m.p.ptr()
+	// 获取少量page，npages < 16
 	if !needPhysPageAlign && pp != nil && npages < pageCachePages/4 {
 		c := &pp.pcache
 
 		// If the cache is empty, refill it.
 		if c.empty() {
+			// 填充cache
 			lock(&h.lock)
-			*c = h.pages.allocToCache()
+			*c = h.pages.allocToCache() // 获取cache
 			unlock(&h.lock)
 		}
 
 		// Try to allocate from the cache.
-		base, scav = c.alloc(npages)
-		if base != 0 {
+		base, scav = c.alloc(npages) // 获取 page
+		if base != 0 {               // 成功获取
 			s = h.tryAllocMSpan()
+			// 如果获取 mspan 成功
 			if s != nil {
 				goto HaveSpan
 			}
@@ -1166,10 +1176,11 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 		npages += physPageSize / pageSize
 	}
 
+	// 如果 alloc 没有获取页
 	if base == 0 {
 		// Try to acquire a base address.
-		base, scav = h.pages.alloc(npages)
-		if base == 0 {
+		base, scav = h.pages.alloc(npages) // 尝试获取页
+		if base == 0 {                     // 获取失败
 			if !h.grow(npages) {
 				unlock(&h.lock)
 				return nil
@@ -1324,6 +1335,7 @@ HaveSpan:
 	return s
 }
 
+// grow 尝试向操作系统索要npage页内存，返回是否成功
 // Try to add at least npage pages of memory to the heap,
 // returning whether it worked.
 //
@@ -1332,12 +1344,12 @@ func (h *mheap) grow(npage uintptr) bool {
 	assertLockHeld(&h.lock)
 
 	// We must grow the heap in whole palloc chunks.
-	ask := alignUp(npage, pallocChunkPages) * pageSize
+	ask := alignUp(npage, pallocChunkPages) * pageSize // 需要的内存量
 
 	totalGrowth := uintptr(0)
 	// This may overflow because ask could be very large
 	// and is otherwise unrelated to h.curArena.base.
-	end := h.curArena.base + ask
+	end := h.curArena.base + ask // end 可能溢出
 	nBase := alignUp(end, physPageSize)
 	if nBase > h.curArena.end || /* overflow */ end < h.curArena.base {
 		// Not enough room in the current arena. Allocate more

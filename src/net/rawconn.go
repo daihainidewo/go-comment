@@ -18,6 +18,7 @@ import (
 // BUG(mikio): On JS and Plan 9, the Control, Read and Write
 // methods of syscall.RawConn are not implemented.
 
+// rawConn 基础文件描述符
 type rawConn struct {
 	fd *netFD
 }
@@ -76,6 +77,7 @@ func (l *rawListener) Write(func(uintptr) bool) error {
 	return syscall.EINVAL
 }
 
+// newRawListener 基础文件描述符监听器
 func newRawListener(fd *netFD) (*rawListener, error) {
 	return &rawListener{rawConn{fd: fd}}, nil
 }

@@ -35,8 +35,8 @@ type mcache struct {
 	//
 	// tinyAllocs is the number of tiny allocations performed
 	// by the P that owns this mcache.
-	tiny       uintptr
-	tinyoffset uintptr
+	tiny       uintptr// 执行向一小块地址
+	tinyoffset uintptr// 小块地址的偏移量
 	tinyAllocs uintptr
 
 	// The rest is not accessed on every malloc.
@@ -74,28 +74,29 @@ func (p gclinkptr) ptr() *gclink {
 }
 
 type stackfreelist struct {
-	list gclinkptr // linked list of free stacks
-	size uintptr   // total size of stacks in list
+	list gclinkptr // 释放堆栈的列表 // linked list of free stacks
+	size uintptr   // 链表长度 // total size of stacks in list
 }
 
 // dummy mspan that contains no free objects.
-var emptymspan mspan
+var emptymspan mspan // 标记空mspan
 
 func allocmcache() *mcache {
 	var c *mcache
 	systemstack(func() {
 		lock(&mheap_.lock)
-		c = (*mcache)(mheap_.cachealloc.alloc())
+		c = (*mcache)(mheap_.cachealloc.alloc()) // 从mheap那里获取
 		c.flushGen = mheap_.sweepgen
 		unlock(&mheap_.lock)
 	})
 	for i := range c.alloc {
-		c.alloc[i] = &emptymspan
+		c.alloc[i] = &emptymspan // 绑定空mspan
 	}
 	c.nextSample = nextSample()
 	return c
 }
 
+// freemcache 释放 mcache
 // freemcache releases resources associated with this
 // mcache and puts the object onto a free list.
 //
@@ -248,6 +249,7 @@ func (c *mcache) allocLarge(size uintptr, needzero bool, noscan bool) *mspan {
 	return s
 }
 
+// releaseAll 重置mcache
 func (c *mcache) releaseAll() {
 	// Take this opportunity to flush scanAlloc.
 	atomic.Xadd64(&memstats.heap_scan, int64(c.scanAlloc))
@@ -273,8 +275,8 @@ func (c *mcache) releaseAll() {
 				atomic.Xadd64(&memstats.heap_live, -int64(n)*int64(s.elemsize))
 			}
 			// Release the span to the mcentral.
-			mheap_.central[i].mcentral.uncacheSpan(s)
-			c.alloc[i] = &emptymspan
+			mheap_.central[i].mcentral.uncacheSpan(s) // 向mcentral归还span
+			c.alloc[i] = &emptymspan                  // 置空mspan
 		}
 	}
 	// Clear tinyalloc pool.

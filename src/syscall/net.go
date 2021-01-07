@@ -4,14 +4,20 @@
 
 package syscall
 
+// RawConn 原始网络连接
+// 操作都要确保 fd在f执行期间有效 执行后无效
 // A RawConn is a raw network connection.
 type RawConn interface {
+	// Control 在fd上执行f
 	// Control invokes f on the underlying connection's file
 	// descriptor or handle.
 	// The file descriptor fd is guaranteed to remain valid while
 	// f executes but not after f returns.
 	Control(f func(fd uintptr)) error
 
+	// Read 在fd上执行f
+	// f返回true则返回
+	// 否则 Read 会阻塞等待 尝试下次读取
 	// Read invokes f on the underlying connection's file
 	// descriptor or handle; f is expected to try to read from the
 	// file descriptor.
@@ -26,6 +32,7 @@ type RawConn interface {
 	Write(f func(fd uintptr) (done bool)) error
 }
 
+// Conn 对于基础文件描述符的链接对象的接口
 // Conn is implemented by some types in the net and os packages to provide
 // access to the underlying file descriptor or handle.
 type Conn interface {

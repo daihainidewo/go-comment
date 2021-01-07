@@ -55,10 +55,10 @@ import (
 const (
 	// The size of a bitmap chunk, i.e. the amount of bits (that is, pages) to consider
 	// in the bitmap at once.
-	pallocChunkPages    = 1 << logPallocChunkPages
-	pallocChunkBytes    = pallocChunkPages * pageSize
+	pallocChunkPages    = 1 << logPallocChunkPages    // 1 << 9 = 512
+	pallocChunkBytes    = pallocChunkPages * pageSize // 512 * 8192 = 4M
 	logPallocChunkPages = 9
-	logPallocChunkBytes = logPallocChunkPages + pageShift
+	logPallocChunkBytes = logPallocChunkPages + pageShift // 9 + 13 = 22
 
 	// The number of radix bits for each level.
 	//
@@ -79,8 +79,8 @@ const (
 	//
 	// See (*pageAlloc).chunks for more details. Update the documentation
 	// there should this change.
-	pallocChunksL2Bits  = heapAddrBits - logPallocChunkBytes - pallocChunksL1Bits
-	pallocChunksL1Shift = pallocChunksL2Bits
+	pallocChunksL2Bits  = heapAddrBits - logPallocChunkBytes - pallocChunksL1Bits // 48 - 22 - 13 = 13
+	pallocChunksL1Shift = pallocChunksL2Bits                                      // 13
 )
 
 // Maximum searchAddr value, which indicates that the heap has no free space.
@@ -89,6 +89,7 @@ const (
 // for the page allocator's search space. See maxOffAddr for details.
 var maxSearchAddr = maxOffAddr
 
+// 全局块索引
 // Global chunk index.
 //
 // Represents an index into the leaf level of the radix tree.
@@ -96,23 +97,29 @@ var maxSearchAddr = maxOffAddr
 // space into chunks.
 type chunkIdx uint
 
+// chunkIndex 返回对于基址 arenaBaseOffset 的 pallocChunkBytes 偏移倍数 即为块id
 // chunkIndex returns the global index of the palloc chunk containing the
 // pointer p.
 func chunkIndex(p uintptr) chunkIdx {
 	return chunkIdx((p - arenaBaseOffset) / pallocChunkBytes)
 }
 
+// chunkIndex 通过块id计算基址
 // chunkIndex returns the base address of the palloc chunk at index ci.
 func chunkBase(ci chunkIdx) uintptr {
 	return uintptr(ci)*pallocChunkBytes + arenaBaseOffset
 }
 
+// chunkPageIndex 计算地址p属于块的哪一页
 // chunkPageIndex computes the index of the page that contains p,
 // relative to the chunk which contains p.
 func chunkPageIndex(p uintptr) uint {
 	return uint(p % pallocChunkBytes / pageSize)
 }
 
+// chunkIdx uint 64位 48位到14位表示一级缓存 后13位表示二级缓存
+
+// l1 返回第一级的 (*pageAlloc).chunks 索引
 // l1 returns the index into the first level of (*pageAlloc).chunks.
 func (i chunkIdx) l1() uint {
 	if pallocChunksL1Bits == 0 {
@@ -124,6 +131,7 @@ func (i chunkIdx) l1() uint {
 	}
 }
 
+// l2 返回第二级的 (*pageAlloc).chunks 索引
 // l2 returns the index into the second level of (*pageAlloc).chunks.
 func (i chunkIdx) l2() uint {
 	if pallocChunksL1Bits == 0 {
@@ -229,7 +237,7 @@ type pageAlloc struct {
 	// TODO(mknyszek): Consider changing the definition of the bitmap
 	// such that 1 means free and 0 means in-use so that summaries and
 	// the bitmaps align better on zero-values.
-	chunks [1 << pallocChunksL1Bits]*[1 << pallocChunksL2Bits]pallocData
+	chunks [1 << pallocChunksL1Bits]*[1 << pallocChunksL2Bits]pallocData // [8192][8192]pallocData
 
 	// The address to start an allocation search with. It must never
 	// point to any memory that is not contained in inUse, i.e.
@@ -337,6 +345,7 @@ func (p *pageAlloc) tryChunkOf(ci chunkIdx) *pallocData {
 	return &l2[ci.l2()]
 }
 
+// chunkOf 返回给定块索引处的块
 // chunkOf returns the chunk at the given chunk index.
 //
 // The chunk index must be valid or this method may throw.
@@ -788,6 +797,7 @@ nextLevel:
 	return addr, p.findMappedAddr(firstFree.base)
 }
 
+// alloc 获取 npages 页 内存块
 // alloc allocates npages worth of memory from the page heap, returning the base
 // address for the allocation and the amount of scavenged memory in bytes
 // contained in the region [base address, base address + npages*pageSize).

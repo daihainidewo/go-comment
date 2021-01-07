@@ -288,6 +288,7 @@ TEXT gogo<>(SB), NOSPLIT, $0
 TEXT runtime·mcall(SB), NOSPLIT, $0-8
 	MOVQ	fn+0(FP), DI
 
+    // 保存当前g信息到g->sched
 	get_tls(CX)
 	MOVQ	g(CX), AX	// save state in g->sched
 	MOVQ	0(SP), BX	// caller's PC
@@ -310,7 +311,7 @@ TEXT runtime·mcall(SB), NOSPLIT, $0-8
 	PUSHQ	AX
 	MOVQ	DI, DX
 	MOVQ	0(DI), DI
-	CALL	DI
+	CALL	DI // 执行fn，不能返回
 	POPQ	AX
 	MOVQ	$runtime·badmcall2(SB), AX
 	JMP	AX
@@ -331,14 +332,14 @@ TEXT runtime·systemstack(SB), NOSPLIT, $0-8
 	MOVQ	g(CX), AX	// AX = g
 	MOVQ	g_m(AX), BX	// BX = m
 
-	CMPQ	AX, m_gsignal(BX)
+	CMPQ	AX, m_gsignal(BX) // g == m.gsignal
 	JEQ	noswitch
 
 	MOVQ	m_g0(BX), DX	// DX = g0
-	CMPQ	AX, DX
+	CMPQ	AX, DX // g == g0
 	JEQ	noswitch
 
-	CMPQ	AX, m_curg(BX)
+	CMPQ	AX, m_curg(BX) // g == m.curg
 	JNE	bad
 
 	// switch stacks
@@ -347,6 +348,7 @@ TEXT runtime·systemstack(SB), NOSPLIT, $0-8
 	CALL	gosave_systemstack_switch<>(SB)
 
 	// switch to g0
+	// 切换到g0
 	MOVQ	DX, g(CX)
 	MOVQ	DX, R14 // set the g register
 	MOVQ	(g_sched+gobuf_sp)(DX), BX
@@ -355,9 +357,10 @@ TEXT runtime·systemstack(SB), NOSPLIT, $0-8
 	// call target function
 	MOVQ	DI, DX
 	MOVQ	0(DI), DI
-	CALL	DI
+	CALL	DI // 执行目标函数
 
 	// switch back to g
+	// 恢复原有g
 	get_tls(CX)
 	MOVQ	g(CX), AX
 	MOVQ	g_m(AX), BX
@@ -395,17 +398,17 @@ bad:
 TEXT runtime·morestack(SB),NOSPLIT,$0-0
 	// Cannot grow scheduler stack (m->g0).
 	get_tls(CX)
-	MOVQ	g(CX), BX
-	MOVQ	g_m(BX), BX
-	MOVQ	m_g0(BX), SI
-	CMPQ	g(CX), SI
+	MOVQ	g(CX), BX    // bx = getg()
+	MOVQ	g_m(BX), BX  // bx = getg().m
+	MOVQ	m_g0(BX), SI // si = getg().m.g0
+	CMPQ	g(CX), SI    // getg() == getg().m.g0
 	JNE	3(PC)
 	CALL	runtime·badmorestackg0(SB)
 	CALL	runtime·abort(SB)
 
 	// Cannot grow signal stack (m->gsignal).
-	MOVQ	m_gsignal(BX), SI
-	CMPQ	g(CX), SI
+	MOVQ	m_gsignal(BX), SI // si = m.gsignal
+	CMPQ	g(CX), SI         // g == m.gsignal
 	JNE	3(PC)
 	CALL	runtime·badmorestackgsignal(SB)
 	CALL	runtime·abort(SB)
@@ -413,15 +416,19 @@ TEXT runtime·morestack(SB),NOSPLIT,$0-0
 	// Called from f.
 	// Set m->morebuf to f's caller.
 	NOP	SP	// tell vet SP changed - stop checking offsets
+	// 保存调用者的PC和SP
 	MOVQ	8(SP), AX	// f's caller's PC
 	MOVQ	AX, (m_morebuf+gobuf_pc)(BX)
 	LEAQ	16(SP), AX	// f's caller's SP
 	MOVQ	AX, (m_morebuf+gobuf_sp)(BX)
+
+	// 把g存进m-morebuf.gobuf->g中
 	get_tls(CX)
 	MOVQ	g(CX), SI
 	MOVQ	SI, (m_morebuf+gobuf_g)(BX)
 
 	// Set g->sched to context in f.
+	// 把g相关属性存进g->sched.gobuf中
 	MOVQ	0(SP), AX // f's PC
 	MOVQ	AX, (g_sched+gobuf_pc)(SI)
 	LEAQ	8(SP), AX // f's SP
@@ -430,6 +437,7 @@ TEXT runtime·morestack(SB),NOSPLIT,$0-0
 	MOVQ	DX, (g_sched+gobuf_ctxt)(SI)
 
 	// Call newstack on m->g0's stack.
+	// 切换到g0栈 调用newstack函数
 	MOVQ	m_g0(BX), BX
 	MOVQ	BX, g(CX)
 	MOVQ	(g_sched+gobuf_sp)(BX), SP
@@ -437,6 +445,7 @@ TEXT runtime·morestack(SB),NOSPLIT,$0-0
 	CALL	runtime·abort(SB)	// crash if newstack returns
 	RET
 
+// morestack_noctxt 不保留ctxt 调用morestack
 // morestack but not preserving ctxt.
 TEXT runtime·morestack_noctxt(SB),NOSPLIT,$0
 	MOVL	$0, DX
@@ -1471,6 +1480,7 @@ TEXT ·sigpanic0<ABIInternal>(SB),NOSPLIT,$0-0
 #endif
 	JMP	·sigpanic<ABIInternal>(SB)
 
+// gcWriteBarrier 检测写屏障
 // gcWriteBarrier performs a heap pointer write and informs the GC.
 //
 // gcWriteBarrier does NOT follow the Go ABI. It takes two arguments:

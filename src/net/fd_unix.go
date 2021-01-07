@@ -24,6 +24,7 @@ const (
 	writeMsgSyscallName = "sendmsg"
 )
 
+// newFD 封装成netFD结构体
 func newFD(sysfd, family, sotype int, net string) (*netFD, error) {
 	ret := &netFD{
 		pfd: poll.FD{

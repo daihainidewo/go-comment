@@ -17,10 +17,10 @@ import (
 // field of a larger type representing a network connection or OS file.
 type FD struct {
 	// Lock sysfd and serialize access to Read and Write methods.
-	fdmu fdMutex
+	fdmu fdMutex // 锁
 
 	// System file descriptor. Immutable until Close.
-	Sysfd int
+	Sysfd int // 系统的文件描述符
 
 	// I/O poller.
 	pd pollDesc
@@ -31,6 +31,7 @@ type FD struct {
 	// Semaphore signaled when file is closed.
 	csema uint32
 
+	// 非零表示只能阻塞不能轮询
 	// Non-zero if this file has been set to blocking mode.
 	isBlocking uint32
 
@@ -42,10 +43,12 @@ type FD struct {
 	// message based socket connection.
 	ZeroReadIsEOF bool
 
+	// 是否是文件流
 	// Whether this is a file rather than a network socket.
 	isFile bool
 }
 
+// Init 初始化FD，FD.Sysfd 必须已经设置，可以重复设置
 // Init initializes the FD. The Sysfd field should already be set.
 // This can be called multiple times on a single FD.
 // The net argument is a network name from the net package (e.g., "tcp"),
@@ -69,6 +72,7 @@ func (fd *FD) Init(net string, pollable bool) error {
 	return err
 }
 
+// destroy 关闭文件描述符
 // Destroy closes the file descriptor. This is called when there are
 // no remaining references.
 func (fd *FD) destroy() error {
@@ -88,6 +92,7 @@ func (fd *FD) destroy() error {
 	return err
 }
 
+// Close 关闭 FD
 // Close closes the FD. The underlying file descriptor is closed by the
 // destroy method when there are no remaining references.
 func (fd *FD) Close() error {
@@ -119,6 +124,7 @@ func (fd *FD) Close() error {
 	return err
 }
 
+// SetBlocking 取消 FD 的轮询 将 FD 设为阻塞
 // SetBlocking puts the file into blocking mode.
 func (fd *FD) SetBlocking() error {
 	if err := fd.incref(); err != nil {
@@ -139,6 +145,7 @@ func (fd *FD) SetBlocking() error {
 // Use 1GB instead of, say, 2GB-1, to keep subsequent reads aligned.
 const maxRW = 1 << 30
 
+// Read 读
 // Read implements io.Reader.
 func (fd *FD) Read(p []byte) (int, error) {
 	if err := fd.readLock(); err != nil {

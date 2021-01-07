@@ -63,6 +63,7 @@ func maxAckBacklog(n int) int {
 	return n
 }
 
+// maxListenerBacklog 获取监听最大队列
 func maxListenerBacklog() int {
 	fd, err := open("/proc/sys/net/core/somaxconn")
 	if err != nil {
@@ -79,6 +80,7 @@ func maxListenerBacklog() int {
 		return syscall.SOMAXCONN
 	}
 
+	// 如果大于65535 则根据系统版本确定最大值
 	if n > 1<<16-1 {
 		return maxAckBacklog(n)
 	}

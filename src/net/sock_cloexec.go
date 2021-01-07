@@ -16,9 +16,12 @@ import (
 	"syscall"
 )
 
+// sysSocket 返回系统文件描述符 标记为非阻塞且close-on-exec
+// 如果创建非阻塞且close-on-exec 获取指定失败错误码时 尝试使用系统调用的方式设置上去
 // Wrapper around the socket system call that marks the returned file
 // descriptor as nonblocking and close-on-exec.
 func sysSocket(family, sotype, proto int) (int, error) {
+	// 通过系统调用创建套接字
 	s, err := socketFunc(family, sotype|syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC, proto)
 	// On Linux the SOCK_NONBLOCK and SOCK_CLOEXEC flags were
 	// introduced in 2.6.27 kernel and on FreeBSD both flags were
@@ -33,6 +36,7 @@ func sysSocket(family, sotype, proto int) (int, error) {
 	case syscall.EPROTONOSUPPORT, syscall.EINVAL:
 	}
 
+	// 如果返回的错误是 syscall.EPROTONOSUPPORT syscall.EINVAL
 	// See ../syscall/exec_unix.go for description of ForkLock.
 	syscall.ForkLock.RLock()
 	s, err = socketFunc(family, sotype, proto)

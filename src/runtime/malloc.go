@@ -114,17 +114,17 @@ const (
 	tinySizeClass = _TinySizeClass
 	maxSmallSize  = _MaxSmallSize
 
-	pageShift = _PageShift
-	pageSize  = _PageSize
-	pageMask  = _PageMask
+	pageShift = _PageShift // 13
+	pageSize  = _PageSize  // 8192
+	pageMask  = _PageMask  // 8191
 	// By construction, single page spans of the smallest object class
 	// have the most objects per span.
-	maxObjsPerSpan = pageSize / 8
+	maxObjsPerSpan = pageSize / 8 // 1024
 
 	concurrentSweep = _ConcurrentSweep
 
-	_PageSize = 1 << _PageShift
-	_PageMask = _PageSize - 1
+	_PageSize = 1 << _PageShift // 8192
+	_PageMask = _PageSize - 1   // 8191
 
 	// _64bit = 1 on 64-bit systems, 0 on 32-bit systems
 	_64bit = 1 << (^uintptr(0) >> 63) / 2
@@ -152,6 +152,7 @@ const (
 	//   plan9            | 4KB        | 3
 	_NumStackOrders = 4 - sys.PtrSize/4*sys.GoosWindows - 1*sys.GoosPlan9
 
+	// heapAddrBits 堆地址中的位数
 	// heapAddrBits is the number of bits in a heap address. On
 	// amd64, addresses are sign-extended beyond heapAddrBits. On
 	// other arches, they are zero-extended.
@@ -207,7 +208,7 @@ const (
 	// arenaBaseOffset to offset into the top 4 GiB.
 	//
 	// WebAssembly currently has a limit of 4GB linear memory.
-	heapAddrBits = (_64bit*(1-sys.GoarchWasm)*(1-sys.GoosIos*sys.GoarchArm64))*48 + (1-_64bit+sys.GoarchWasm)*(32-(sys.GoarchMips+sys.GoarchMipsle)) + 33*sys.GoosIos*sys.GoarchArm64
+	heapAddrBits = (_64bit*(1-sys.GoarchWasm)*(1-sys.GoosIos*sys.GoarchArm64))*48 + (1-_64bit+sys.GoarchWasm)*(32-(sys.GoarchMips+sys.GoarchMipsle)) + 33*sys.GoosIos*sys.GoarchArm64 // 48
 
 	// maxAlloc is the maximum size of an allocation. On 64-bit,
 	// it's theoretically possible to allocate 1<<heapAddrBits bytes. On
@@ -242,12 +243,12 @@ const (
 	// This is particularly important with the race detector,
 	// since it significantly amplifies the cost of committed
 	// memory.
-	heapArenaBytes = 1 << logHeapArenaBytes
+	heapArenaBytes = 1 << logHeapArenaBytes // 1 << 26 = 64M
 
 	// logHeapArenaBytes is log_2 of heapArenaBytes. For clarity,
 	// prefer using heapArenaBytes where possible (we need the
 	// constant to compute some other constants).
-	logHeapArenaBytes = (6+20)*(_64bit*(1-sys.GoosWindows)*(1-sys.GoarchWasm)) + (2+20)*(_64bit*sys.GoosWindows) + (2+20)*(1-_64bit) + (2+20)*sys.GoarchWasm
+	logHeapArenaBytes = (6+20)*(_64bit*(1-sys.GoosWindows)*(1-sys.GoarchWasm)) + (2+20)*(_64bit*sys.GoosWindows) + (2+20)*(1-_64bit) + (2+20)*sys.GoarchWasm // 26
 
 	// heapArenaBitmapBytes is the size of each heap arena's bitmap.
 	heapArenaBitmapBytes = heapArenaBytes / (sys.PtrSize * 8 / 2)
@@ -302,7 +303,7 @@ const (
 	//
 	// On other platforms, the user address space is contiguous
 	// and starts at 0, so no offset is necessary.
-	arenaBaseOffset = 0xffff800000000000*sys.GoarchAmd64 + 0x0a00000000000000*sys.GoosAix
+	arenaBaseOffset = 0xffff800000000000*sys.GoarchAmd64 + 0x0a00000000000000*sys.GoosAix // 0xffff800000000000
 	// A typed version of this constant that will make it into DWARF (for viewcore).
 	arenaBaseOffsetUintptr = uintptr(arenaBaseOffset)
 
@@ -320,6 +321,7 @@ const (
 	minLegalPointer uintptr = 4096
 )
 
+// physPageSize 是操作系统物理页面的大小（以字节为单位）。
 // physPageSize is the size in bytes of the OS's physical pages.
 // Mapping and unmapping operations must be done at multiples of
 // physPageSize.
@@ -616,6 +618,10 @@ func mallocinit() {
 	}
 }
 
+// sysAlloc 至少申请n自己的堆空间，返回的指针始终是heapArenaBytes对齐的
+// 并由h.arenas元数据支持
+// 返回的大小始终是heapArenaBytes的倍数
+// sysAlloc失败时返回nil
 // sysAlloc allocates heap arena space for at least n bytes. The
 // returned pointer is always heapArenaBytes-aligned and backed by
 // h.arenas metadata. The returned size is always a multiple of
@@ -629,15 +635,16 @@ func mallocinit() {
 func (h *mheap) sysAlloc(n uintptr) (v unsafe.Pointer, size uintptr) {
 	assertLockHeld(&h.lock)
 
-	n = alignUp(n, heapArenaBytes)
+	n = alignUp(n, heapArenaBytes) // 向上对齐 heapArenaBytes
 
 	// First, try the arena pre-reservation.
 	v = h.arena.alloc(n, heapArenaBytes, &memstats.heap_sys)
-	if v != nil {
+	if v != nil { // 成功申请
 		size = n
 		goto mapped
 	}
 
+	// 尝试在堆提示的地方增长
 	// Try to grow the heap at a hint address.
 	for h.arenaHints != nil {
 		hint := h.arenaHints
@@ -654,6 +661,7 @@ func (h *mheap) sysAlloc(n uintptr) (v unsafe.Pointer, size uintptr) {
 		} else {
 			v = sysReserve(unsafe.Pointer(p), n)
 		}
+		// 成功就更新此提示
 		if p == uintptr(v) {
 			// Success. Update the hint.
 			if !hint.down {
@@ -663,6 +671,7 @@ func (h *mheap) sysAlloc(n uintptr) (v unsafe.Pointer, size uintptr) {
 			size = n
 			break
 		}
+		// 失败就放弃此提示
 		// Failed. Discard this hint and try the next.
 		//
 		// TODO: This would be cleaner if sysReserve could be
@@ -688,11 +697,12 @@ func (h *mheap) sysAlloc(n uintptr) (v unsafe.Pointer, size uintptr) {
 		// All of the hints failed, so we'll take any
 		// (sufficiently aligned) address the kernel will give
 		// us.
-		v, size = sysReserveAligned(nil, n, heapArenaBytes)
+		v, size = sysReserveAligned(nil, n, heapArenaBytes) // 从系统中获取
 		if v == nil {
 			return nil, 0
 		}
 
+		// 创建新的提示
 		// Create new hints for extending this region.
 		hint := (*arenaHint)(h.arenaHintAlloc.alloc())
 		hint.addr, hint.down = uintptr(v), true
@@ -702,6 +712,7 @@ func (h *mheap) sysAlloc(n uintptr) (v unsafe.Pointer, size uintptr) {
 		hint.next, mheap_.arenaHints = mheap_.arenaHints, hint
 	}
 
+	// 检查错误的指针或者不能使用的指针
 	// Check for bad pointers or pointers we can't use.
 	{
 		var bad string
@@ -726,7 +737,7 @@ func (h *mheap) sysAlloc(n uintptr) (v unsafe.Pointer, size uintptr) {
 	}
 
 	// Transition from Reserved to Prepared.
-	sysMap(v, size, &memstats.heap_sys)
+	sysMap(v, size, &memstats.heap_sys) // 将v从保留转换为已准备
 
 mapped:
 	// Create arena metadata.
@@ -789,6 +800,7 @@ mapped:
 	return
 }
 
+// sysReserveAligned 类似 sysReserve 返回字节对齐的地址
 // sysReserveAligned is like sysReserve, but the returned pointer is
 // aligned to align bytes. It may reserve either n or n+align bytes,
 // so it returns the size that was reserved.
@@ -798,11 +810,11 @@ func sysReserveAligned(v unsafe.Pointer, size, align uintptr) (unsafe.Pointer, u
 	// for a larger region and remove the parts we don't need.
 	retries := 0
 retry:
-	p := uintptr(sysReserve(v, size+align))
+	p := uintptr(sysReserve(v, size+align)) // 尝试直接获取
 	switch {
-	case p == 0:
+	case p == 0: // 系统没有返回
 		return nil, 0
-	case p&(align-1) == 0:
+	case p&(align-1) == 0: // sysReserve 有成功返回 直接返回
 		// We got lucky and got an aligned region, so we can
 		// use the whole thing.
 		return unsafe.Pointer(p), size + align
@@ -827,11 +839,11 @@ retry:
 	default:
 		// Trim off the unaligned parts.
 		pAligned := alignUp(p, align)
-		sysFree(unsafe.Pointer(p), pAligned-p, nil)
+		sysFree(unsafe.Pointer(p), pAligned-p, nil) // 释放空间
 		end := pAligned + size
 		endLen := (p + size + align) - end
 		if endLen > 0 {
-			sysFree(unsafe.Pointer(end), endLen, nil)
+			sysFree(unsafe.Pointer(end), endLen, nil) // 释放多余的空间
 		}
 		return unsafe.Pointer(pAligned), size
 	}
@@ -1399,13 +1411,14 @@ func inPersistentAlloc(p uintptr) bool {
 	return false
 }
 
+// linearAlloc 是一个简单的线性分配器
 // linearAlloc is a simple linear allocator that pre-reserves a region
 // of memory and then maps that region into the Ready state as needed. The
 // caller is responsible for locking.
 type linearAlloc struct {
-	next   uintptr // next free byte
-	mapped uintptr // one byte past end of mapped space
-	end    uintptr // end of reserved space
+	next   uintptr // 下一个空闲字节 // next free byte
+	mapped uintptr // 映射空间的最后一个字节 // one byte past end of mapped space
+	end    uintptr // 保留空间的最后一个字节 // end of reserved space
 }
 
 func (l *linearAlloc) init(base, size uintptr) {
@@ -1421,15 +1434,16 @@ func (l *linearAlloc) init(base, size uintptr) {
 }
 
 func (l *linearAlloc) alloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
-	p := alignUp(l.next, align)
-	if p+size > l.end {
+	p := alignUp(l.next, align)// 字节对齐
+	if p+size > l.end {// 超限 返回
 		return nil
 	}
 	l.next = p + size
+	// 向上对齐物理页大小
 	if pEnd := alignUp(l.next-1, physPageSize); pEnd > l.mapped {
 		// Transition from Reserved to Prepared to Ready.
-		sysMap(unsafe.Pointer(l.mapped), pEnd-l.mapped, sysStat)
-		sysUsed(unsafe.Pointer(l.mapped), pEnd-l.mapped)
+		sysMap(unsafe.Pointer(l.mapped), pEnd-l.mapped, sysStat) // 映射物理内存
+		sysUsed(unsafe.Pointer(l.mapped), pEnd-l.mapped)         // madvise 操作 让操作系统加载这块内存
 		l.mapped = pEnd
 	}
 	return unsafe.Pointer(p)

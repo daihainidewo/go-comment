@@ -279,6 +279,7 @@ func resumeG(state suspendGState) {
 	}
 }
 
+// canPreemptM 返回m是否可以被抢占
 // canPreemptM reports whether mp is in a state that is safe to preempt.
 //
 // It is nosplit because it has nosplit callers.

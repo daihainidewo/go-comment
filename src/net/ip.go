@@ -111,12 +111,14 @@ var (
 	IPv6linklocalallrouters    = IP{0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02}
 )
 
+// IsUnspecified 返回是否是未指定地址
 // IsUnspecified reports whether ip is an unspecified address, either
 // the IPv4 address "0.0.0.0" or the IPv6 address "::".
 func (ip IP) IsUnspecified() bool {
 	return ip.Equal(IPv4zero) || ip.Equal(IPv6unspecified)
 }
 
+// IsLoopback 返回是否是轮回地址
 // IsLoopback reports whether ip is a loopback address.
 func (ip IP) IsLoopback() bool {
 	if ip4 := ip.To4(); ip4 != nil {
@@ -125,6 +127,7 @@ func (ip IP) IsLoopback() bool {
 	return ip.Equal(IPv6loopback)
 }
 
+// IsMulticast 是否是广播地址
 // IsMulticast reports whether ip is a multicast address.
 func (ip IP) IsMulticast() bool {
 	if ip4 := ip.To4(); ip4 != nil {
@@ -133,12 +136,14 @@ func (ip IP) IsMulticast() bool {
 	return len(ip) == IPv6len && ip[0] == 0xff
 }
 
+// IsInterfaceLocalMulticast 是否是本地多播地址
 // IsInterfaceLocalMulticast reports whether ip is
 // an interface-local multicast address.
 func (ip IP) IsInterfaceLocalMulticast() bool {
 	return len(ip) == IPv6len && ip[0] == 0xff && ip[1]&0x0f == 0x01
 }
 
+// IsLinkLocalMulticast 是否是本地连接的多播地址
 // IsLinkLocalMulticast reports whether ip is a link-local
 // multicast address.
 func (ip IP) IsLinkLocalMulticast() bool {

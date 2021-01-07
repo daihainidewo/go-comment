@@ -18,6 +18,7 @@ import (
 type netFD struct {
 	pfd poll.FD
 
+	// 常量值
 	// immutable until Close
 	family      int
 	sotype      int

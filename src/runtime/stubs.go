@@ -18,7 +18,7 @@ func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
 // getg returns the pointer to the current g.
 // The compiler rewrites calls to this function into instructions
 // that fetch the g directly (from TLS or from the dedicated register).
-func getg() *g
+func getg() *g // 获取当前的g
 
 // mcall switches from the g to the g0 stack and invokes fn(g),
 // where g is the goroutine that made the call.
@@ -34,7 +34,7 @@ func getg() *g
 // This must NOT be go:noescape: if fn is a stack-allocated closure,
 // fn puts g on a run queue, and g executes before fn returns, the
 // closure will be invalidated while it is still executing.
-func mcall(fn func(*g))
+func mcall(fn func(*g)) // 切换到g0执行fn，fn不能返回
 
 // systemstack runs fn on a system stack.
 // If systemstack is called from the per-OS-thread (g0) stack, or
@@ -54,7 +54,7 @@ func mcall(fn func(*g))
 //	... use x ...
 //
 //go:noescape
-func systemstack(fn func())
+func systemstack(fn func()) // 切换到g0执行fn，执行后会切换至原g
 
 var badsystemstackMsg = "fatal: systemstack called from unexpected goroutine"
 
@@ -170,7 +170,7 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 // pointer-declared arguments.
 func cgocallback(fn, frame, ctxt uintptr)
 
-func gogo(buf *gobuf)
+func gogo(buf *gobuf)   // 切换到buf
 
 //go:noescape
 func jmpdefer(fv *funcval, argp uintptr)
@@ -348,11 +348,13 @@ func call1073741824(typ, fn, arg unsafe.Pointer, n, retoffset uint32)
 
 func systemstack_switch()
 
+// alignUp 将n舍入为a的倍数。 a必须是2的幂。
 // alignUp rounds n up to a multiple of a. a must be a power of 2.
 func alignUp(n, a uintptr) uintptr {
 	return (n + a - 1) &^ (a - 1)
 }
 
+// alignDown 将n向下舍入为a的倍数。 a必须是2的幂。
 // alignDown rounds n down to a multiple of a. a must be a power of 2.
 func alignDown(n, a uintptr) uintptr {
 	return n &^ (a - 1)

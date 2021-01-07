@@ -30,6 +30,7 @@ var (
 	netpollWakeSig uint32 // used to avoid duplicate calls of netpollBreak
 )
 
+// netpollinit 初始化网络调度器
 func netpollinit() {
 	epfd = epollcreate1(_EPOLL_CLOEXEC)
 	if epfd < 0 {
@@ -62,6 +63,7 @@ func netpollIsPollDescriptor(fd uintptr) bool {
 	return fd == uintptr(epfd) || fd == netpollBreakRd || fd == netpollBreakWr
 }
 
+// netpollopen 将网络事件加入epoll 事件 读 写 读关闭 边缘触发
 func netpollopen(fd uintptr, pd *pollDesc) int32 {
 	var ev epollevent
 	ev.events = _EPOLLIN | _EPOLLOUT | _EPOLLRDHUP | _EPOLLET
@@ -69,6 +71,7 @@ func netpollopen(fd uintptr, pd *pollDesc) int32 {
 	return -epollctl(epfd, _EPOLL_CTL_ADD, int32(fd), &ev)
 }
 
+// netpollclose 取消关注fd
 func netpollclose(fd uintptr) int32 {
 	var ev epollevent
 	return -epollctl(epfd, _EPOLL_CTL_DEL, int32(fd), &ev)
@@ -105,7 +108,7 @@ func netpollBreak() {
 // delay == 0: does not block, just polls
 // delay > 0: block for up to that many nanoseconds
 func netpoll(delay int64) gList {
-	if epfd == -1 {
+	if epfd == -1 { // 没有初始化就返回空列表
 		return gList{}
 	}
 	var waitms int32
@@ -173,7 +176,7 @@ retry:
 			if ev.events == _EPOLLERR {
 				pd.everr = true
 			}
-			netpollready(&toRun, pd, mode)
+			netpollready(&toRun, pd, mode) // 将符合的g填充进toRun中
 		}
 	}
 	return toRun

@@ -120,6 +120,7 @@ type heapBits struct {
 // the maximum arena frame number.
 var _ = heapBits{arena: (1<<heapAddrBits)/heapArenaBytes - 1}
 
+// markBits 堆对象标记位的显示
 // markBits provides access to the mark bit for an object in the heap.
 // bytep points to the byte holding the mark bit.
 // mask is a byte with a single bit set that can be &ed with *bytep

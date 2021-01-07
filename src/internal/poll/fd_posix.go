@@ -12,6 +12,7 @@ import (
 	"syscall"
 )
 
+// eofError 返回error是不是EOF
 // eofError returns io.EOF when fd is available for reading end of
 // file.
 func (fd *FD) eofError(n int, err error) error {

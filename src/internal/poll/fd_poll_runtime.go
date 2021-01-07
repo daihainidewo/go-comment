@@ -36,7 +36,7 @@ type pollDesc struct {
 var serverInit sync.Once
 
 func (pd *pollDesc) init(fd *FD) error {
-	serverInit.Do(runtime_pollServerInit)
+	serverInit.Do(runtime_pollServerInit) // 启动轮询服务
 	ctx, errno := runtime_pollOpen(uintptr(fd.Sysfd))
 	if errno != 0 {
 		if ctx != 0 {
@@ -57,6 +57,7 @@ func (pd *pollDesc) close() {
 	pd.runtimeCtx = 0
 }
 
+// evict 清除未处理的fd列表
 // Evict evicts fd from the pending list, unblocking any I/O running on fd.
 func (pd *pollDesc) evict() {
 	if pd.runtimeCtx == 0 {
@@ -65,6 +66,7 @@ func (pd *pollDesc) evict() {
 	runtime_pollUnblock(pd.runtimeCtx)
 }
 
+// prepare
 func (pd *pollDesc) prepare(mode int, isFile bool) error {
 	if pd.runtimeCtx == 0 {
 		return nil

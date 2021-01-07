@@ -6,6 +6,7 @@ package poll
 
 import "sync/atomic"
 
+// fdMutex 控制 FD 的读写 和 引用计数
 // fdMutex is a specialized synchronization primitive that manages
 // lifetime of an fd and serializes access to Read, Write and Close
 // methods on FD.
@@ -66,6 +67,7 @@ func (mu *fdMutex) incref() bool {
 	}
 }
 
+// increfAndClose 将 mu 关闭
 // increfAndClose sets the state of mu to closed.
 // It returns false if the file was already closed.
 func (mu *fdMutex) increfAndClose() bool {
@@ -112,6 +114,7 @@ func (mu *fdMutex) decref() bool {
 	}
 }
 
+// rwlock 锁
 // lock adds a reference to mu and locks mu.
 // It reports whether mu is available for reading or writing.
 func (mu *fdMutex) rwlock(read bool) bool {
@@ -157,6 +160,7 @@ func (mu *fdMutex) rwlock(read bool) bool {
 	}
 }
 
+// rwunlock 解锁
 // unlock removes a reference from mu and unlocks mu.
 // It reports whether there is no remaining reference.
 func (mu *fdMutex) rwunlock(read bool) bool {
@@ -196,6 +200,7 @@ func (mu *fdMutex) rwunlock(read bool) bool {
 func runtime_Semacquire(sema *uint32)
 func runtime_Semrelease(sema *uint32)
 
+// incref 增加fd的引用计数
 // incref adds a reference to fd.
 // It returns an error when fd cannot be used.
 func (fd *FD) incref() error {

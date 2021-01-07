@@ -9,6 +9,7 @@ import (
 	"syscall"
 )
 
+// setDefaultSockopts IpV6或UDP特殊处理
 func setDefaultSockopts(s, family, sotype int, ipv6only bool) error {
 	if family == syscall.AF_INET6 && sotype != syscall.SOCK_RAW {
 		// Allow both IP versions even if the OS default

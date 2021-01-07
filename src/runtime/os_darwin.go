@@ -7,7 +7,7 @@ package runtime
 import "unsafe"
 
 type mOS struct {
-	initialized bool
+	initialized bool // 是否初始化
 	mutex       pthreadmutex
 	cond        pthreadcond
 	count       int
@@ -186,6 +186,7 @@ func goenvs() {
 	goenvs_unix()
 }
 
+// newosproc 创建一个系统线程
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrierrec
 func newosproc(mp *m) {

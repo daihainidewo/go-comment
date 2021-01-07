@@ -1039,6 +1039,7 @@ func updateTimerModifiedEarliest(pp *p, nextwhen int64) {
 	}
 }
 
+// timeSleepUntil 返回下一次触发器触发的时间，和保存当前计时器的p
 // timeSleepUntil returns the time when the next timer should fire,
 // and the P that holds the timer heap that that timer is on.
 // This is only called by sysmon and checkdead.

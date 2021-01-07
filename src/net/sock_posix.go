@@ -14,6 +14,7 @@ import (
 	"syscall"
 )
 
+// socket 返回一个准备网络异步io的网络文件描述符
 // socket returns a network file descriptor that is ready for
 // asynchronous I/O using the network poller.
 func socket(ctx context.Context, net string, family, sotype, proto int, ipv6only bool, laddr, raddr sockaddr, ctrlFn func(string, string, syscall.RawConn) error) (fd *netFD, err error) {
@@ -53,6 +54,7 @@ func socket(ctx context.Context, net string, family, sotype, proto int, ipv6only
 	// the other connection holders.
 
 	if laddr != nil && raddr == nil {
+		// 如果是一个双向文件描述符
 		switch sotype {
 		case syscall.SOCK_STREAM, syscall.SOCK_SEQPACKET:
 			if err := fd.listenStream(laddr, listenerBacklog(), ctrlFn); err != nil {

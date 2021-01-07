@@ -151,6 +151,7 @@ func splice(out int, in int, max int, flags int) (int, error) {
 
 var disableSplice unsafe.Pointer
 
+// newTempPipe 为 splice 创建临时管道
 // newTempPipe sets up a temporary pipe for a splice operation.
 func newTempPipe() (prfd, pwfd int, sc string, err error) {
 	p := (*bool)(atomic.LoadPointer(&disableSplice))

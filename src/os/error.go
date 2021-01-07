@@ -63,6 +63,7 @@ func (e *SyscallError) Timeout() bool {
 	return ok && t.Timeout()
 }
 
+// NewSyscallError 针对指定系统调用返回当前error的具体含义
 // NewSyscallError returns, as an error, a new SyscallError
 // with the given system call name and error details.
 // As a convenience, if err is nil, NewSyscallError returns nil.

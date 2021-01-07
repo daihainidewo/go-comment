@@ -117,6 +117,7 @@ func (addrs addrList) partition(strategy func(Addr) bool) (primaries, fallbacks 
 	return
 }
 
+// filterAddrList 过滤ips 结果至少包含一个地址
 // filterAddrList applies a filter to a list of IP addresses,
 // yielding a list of Addr objects. Known filters are nil, ipv4only,
 // and ipv6only. It returns every address when the filter is nil.
@@ -219,6 +220,7 @@ func splitHostZone(s string) (host, zone string) {
 	return
 }
 
+// JoinHostPort 格式化host和port
 // JoinHostPort combines host and port into a network address of the
 // form "host:port". If host contains a colon, as found in literal
 // IPv6 addresses, then JoinHostPort returns "[host]:port".
@@ -233,6 +235,7 @@ func JoinHostPort(host, port string) string {
 	return host + ":" + port
 }
 
+// internetAddrList 设置net和addr 返回ip层的地址对象
 // internetAddrList resolves addr, which may be a literal IP
 // address or a DNS name, and returns a list of internet protocol
 // family addresses. The result contains at least one address when
