@@ -213,6 +213,7 @@ func (h Header) writeSubset(w io.Writer, exclude map[string]bool, trace *httptra
 	return nil
 }
 
+// CanonicalHeaderKey 按照MIME规范化s
 // CanonicalHeaderKey returns the canonical format of the
 // header key s. The canonicalization converts the first
 // letter and any letter following a hyphen to upper case;

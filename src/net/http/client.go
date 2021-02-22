@@ -25,6 +25,7 @@ import (
 	"time"
 )
 
+// Client 处理具体http事务 管理cookie 传输 重定向 请求超时
 // A Client is an HTTP client. Its zero value (DefaultClient) is a
 // usable client that uses DefaultTransport.
 //
@@ -55,11 +56,13 @@ import (
 // If Jar is nil, the initial cookies are forwarded without change.
 //
 type Client struct {
+	// Transport 发送请求返回响应
 	// Transport specifies the mechanism by which individual
 	// HTTP requests are made.
 	// If nil, DefaultTransport is used.
 	Transport RoundTripper
 
+	// CheckRedirect 执行从定向
 	// CheckRedirect specifies the policy for handling redirects.
 	// If CheckRedirect is not nil, the client calls it before
 	// following an HTTP redirect. The arguments req and via are
@@ -76,6 +79,7 @@ type Client struct {
 	// which is to stop after 10 consecutive requests.
 	CheckRedirect func(req *Request, via []*Request) error
 
+	// Jar cookie管理
 	// Jar specifies the cookie jar.
 	//
 	// The Jar is used to insert relevant cookies into every
@@ -87,6 +91,7 @@ type Client struct {
 	// set on the Request.
 	Jar CookieJar
 
+	// Timeout 请求超时
 	// Timeout specifies a time limit for requests made by this
 	// Client. The timeout includes connection time, any
 	// redirects, and reading the response body. The timer remains
@@ -108,6 +113,7 @@ type Client struct {
 // DefaultClient is the default Client and is used by Get, Head, and Post.
 var DefaultClient = &Client{}
 
+// RoundTripper 执行单次http事务 并且必须并发安全 只具有传输功能不具有处理功能
 // RoundTripper is an interface representing the ability to execute a
 // single HTTP transaction, obtaining the Response for a given Request.
 //
@@ -165,6 +171,7 @@ func refererForURL(lastReq, newReq *url.URL) string {
 	return referer
 }
 
+// send 发送请求 接收响应
 // didTimeout is non-nil only if err != nil.
 func (c *Client) send(req *Request, deadline time.Time) (resp *Response, didTimeout func() bool, err error) {
 	if c.Jar != nil {
@@ -243,11 +250,13 @@ func send(ireq *Request, rt RoundTripper, deadline time.Time) (resp *Response, d
 		req.Header.Set("Authorization", "Basic "+basicAuth(username, password))
 	}
 
+	// 设置请求超时
 	if !deadline.IsZero() {
 		forkReq()
 	}
 	stopTimer, didTimeout := setRequestCancel(req, rt, deadline)
 
+	// 发送请求
 	resp, err = rt.RoundTrip(req)
 	if err != nil {
 		stopTimer()
@@ -293,6 +302,7 @@ func send(ireq *Request, rt RoundTripper, deadline time.Time) (resp *Response, d
 	return resp, nil, nil
 }
 
+// timeBeforeContextDeadline 检测ctx中的deadline是否超过t 如果ctx没有deadline 返回true
 // timeBeforeContextDeadline reports whether the non-zero Time t is
 // before ctx's deadline, if any. If ctx does not have a deadline, it
 // always reports true (the deadline is considered infinite).
@@ -304,6 +314,7 @@ func timeBeforeContextDeadline(t time.Time, ctx context.Context) bool {
 	return t.Before(d)
 }
 
+// knownRoundTripperImpl rt是否可以处理req
 // knownRoundTripperImpl reports whether rt is a RoundTripper that's
 // maintained by the Go team and known to implement the latest
 // optional semantics (notably contexts). The Request is used
@@ -331,6 +342,7 @@ func knownRoundTripperImpl(rt RoundTripper, req *Request) bool {
 	return false
 }
 
+// setRequestCancel 设置取消请求
 // setRequestCancel sets req.Cancel and adds a deadline context to req
 // if deadline is non-zero. The RoundTripper's type is used to
 // determine whether the legacy CancelRequest behavior should be used.
@@ -347,27 +359,34 @@ func setRequestCancel(req *Request, rt RoundTripper, deadline time.Time) (stopTi
 	knownTransport := knownRoundTripperImpl(rt, req)
 	oldCtx := req.Context()
 
+	// 如果没有取消函数 并且 可以传输
 	if req.Cancel == nil && knownTransport {
+		// 已经过期了则直接返回空操作
 		// If they already had a Request.Context that's
 		// expiring sooner, do nothing:
 		if !timeBeforeContextDeadline(deadline, oldCtx) {
 			return nop, alwaysFalse
 		}
 
+		// 返回
 		var cancelCtx func()
 		req.ctx, cancelCtx = context.WithDeadline(oldCtx, deadline)
 		return cancelCtx, func() bool { return time.Now().After(deadline) }
 	}
+
+	// 还有req.Cancel
 	initialReqCancel := req.Cancel // the user's original Request.Cancel, if any
 
 	var cancelCtx func()
 	if oldCtx := req.Context(); timeBeforeContextDeadline(deadline, oldCtx) {
+		// 如果没有过期获取取消函数
 		req.ctx, cancelCtx = context.WithDeadline(oldCtx, deadline)
 	}
 
 	cancel := make(chan struct{})
 	req.Cancel = cancel
 
+	// doCancel 执行取消请求
 	doCancel := func() {
 		// The second way in the func comment above:
 		close(cancel)
@@ -379,6 +398,7 @@ func setRequestCancel(req *Request, rt RoundTripper, deadline time.Time) (stopTi
 		}
 	}
 
+	// stopTimer 返回的取消函数
 	stopTimerCh := make(chan struct{})
 	var once sync.Once
 	stopTimer = func() {
@@ -395,13 +415,13 @@ func setRequestCancel(req *Request, rt RoundTripper, deadline time.Time) (stopTi
 
 	go func() {
 		select {
-		case <-initialReqCancel:
+		case <-initialReqCancel: // 调用req的cancel函数
 			doCancel()
 			timer.Stop()
-		case <-timer.C:
+		case <-timer.C: // 自然超时
 			timedOut.setTrue()
 			doCancel()
-		case <-stopTimerCh:
+		case <-stopTimerCh: // 外部调用取消函数
 			timer.Stop()
 		}
 	}()
@@ -409,6 +429,7 @@ func setRequestCancel(req *Request, rt RoundTripper, deadline time.Time) (stopTi
 	return stopTimer, timedOut.isSet
 }
 
+// basicAuth 将用户密码使用base64编码
 // See 2 (end of page 4) https://www.ietf.org/rfc/rfc2617.txt
 // "To receive authorization, the client sends the userid and password,
 // separated by a single colon (":") character, within a base64
@@ -474,6 +495,7 @@ func (c *Client) Get(url string) (resp *Response, err error) {
 	return c.Do(req)
 }
 
+// alwaysFalse 函数false
 func alwaysFalse() bool { return false }
 
 // ErrUseLastResponse can be returned by Client.CheckRedirect hooks to
@@ -482,6 +504,7 @@ func alwaysFalse() bool { return false }
 // unclosed.
 var ErrUseLastResponse = errors.New("net/http: use last response")
 
+// checkRedirect 检查重定向
 // checkRedirect calls either the user's configured CheckRedirect
 // function, or the default.
 func (c *Client) checkRedirect(req *Request, via []*Request) error {
@@ -492,14 +515,15 @@ func (c *Client) checkRedirect(req *Request, via []*Request) error {
 	return fn(req, via)
 }
 
+// redirectBehavior 处理重定向
 // redirectBehavior describes what should happen when the
 // client encounters a 3xx status code from the server
 func redirectBehavior(reqMethod string, resp *Response, ireq *Request) (redirectMethod string, shouldRedirect, includeBody bool) {
 	switch resp.StatusCode {
-	case 301, 302, 303:
-		redirectMethod = reqMethod
-		shouldRedirect = true
-		includeBody = false
+	case 301, 302, 303: // 重定向使用GET
+		redirectMethod = reqMethod // 重定向方法
+		shouldRedirect = true      // 是否重定向
+		includeBody = false        // 是否包含body数据
 
 		// RFC 2616 allowed automatic redirection only with GET and
 		// HEAD requests. RFC 7231 lifts this restriction, but we still
@@ -524,6 +548,7 @@ func redirectBehavior(reqMethod string, resp *Response, ireq *Request) (redirect
 			shouldRedirect = false
 			break
 		}
+		// 如果有body存在数据则停止重定向
 		if ireq.GetBody == nil && ireq.outgoingLength() != 0 {
 			// We had a request body, and 307/308 require
 			// re-sending it, but GetBody is not defined. So just
@@ -535,6 +560,7 @@ func redirectBehavior(reqMethod string, resp *Response, ireq *Request) (redirect
 	return redirectMethod, shouldRedirect, includeBody
 }
 
+// urlErrorOp 格式化method 首字母不变后面均转为小写
 // urlErrorOp returns the (*url.Error).Op value to use for the
 // provided (*Request).Method value.
 func urlErrorOp(method string) string {
@@ -610,6 +636,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 		redirectMethod string
 		includeBody    bool
 	)
+	// uerr 封装 err 为 url.Error 错误
 	uerr := func(err error) error {
 		// the body may have been closed already by c.send()
 		if !reqBodyClosed {
@@ -630,7 +657,8 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 	for {
 		// For all but the first request, create the next
 		// request hop and replace req.
-		if len(reqs) > 0 {
+		if len(reqs) > 0 { // 重定向执行逻辑
+			// 获取重定向地址
 			loc := resp.Header.Get("Location")
 			if loc == "" {
 				resp.closeBody()
@@ -657,8 +685,8 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 				URL:      u,
 				Header:   make(Header),
 				Host:     host,
-				Cancel:   ireq.Cancel,
-				ctx:      ireq.ctx,
+				Cancel:   ireq.Cancel, // 使用初始req的取消函数
+				ctx:      ireq.ctx,    // 使用初始req的ctx
 			}
 			if includeBody && ireq.GetBody != nil {
 				req.Body, err = ireq.GetBody()
@@ -696,7 +724,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 			// fails, the Transport won't reuse it anyway.
 			const maxBodySlurpSize = 2 << 10
 			if resp.ContentLength == -1 || resp.ContentLength <= maxBodySlurpSize {
-				io.CopyN(io.Discard, resp.Body, maxBodySlurpSize)
+				io.CopyN(io.Discard, resp.Body, maxBodySlurpSize) // 丢弃响应body
 			}
 			resp.Body.Close()
 
@@ -711,9 +739,10 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 			}
 		}
 
-		reqs = append(reqs, req)
+		reqs = append(reqs, req) // 追加请求列表
 		var err error
 		var didTimeout func() bool
+		// 发送请求
 		if resp, didTimeout, err = c.send(req, deadline); err != nil {
 			// c.send() always closes req.Body
 			reqBodyClosed = true
@@ -727,6 +756,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 			return nil, uerr(err)
 		}
 
+		// 判断是否需要重定向
 		var shouldRedirect bool
 		redirectMethod, shouldRedirect, includeBody = redirectBehavior(req.Method, resp, reqs[0])
 		if !shouldRedirect {
@@ -737,6 +767,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 	}
 }
 
+// makeHeadersCopier 复制ireq
 // makeHeadersCopier makes a function that copies headers from the
 // initial Request, ireq. For every redirect, this function must be called
 // so that it can copy headers into the upcoming Request.
@@ -747,6 +778,7 @@ func (c *Client) makeHeadersCopier(ireq *Request) func(*Request) {
 		ireqhdr  = cloneOrMakeHeader(ireq.Header)
 		icookies map[string][]*Cookie
 	)
+	// 填充cookie
 	if c.Jar != nil && ireq.Header.Get("Cookie") != "" {
 		icookies = make(map[string][]*Cookie)
 		for _, c := range ireq.Cookies() {
@@ -756,6 +788,11 @@ func (c *Client) makeHeadersCopier(ireq *Request) func(*Request) {
 
 	preq := ireq // The previous request
 	return func(req *Request) {
+		// 把cookie和header填充进去
+		// 如果存在Jar，并且通过请求标头提供了一些初始Cookie，那么在进行重定向时，
+		// 我们可能需要更改初始Cookie，因为每次重定向最终都可能会修改先前存在的Cookie。
+		// 由于已经在请求标头中设置的cookie不包含有关原始域和路径的信息，因此以下逻辑假定无论域或路径如何，
+		// 任何新设置的cookie都会覆盖原始cookie。
 		// If Jar is present and there was some initial cookies provided
 		// via the request header, then we may need to alter the initial
 		// cookies as we follow redirects since each redirect may end up
@@ -789,9 +826,11 @@ func (c *Client) makeHeadersCopier(ireq *Request) func(*Request) {
 			}
 		}
 
+		// 复制请求Header
 		// Copy the initial request's Header values
 		// (at least the safe ones).
 		for k, vv := range ireqhdr {
+			// 如果req.URL是preq.URL子域名则将header添加进去
 			if shouldCopyHeaderOnRedirect(k, preq.URL, req.URL) {
 				req.Header[k] = vv
 			}
@@ -801,6 +840,7 @@ func (c *Client) makeHeadersCopier(ireq *Request) func(*Request) {
 	}
 }
 
+// defaultCheckRedirect 默认检测重定向函数 限制重定向次数
 func defaultCheckRedirect(req *Request, via []*Request) error {
 	if len(via) >= 10 {
 		return errors.New("stopped after 10 redirects")
@@ -909,6 +949,7 @@ func (c *Client) Head(url string) (resp *Response, err error) {
 	return c.Do(req)
 }
 
+// CloseIdleConnections 关闭空闲连接
 // CloseIdleConnections closes any connections on its Transport which
 // were previously connected from previous requests but are now
 // sitting idle in a "keep-alive" state. It does not interrupt any
@@ -925,6 +966,9 @@ func (c *Client) CloseIdleConnections() {
 	}
 }
 
+// cancelTimerBody 封装了 rc 多了两个特性
+// 1) 读取错误或关闭时，将调用停止函数
+// 2) 读取失败时，如果reqDidTimeout为true，则将错误包装并标记为net.Error，达到超时
 // cancelTimerBody is an io.ReadCloser that wraps rc with two features:
 // 1) on Read error or close, the stop func is called.
 // 2) On Read failure, if reqDidTimeout is true, the error is wrapped and
@@ -959,6 +1003,7 @@ func (b *cancelTimerBody) Close() error {
 	return err
 }
 
+// shouldCopyHeaderOnRedirect 通过headerKey字段判断dest是否是initial的子域名
 func shouldCopyHeaderOnRedirect(headerKey string, initial, dest *url.URL) bool {
 	switch CanonicalHeaderKey(headerKey) {
 	case "Authorization", "Www-Authenticate", "Cookie", "Cookie2":
@@ -983,6 +1028,7 @@ func shouldCopyHeaderOnRedirect(headerKey string, initial, dest *url.URL) bool {
 	return true
 }
 
+// isDomainOrSubdomain sub是否能是parent的子域名
 // isDomainOrSubdomain reports whether sub is a subdomain (or exact
 // match) of the parent domain.
 //
@@ -1000,6 +1046,7 @@ func isDomainOrSubdomain(sub, parent string) bool {
 	return sub[len(sub)-len(parent)-1] == '.'
 }
 
+// stripPassword 掩盖密码
 func stripPassword(u *url.URL) string {
 	_, passSet := u.User.Password()
 	if passSet {

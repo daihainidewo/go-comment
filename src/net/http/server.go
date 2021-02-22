@@ -522,6 +522,7 @@ func (w *response) finalTrailers() Header {
 	return t
 }
 
+// atomicBool 原子bool
 type atomicBool int32
 
 func (b *atomicBool) isSet() bool { return atomic.LoadInt32((*int32)(b)) != 0 }

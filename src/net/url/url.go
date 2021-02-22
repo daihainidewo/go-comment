@@ -337,6 +337,7 @@ func escape(s string, mode encoding) string {
 	return string(t)
 }
 
+// URL url单元
 // A URL represents a parsed URL (technically, a URI reference).
 //
 // The general form represented is:
@@ -404,6 +405,7 @@ func (u *Userinfo) Username() string {
 	return u.username
 }
 
+// Password 返回密码
 // Password returns the password in case it is set, and whether it is set.
 func (u *Userinfo) Password() (string, bool) {
 	if u == nil {

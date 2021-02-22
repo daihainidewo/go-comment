@@ -2588,7 +2588,7 @@ func stoplockedm() {
 	if _g_.m.p != 0 {
 		// Schedule another M to run this p.
 		_p_ := releasep() // 解绑p和m
-		handoffp(_p_)     // 让_p_找其他事干
+		handofpro'c'fp(_p_)     // 让_p_找其他事干
 	}
 	incidlelocked(1) // 增加锁定状态
 	// Wait until another thread schedules lockedg again.
@@ -6464,7 +6464,7 @@ func gcd(a, b uint32) uint32 {
 // initTask 标记对init的初始化，
 // state 表示初始化状态
 // ndeps 表示有init函数的依赖包数
-// nfns 表示每个包的init函数
+// nfns 表示每个包的init函数个数
 // 数组后是当前的init函数
 // An initTask represents the set of initializations that need to be done for a package.
 // Keep in sync with ../../test/initempty.go:initTask
@@ -6475,6 +6475,9 @@ type initTask struct {
 	nfns  uintptr
 	// followed by ndeps instances of an *initTask, one per package depended on
 	// followed by nfns pcs, one per init function to run
+
+	// node  []*initTask // init子节点函数列表
+	// inits []func() 	 // init函数指针
 }
 
 // inittrace stores statistics for init functions which are

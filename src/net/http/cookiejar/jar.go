@@ -84,6 +84,7 @@ func New(o *Options) (*Jar, error) {
 	return jar, nil
 }
 
+// entry cookie 实体内容
 // entry is the internal representation of a cookie.
 //
 // This struct type is not used outside of this package per se, but the exported

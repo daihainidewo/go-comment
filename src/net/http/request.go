@@ -1421,6 +1421,7 @@ func (r *Request) isReplayable() bool {
 	return false
 }
 
+// outgoingLength 返回content length 如果没有但body非空 用-1表示未知
 // outgoingLength reports the Content-Length of this outgoing (Client) request.
 // It maps 0 into -1 (unknown) when the Body is non-nil.
 func (r *Request) outgoingLength() int64 {
@@ -1448,6 +1449,7 @@ func requestMethodUsuallyLacksBody(method string) bool {
 	return false
 }
 
+// requiresHTTP1 该r是否能通过http1协议发送
 // requiresHTTP1 reports whether this request requires being sent on
 // an HTTP/1 connection.
 func (r *Request) requiresHTTP1() bool {

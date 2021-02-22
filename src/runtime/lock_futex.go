@@ -33,6 +33,7 @@ const (
 	passive_spin    = 1
 )
 
+// key32 将 *uintptr 强转成 *uint32
 // Possible lock states are mutex_unlocked, mutex_locked and mutex_sleeping.
 // mutex_sleeping means that there is presumably at least one sleeping thread.
 // Note that there can be spinning threads during all states - they do not

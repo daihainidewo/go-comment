@@ -787,7 +787,7 @@ type schedt struct {
 
 	// freem is the list of m's waiting to be freed when their
 	// m.exited is set. Linked through m.freelink.
-	freem *m // 空闲的m列表
+	freem *m // 释放的m列表
 
 	gcwaiting  uint32 // gc is waiting to run
 	stopwait   int32

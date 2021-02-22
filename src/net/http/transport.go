@@ -474,6 +474,7 @@ func (tr *transportRequest) setError(err error) {
 	tr.mu.Unlock()
 }
 
+// useRegisteredProtocol req是不是预定的传输的协议 http1协议的安全协议
 // useRegisteredProtocol reports whether an alternate protocol (as registered
 // with Transport.RegisterProtocol) should be respected for this request.
 func (t *Transport) useRegisteredProtocol(req *Request) bool {
@@ -487,6 +488,7 @@ func (t *Transport) useRegisteredProtocol(req *Request) bool {
 	return true
 }
 
+// alternateRoundTripper 返回备用req的RoundTripper
 // alternateRoundTripper returns the alternate RoundTripper to use
 // for this request if the Request's URL scheme requires one,
 // or nil for the normal case of using the Transport.
@@ -2507,6 +2509,7 @@ var errTimeout error = &httpError{err: "net/http: timeout awaiting response head
 var errRequestCanceled = http2errRequestCanceled
 var errRequestCanceledConn = errors.New("net/http: request canceled while waiting for connection") // TODO: unify?
 
+// nop 空操作
 func nop() {}
 
 // testHooks. Always non-nil.
@@ -2715,6 +2718,7 @@ var portMap = map[string]string{
 	"socks5": "1080",
 }
 
+// canonicalAddr 格式化url host后带port
 // canonicalAddr returns url.Host but always with a ":port" suffix
 func canonicalAddr(url *url.URL) string {
 	addr := url.Hostname()

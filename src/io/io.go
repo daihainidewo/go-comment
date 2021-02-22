@@ -566,6 +566,7 @@ func (t *teeReader) Read(p []byte) (n int, err error) {
 	return
 }
 
+// Discard 用于操作成功的但不做任何事的 Writer
 // Discard is an Writer on which all Write calls succeed
 // without doing anything.
 var Discard Writer = discard{}
@@ -613,6 +614,7 @@ func NopCloser(r Reader) ReadCloser {
 	return nopCloser{r}
 }
 
+// nopCloser 给 Reader 附加 Closer
 type nopCloser struct {
 	Reader
 }
