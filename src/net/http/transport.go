@@ -105,7 +105,7 @@ type Transport struct {
 	altProto atomic.Value // of nil or map[string]RoundTripper, key is URI scheme
 
 	connsPerHostMu   sync.Mutex
-	connsPerHost     map[connectMethodKey]int // 每个host的链接数
+	connsPerHost     map[connectMethodKey]int           // 每个host的链接数
 	connsPerHostWait map[connectMethodKey]wantConnQueue // waiting getConns
 
 	// Proxy 获取代理
@@ -1915,42 +1915,44 @@ type persistConn struct {
 	alt RoundTripper // 如果为空 则其他字段无用
 
 	t         *Transport
-	cacheKey  connectMethodKey // 连接方法的key
-	conn      net.Conn // 连接
+	cacheKey  connectMethodKey     // 连接方法的key
+	conn      net.Conn             // 连接
 	tlsState  *tls.ConnectionState // TLS 连接状态
-	br        *bufio.Reader       // from conn
-	bw        *bufio.Writer       // to conn
-	nwrite    int64               // bytes written
-	reqch     chan requestAndChan // written by roundTrip; read by readLoop
-	writech   chan writeRequest   // written by roundTrip; read by writeLoop
-	closech   chan struct{}       // closed when conn closed
-	isProxy   bool
-	sawEOF    bool  // whether we've seen EOF from conn; owned by readLoop
-	readLimit int64 // bytes allowed to be read; owned by readLoop
+	br        *bufio.Reader        // from conn
+	bw        *bufio.Writer        // to conn
+	nwrite    int64                // bytes written
+	reqch     chan requestAndChan  // written by roundTrip; read by readLoop
+	writech   chan writeRequest    // written by roundTrip; read by writeLoop
+	closech   chan struct{}        // closed when conn closed
+	isProxy   bool                 // 是否使用代理
+	sawEOF    bool                 // 是否EOF whether we've seen EOF from conn; owned by readLoop
+	readLimit int64                // 最多允许读取多少字节 bytes allowed to be read; owned by readLoop
 	// writeErrCh passes the request write error (usually nil)
 	// from the writeLoop goroutine to the readLoop which passes
 	// it off to the res.Body reader, which then uses it to decide
 	// whether or not a connection can be reused. Issue 7569.
 	writeErrCh chan error
 
-	writeLoopDone chan struct{} // closed when write loop ends
+	writeLoopDone chan struct{} // 写循环结束时关闭 closed when write loop ends
 
 	// Both guarded by Transport.idleMu:
-	idleAt    time.Time   // time it last become idle
-	idleTimer *time.Timer // holding an AfterFunc to close it
+	idleAt    time.Time   // 变成空闲的时间 time it last become idle
+	idleTimer *time.Timer // 有 time.AfterFunc 生成的关闭timer holding an AfterFunc to close it
 
 	mu                   sync.Mutex // guards following fields
-	numExpectedResponses int
-	closed               error // set non-nil when conn is closed, before closech is closed
-	canceledErr          error // set non-nil if conn is canceled
-	broken               bool  // an error has happened on this connection; marked broken so it's not reused.
-	reused               bool  // whether conn has had successful request/response and is being reused.
+	numExpectedResponses int   // 预期的响应数
+	closed               error // 当连接关闭时非空 set non-nil when conn is closed, before closech is closed
+	canceledErr          error // 如果连接被取消了非空 set non-nil if conn is canceled
+	broken               bool  // 连接发生错误 导致连接不可复用 an error has happened on this connection; marked broken so it's not reused.
+	reused               bool  // 连接成功完成请求响应 可以复用 whether conn has had successful request/response and is being reused.
+	// mutateHeaderFunc 在每次发出请求前修改 Header
 	// mutateHeaderFunc is an optional func to modify extra
 	// headers on each outbound request before it's written. (the
 	// original Request given to RoundTrip is not modified)
 	mutateHeaderFunc func(Header)
 }
 
+// maxHeaderResponseSize 最大响应头 默认10M
 func (pc *persistConn) maxHeaderResponseSize() int64 {
 	if v := pc.t.MaxResponseHeaderBytes; v != 0 {
 		return v
@@ -1958,6 +1960,7 @@ func (pc *persistConn) maxHeaderResponseSize() int64 {
 	return 10 << 20 // conservative default; same as http2
 }
 
+// Read 从连接中读取数据
 func (pc *persistConn) Read(p []byte) (n int, err error) {
 	if pc.readLimit <= 0 {
 		return 0, fmt.Errorf("read limit of %d bytes exhausted", pc.maxHeaderResponseSize())
@@ -1969,7 +1972,7 @@ func (pc *persistConn) Read(p []byte) (n int, err error) {
 	if err == io.EOF {
 		pc.sawEOF = true
 	}
-	pc.readLimit -= int64(n)
+	pc.readLimit -= int64(n) // 最多读取readLimit个
 	return
 }
 
