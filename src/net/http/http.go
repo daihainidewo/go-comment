@@ -16,6 +16,7 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
+// incomparable 不可比较类型
 // incomparable is a zero-width, non-comparable type. Adding it to a struct
 // makes that struct also non-comparable, and generally doesn't add
 // any size (as long as it's first).
@@ -106,6 +107,7 @@ func hexEscapeNonASCII(s string) string {
 	return string(b)
 }
 
+// NoBody 用于空的body
 // NoBody is an io.ReadCloser with no bytes. Read always returns EOF
 // and Close always returns nil. It can be used in an outgoing client
 // request to explicitly signal that a request has zero bytes.

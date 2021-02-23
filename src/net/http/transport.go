@@ -40,16 +40,16 @@ import (
 // as directed by the $HTTP_PROXY and $NO_PROXY (or $http_proxy and
 // $no_proxy) environment variables.
 var DefaultTransport RoundTripper = &Transport{
-	Proxy: ProxyFromEnvironment,
+	Proxy: ProxyFromEnvironment, // http代理
 	DialContext: (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).DialContext,
-	ForceAttemptHTTP2:     true,
-	MaxIdleConns:          100,
-	IdleConnTimeout:       90 * time.Second,
-	TLSHandshakeTimeout:   10 * time.Second,
-	ExpectContinueTimeout: 1 * time.Second,
+		Timeout:   30 * time.Second, // 拨号超时
+		KeepAlive: 30 * time.Second, // 心跳
+	}).DialContext,                          // 拨号函数
+	ForceAttemptHTTP2:     true,             // 优先使用http2
+	MaxIdleConns:          100,              // 最大空闲连接
+	IdleConnTimeout:       90 * time.Second, // 空闲连接超时
+	TLSHandshakeTimeout:   10 * time.Second, // TLS握手超时
+	ExpectContinueTimeout: 1 * time.Second,  // 连接升级超时
 }
 
 // DefaultMaxIdleConnsPerHost is the default value of Transport's
@@ -92,22 +92,23 @@ const DefaultMaxIdleConnsPerHost = 2
 // request is treated as idempotent but the header is not sent on the
 // wire.
 type Transport struct {
-	idleMu       sync.Mutex
-	closeIdle    bool                                // user has requested to close all idle conns
-	idleConn     map[connectMethodKey][]*persistConn // most recently used at end
-	idleConnWait map[connectMethodKey]wantConnQueue  // waiting getConns
-	idleLRU      connLRU
+	idleMu       sync.Mutex                          // 空闲连接池锁
+	closeIdle    bool                                // 用户关闭所有空闲连接 user has requested to close all idle conns
+	idleConn     map[connectMethodKey][]*persistConn // 最近使用的链接 most recently used at end
+	idleConnWait map[connectMethodKey]wantConnQueue  // 等待获取连接 waiting getConns
+	idleLRU      connLRU                             // lru 淘汰
 
 	reqMu       sync.Mutex
-	reqCanceler map[cancelKey]func(error)
+	reqCanceler map[cancelKey]func(error) // 请求对应的cancel函数
 
 	altMu    sync.Mutex   // guards changing altProto only
 	altProto atomic.Value // of nil or map[string]RoundTripper, key is URI scheme
 
 	connsPerHostMu   sync.Mutex
-	connsPerHost     map[connectMethodKey]int
+	connsPerHost     map[connectMethodKey]int // 每个host的链接数
 	connsPerHostWait map[connectMethodKey]wantConnQueue // waiting getConns
 
+	// Proxy 获取代理
 	// Proxy specifies a function to return a proxy for a given
 	// Request. If the function returns a non-nil error, the
 	// request is aborted with the provided error.
@@ -119,6 +120,7 @@ type Transport struct {
 	// If Proxy is nil or returns a nil *URL, no proxy is used.
 	Proxy func(*Request) (*url.URL, error)
 
+	// DialContext 有context的拨号函数
 	// DialContext specifies the dial function for creating unencrypted TCP connections.
 	// If DialContext is nil (and the deprecated Dial below is also nil),
 	// then the transport dials using package net.
@@ -129,6 +131,7 @@ type Transport struct {
 	// becomes idle before the later DialContext completes.
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
+	// Dial 拨号函数
 	// Dial specifies the dial function for creating unencrypted TCP connections.
 	//
 	// Dial runs concurrently with calls to RoundTrip.
@@ -141,6 +144,7 @@ type Transport struct {
 	// If both are set, DialContext takes priority.
 	Dial func(network, addr string) (net.Conn, error)
 
+	// DialTLSContext 有context的TLS拨号
 	// DialTLSContext specifies an optional dial function for creating
 	// TLS connections for non-proxied HTTPS requests.
 	//
@@ -153,6 +157,7 @@ type Transport struct {
 	// past the TLS handshake.
 	DialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
+	// DialTLSContext TLS拨号
 	// DialTLS specifies an optional dial function for creating
 	// TLS connections for non-proxied HTTPS requests.
 	//
@@ -161,16 +166,19 @@ type Transport struct {
 	// If both are set, DialTLSContext takes priority.
 	DialTLS func(network, addr string) (net.Conn, error)
 
+	// TLSClientConfig TLS配置
 	// TLSClientConfig specifies the TLS configuration to use with
 	// tls.Client.
 	// If nil, the default configuration is used.
 	// If non-nil, HTTP/2 support may not be enabled by default.
 	TLSClientConfig *tls.Config
 
+	// TLSHandshakeTimeout TLS握手超时
 	// TLSHandshakeTimeout specifies the maximum amount of time waiting to
 	// wait for a TLS handshake. Zero means no timeout.
 	TLSHandshakeTimeout time.Duration
 
+	// DisableKeepAlives 是否关闭keep-alives
 	// DisableKeepAlives, if true, disables HTTP keep-alives and
 	// will only use the connection to the server for a single
 	// HTTP request.
@@ -178,6 +186,7 @@ type Transport struct {
 	// This is unrelated to the similarly named TCP keep-alives.
 	DisableKeepAlives bool
 
+	// DisableCompression 是否要gzip压缩
 	// DisableCompression, if true, prevents the Transport from
 	// requesting compression with an "Accept-Encoding: gzip"
 	// request header when the Request contains no existing
@@ -188,15 +197,18 @@ type Transport struct {
 	// uncompressed.
 	DisableCompression bool
 
+	// MaxIdleConns 最大空闲连接数
 	// MaxIdleConns controls the maximum number of idle (keep-alive)
 	// connections across all hosts. Zero means no limit.
 	MaxIdleConns int
 
+	// MaxIdleConnsPerHost 每个host最大空闲连接数
 	// MaxIdleConnsPerHost, if non-zero, controls the maximum idle
 	// (keep-alive) connections to keep per-host. If zero,
 	// DefaultMaxIdleConnsPerHost is used.
 	MaxIdleConnsPerHost int
 
+	// MaxConnsPerHost 每个host最大连接数
 	// MaxConnsPerHost optionally limits the total number of
 	// connections per host, including connections in the dialing,
 	// active, and idle states. On limit violation, dials will block.
@@ -204,18 +216,21 @@ type Transport struct {
 	// Zero means no limit.
 	MaxConnsPerHost int
 
+	// IdleConnTimeout 空闲连接最大时间
 	// IdleConnTimeout is the maximum amount of time an idle
 	// (keep-alive) connection will remain idle before closing
 	// itself.
 	// Zero means no limit.
 	IdleConnTimeout time.Duration
 
+	// ResponseHeaderTimeout 发送请求后收到相应的header超时
 	// ResponseHeaderTimeout, if non-zero, specifies the amount of
 	// time to wait for a server's response headers after fully
 	// writing the request (including its body, if any). This
 	// time does not include the time to read the response body.
 	ResponseHeaderTimeout time.Duration
 
+	// ExpectContinueTimeout 期望升级http的超时
 	// ExpectContinueTimeout, if non-zero, specifies the amount of
 	// time to wait for a server's first response headers after fully
 	// writing the request headers if the request has an
@@ -237,11 +252,13 @@ type Transport struct {
 	// automatically.
 	TLSNextProto map[string]func(authority string, c *tls.Conn) RoundTripper
 
+	// ProxyConnectHeader 在向http代理中发送CONNECT请求中发送指定 Header
 	// ProxyConnectHeader optionally specifies headers to send to
 	// proxies during CONNECT requests.
 	// To set the header dynamically, see GetProxyConnectHeader.
 	ProxyConnectHeader Header
 
+	// GetProxyConnectHeader 通过函数形式获取http代理 Header
 	// GetProxyConnectHeader optionally specifies a func to return
 	// headers to send to proxyURL during a CONNECT request to the
 	// ip:port target.
@@ -251,6 +268,7 @@ type Transport struct {
 	// ignored.
 	GetProxyConnectHeader func(ctx context.Context, proxyURL *url.URL, target string) (Header, error)
 
+	// MaxResponseHeaderBytes 最大响应header字节数限制 0表示使用默认限制
 	// MaxResponseHeaderBytes specifies a limit on how many
 	// response bytes are allowed in the server's response
 	// header.
@@ -258,11 +276,13 @@ type Transport struct {
 	// Zero means to use a default limit.
 	MaxResponseHeaderBytes int64
 
+	// WriteBufferSize 写buf限制 0表示默认4K
 	// WriteBufferSize specifies the size of the write buffer used
 	// when writing to the transport.
 	// If zero, a default (currently 4KB) is used.
 	WriteBufferSize int
 
+	// ReadBufferSize 读buf限制 0表示默认4K
 	// ReadBufferSize specifies the size of the read buffer used
 	// when reading from the transport.
 	// If zero, a default (currently 4KB) is used.
@@ -274,6 +294,7 @@ type Transport struct {
 	h2transport        h2Transport // non-nil if http2 wired up
 	tlsNextProtoWasNil bool        // whether TLSNextProto was nil when the Once fired
 
+	// ForceAttemptHTTP2 强制尝试使用http2
 	// ForceAttemptHTTP2 controls whether HTTP/2 is enabled when a non-zero
 	// Dial, DialTLS, or DialContext func or TLSClientConfig is provided.
 	// By default, use of any those fields conservatively disables HTTP/2.
@@ -282,6 +303,8 @@ type Transport struct {
 	ForceAttemptHTTP2 bool
 }
 
+// cancelKey 请求canceler map 的元素
+// 表示不用新建的链接而是用原有链接
 // A cancelKey is the key of the reqCanceler map.
 // We wrap the *Request in this type since we want to use the original request,
 // not any transient one created by roundTrip.
@@ -351,6 +374,7 @@ type h2Transport interface {
 	CloseIdleConnections()
 }
 
+// hasCustomTLSDialer 是否有自定义的TLS拨号者
 func (t *Transport) hasCustomTLSDialer() bool {
 	return t.DialTLS != nil || t.DialTLSContext != nil
 }
@@ -418,6 +442,7 @@ func (t *Transport) onceSetNextProtoDefaults() {
 	}
 }
 
+// ProxyFromEnvironment 返回环境变量设置的http代理
 // ProxyFromEnvironment returns the URL of the proxy to use for a
 // given request, as indicated by the environment variables
 // HTTP_PROXY, HTTPS_PROXY and NO_PROXY (or the lowercase versions
@@ -438,6 +463,7 @@ func ProxyFromEnvironment(req *Request) (*url.URL, error) {
 	return envProxyFunc()(req.URL)
 }
 
+// ProxyURL 生成一个返回fixedURL的函数
 // ProxyURL returns a proxy function (for use in a Transport)
 // that always returns the same URL.
 func ProxyURL(fixedURL *url.URL) func(*Request) (*url.URL, error) {
@@ -446,17 +472,18 @@ func ProxyURL(fixedURL *url.URL) func(*Request) (*url.URL, error) {
 	}
 }
 
+// transportRequest 封装源请求 添加额外 Header 并可加上 httptrace
 // transportRequest is a wrapper around a *Request that adds
 // optional extra headers to write and stores any error to return
 // from roundTrip.
 type transportRequest struct {
-	*Request                         // original request, not to be mutated
-	extra     Header                 // extra headers to write, or nil
-	trace     *httptrace.ClientTrace // optional
-	cancelKey cancelKey
+	*Request                         // 原始请求 original request, not to be mutated
+	extra     Header                 // 额外扩展 Header extra headers to write, or nil
+	trace     *httptrace.ClientTrace // http trace optional
+	cancelKey cancelKey              // Request
 
-	mu  sync.Mutex // guards err
-	err error      // first setError value for mapRoundTripError to consider
+	mu  sync.Mutex // 保护 error guards err
+	err error      // 第一个错误 first setError value for mapRoundTripError to consider
 }
 
 func (tr *transportRequest) extraHeaders() Header {
@@ -488,11 +515,12 @@ func (t *Transport) useRegisteredProtocol(req *Request) bool {
 	return true
 }
 
-// alternateRoundTripper 返回备用req的RoundTripper
+// alternateRoundTripper 返回req的RoundTripper
 // alternateRoundTripper returns the alternate RoundTripper to use
 // for this request if the Request's URL scheme requires one,
 // or nil for the normal case of using the Transport.
 func (t *Transport) alternateRoundTripper(req *Request) RoundTripper {
+	// 如果是http1的tls协议直接返回
 	if !t.useRegisteredProtocol(req) {
 		return nil
 	}
@@ -500,6 +528,7 @@ func (t *Transport) alternateRoundTripper(req *Request) RoundTripper {
 	return altProto[req.URL.Scheme]
 }
 
+// roundTrip 发送请求获取响应
 // roundTrip implements a RoundTripper over HTTP.
 func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	t.nextProtoOnce.Do(t.onceSetNextProtoDefaults)
@@ -516,7 +545,7 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	}
 	scheme := req.URL.Scheme
 	isHTTP := scheme == "http" || scheme == "https"
-	if isHTTP {
+	if isHTTP { // 验证http请求header的kv字段合法性
 		for k, vv := range req.Header {
 			if !httpguts.ValidHeaderFieldName(k) {
 				req.closeBody()
@@ -532,15 +561,17 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	}
 
 	origReq := req
-	cancelKey := cancelKey{origReq}
+	cancelKey := cancelKey{origReq} // 封装源请求
 	req = setupRewindBody(req)
 
 	if altRT := t.alternateRoundTripper(req); altRT != nil {
+		// 使用备用传输
 		if resp, err := altRT.RoundTrip(req); err != ErrSkipAltProtocol {
+			// 成功就返回
 			return resp, err
 		}
 		var err error
-		req, err = rewindBody(req)
+		req, err = rewindBody(req) // 封装 req 成 readTrackingBody
 		if err != nil {
 			return nil, err
 		}
@@ -560,7 +591,7 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-ctx.Done(): // 取消请求
 			req.closeBody()
 			return nil, ctx.Err()
 		default:
@@ -623,6 +654,7 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 
 var errCannotRewind = errors.New("net/http: cannot rewind body after connection loss")
 
+// readTrackingBody 标记是否读过和关闭的body
 type readTrackingBody struct {
 	io.ReadCloser
 	didRead  bool
@@ -639,6 +671,7 @@ func (r *readTrackingBody) Close() error {
 	return r.ReadCloser.Close()
 }
 
+// setupRewindBody 将一个请求升级成 readTrackingBody 请求
 // setupRewindBody returns a new request with a custom body wrapper
 // that can report whether the body needs rewinding.
 // This lets rewindBody avoid an error result when the request
@@ -652,11 +685,13 @@ func setupRewindBody(req *Request) *Request {
 	return &newReq
 }
 
+// rewindBody 将有body的req封装成 readTrackingBody
 // rewindBody returns a new request with the body rewound.
 // It returns req unmodified if the body does not need rewinding.
 // rewindBody takes care of closing req.Body when appropriate
 // (in all cases except when rewindBody returns req unmodified).
 func rewindBody(req *Request) (rewound *Request, err error) {
+	// 空Body或者已经是使用过的readTrackingBody
 	if req.Body == nil || req.Body == NoBody || (!req.Body.(*readTrackingBody).didRead && !req.Body.(*readTrackingBody).didClose) {
 		return req, nil // nothing to rewind
 	}
@@ -666,7 +701,7 @@ func rewindBody(req *Request) (rewound *Request, err error) {
 	if req.GetBody == nil {
 		return nil, errCannotRewind
 	}
-	body, err := req.GetBody()
+	body, err := req.GetBody() // 获取原始的Body
 	if err != nil {
 		return nil, err
 	}
@@ -809,6 +844,7 @@ var (
 	envProxyFuncValue func(*url.URL) (*url.URL, error)
 )
 
+// envProxyFunc 获取http代理环境变量
 // defaultProxyConfig returns a ProxyConfig value looked up
 // from the environment. This mitigates expensive lookups
 // on some platforms (e.g. Windows).
@@ -825,6 +861,7 @@ func resetProxyConfig() {
 	envProxyFuncValue = nil
 }
 
+// connectMethodForRequest 返回 connectMethod 可用于格式化生成key
 func (t *Transport) connectMethodForRequest(treq *transportRequest) (cm connectMethod, err error) {
 	cm.targetScheme = treq.URL.Scheme
 	cm.targetAddr = canonicalAddr(treq.URL)
@@ -1173,6 +1210,8 @@ func (t *Transport) dial(ctx context.Context, network, addr string) (net.Conn, e
 	return zeroDialer.DialContext(ctx, network, addr)
 }
 
+// wantConn 获取连接
+// 可以通过拨号或者空闲连接获取连接
 // A wantConn records state about a wanted connection
 // (that is, an active call to getConn).
 // The conn may be gotten by dialing or by finding an idle connection,
@@ -1180,8 +1219,8 @@ func (t *Transport) dial(ctx context.Context, network, addr string) (net.Conn, e
 // These three options are racing against each other and use
 // wantConn to coordinate and agree about the winning outcome.
 type wantConn struct {
-	cm    connectMethod
-	key   connectMethodKey // cm.key()
+	cm    connectMethod    // 连接方法
+	key   connectMethodKey // 连接方法key cm.key()
 	ctx   context.Context  // context for dial
 	ready chan struct{}    // closed when pc, err pair is delivered
 
@@ -1774,6 +1813,8 @@ func (w persistConnWriter) ReadFrom(r io.Reader) (n int64, err error) {
 
 var _ io.ReaderFrom = (*persistConnWriter)(nil)
 
+// connectMethod 用于保活连接map的key
+// 格式化字符串代表内容如下
 // connectMethod is the map key (in its String form) for keeping persistent
 // TCP connections alive for subsequent HTTP requests.
 //
@@ -1802,6 +1843,7 @@ type connectMethod struct {
 	onlyH1     bool // whether to disable HTTP/2 and force HTTP/1
 }
 
+// key 用于生成格式化key
 func (cm *connectMethod) key() connectMethodKey {
 	proxyStr := ""
 	targetAddr := cm.targetAddr
@@ -1845,6 +1887,7 @@ func (cm *connectMethod) tlsHost() string {
 	return h
 }
 
+// connectMethodKey 具有字符串化的代理URL（或空字符串），而不是指向URL的指针
 // connectMethodKey is the map key version of connectMethod, with a
 // stringified proxy URL (or the empty string) instead of a pointer to
 // a URL.
@@ -1862,18 +1905,19 @@ func (k connectMethodKey) String() string {
 	return fmt.Sprintf("%s|%s%s|%s", k.proxy, k.scheme, h1, k.addr)
 }
 
+// persistConn 封装一个持久连接
 // persistConn wraps a connection, usually a persistent one
 // (but may be used for non-keep-alive requests as well)
 type persistConn struct {
 	// alt optionally specifies the TLS NextProto RoundTripper.
 	// This is used for HTTP/2 today and future protocols later.
 	// If it's non-nil, the rest of the fields are unused.
-	alt RoundTripper
+	alt RoundTripper // 如果为空 则其他字段无用
 
 	t         *Transport
-	cacheKey  connectMethodKey
-	conn      net.Conn
-	tlsState  *tls.ConnectionState
+	cacheKey  connectMethodKey // 连接方法的key
+	conn      net.Conn // 连接
+	tlsState  *tls.ConnectionState // TLS 连接状态
 	br        *bufio.Reader       // from conn
 	bw        *bufio.Writer       // to conn
 	nwrite    int64               // bytes written
@@ -2404,8 +2448,8 @@ func (pc *persistConn) writeLoop() {
 					err = nothingWrittenError{err}
 				}
 			}
-			pc.writeErrCh <- err // to the body reader, which might recycle us
-			wr.ch <- err         // to the roundTrip function
+			pc.writeErrCh <- err // 发送err给读body的读者 to the body reader, which might recycle us
+			wr.ch <- err         // 发送err给roundTrip函数 to the roundTrip function
 			if err != nil {
 				pc.close(err)
 				return
@@ -2451,6 +2495,7 @@ func (pc *persistConn) wroteRequest() bool {
 	}
 }
 
+// responseAndError
 // responseAndError is how the goroutine reading from an HTTP/1 server
 // communicates with the goroutine doing the RoundTrip.
 type responseAndError struct {
@@ -2465,20 +2510,23 @@ type requestAndChan struct {
 	cancelKey cancelKey
 	ch        chan responseAndError // unbuffered; always send in select on callerGone
 
+	// addedGzip 是否 Header 中有 Accept-Encoding
 	// whether the Transport (as opposed to the user client code)
 	// added the Accept-Encoding gzip header. If the Transport
 	// set it, only then do we transparently decode the gzip.
 	addedGzip bool
 
+	// continueCh 请求希望收到100 readLoop send a value to writeLoop via this chan.
 	// Optional blocking chan for Expect: 100-continue (for send).
 	// If the request has an "Expect: 100-continue" header and
 	// the server responds 100 Continue, readLoop send a value
 	// to writeLoop via this chan.
 	continueCh chan<- struct{}
 
-	callerGone <-chan struct{} // closed when roundTrip caller has returned
+	callerGone <-chan struct{} // 当 roundTrip 调用者返回时关闭 closed when roundTrip caller has returned
 }
 
+// writeRequest 当读循环同时等待写的响应和服务器响应时读
 // A writeRequest is sent by the readLoop's goroutine to the
 // writeLoop's goroutine to write a request while the read loop
 // concurrently waits on both the write response and the server's
@@ -2487,6 +2535,8 @@ type writeRequest struct {
 	req *transportRequest
 	ch  chan<- error
 
+	// continueCh 阻塞接收100响应
+	// 如果不为空 写循环会阻塞知道接收到这个chan
 	// Optional blocking chan for Expect: 100-continue (for receive).
 	// If not nil, writeLoop blocks sending request body until
 	// it receives from this chan.

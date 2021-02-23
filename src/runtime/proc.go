@@ -981,7 +981,7 @@ func casgcopystack(gp *g) uint32 {
 	}
 }
 
-// casGToPreemptScan 将gp的状态从 _Grunning 转换为 _Gscan | _Gpreempted
+// casGToPreemptScan 将gp的状态从 _Grunning 转换为 _Gscan | _Gpreempted 直至成功
 // casGToPreemptScan transitions gp from _Grunning to _Gscan|_Gpreempted.
 //
 // TODO(austin): This is the only status operation that both changes
@@ -2487,7 +2487,7 @@ func startm(_p_ *p, spinning bool) {
 	releasem(mp)
 }
 
-// handoffp 从系统调用中释放P或锁定M中，总是不在P的情况运行。
+// handoffp 从系统调用中释放P或锁定M中。
 // 新建m去绑定p，执行
 // Hands off P from syscall or locked M.
 // Always runs without a P, so write barriers are not allowed.
@@ -2588,7 +2588,7 @@ func stoplockedm() {
 	if _g_.m.p != 0 {
 		// Schedule another M to run this p.
 		_p_ := releasep() // 解绑p和m
-		handofpro'c'fp(_p_)     // 让_p_找其他事干
+		handoffp(_p_)     // 让_p_找其他事干
 	}
 	incidlelocked(1) // 增加锁定状态
 	// Wait until another thread schedules lockedg again.
@@ -3338,7 +3338,7 @@ top:
 	execute(gp, inheritTime) // 执行gp
 }
 
-// dropg 通过g0解绑g0的m和m绑定的g
+// dropg 通过g0解绑g0的m和m绑定的curg
 // dropg removes the association between m and the current goroutine m->curg (gp for short).
 // Typically a caller sets gp's status away from Grunning and then
 // immediately calls dropg to finish the job. The caller is also responsible
@@ -3446,6 +3446,7 @@ func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
 	return true
 }
 
+// park_m 在g0上继续执行 gopark 操作
 // park continuation on g0.
 func park_m(gp *g) {
 	_g_ := getg()
@@ -3455,14 +3456,14 @@ func park_m(gp *g) {
 	}
 
 	casgstatus(gp, _Grunning, _Gwaiting)
-	dropg() // 解绑g和m
+	dropg() // 解绑curg和m
 
 	if fn := _g_.m.waitunlockf; fn != nil {
 		ok := fn(gp, _g_.m.waitlock) // 尝试调用解锁函数
 		_g_.m.waitunlockf = nil
 		_g_.m.waitlock = nil
 		if !ok {
-			// 如果解锁成功
+			// 如果解锁不成功
 			if trace.enabled {
 				traceGoUnpark(gp, 2)
 			}

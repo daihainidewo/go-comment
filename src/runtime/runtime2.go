@@ -431,7 +431,7 @@ type g struct {
 	syscallpc    uintptr        // if status==Gsyscall, syscallpc = sched.pc to use during gc
 	stktopsp     uintptr        // expected sp at top of stack, to check in traceback
 	param        unsafe.Pointer // passed parameter on wakeup
-	atomicstatus uint32
+	atomicstatus uint32 // g 的状态
 	stackLock    uint32 // sigprof/scang lock; TODO: fold in to atomicstatus
 	goid         int64  // goroutine的编号
 	schedlink    guintptr
@@ -539,8 +539,8 @@ type m struct {
 	lockedExt     uint32                        // tracking for external LockOSThread
 	lockedInt     uint32                        // tracking for internal lockOSThread
 	nextwaitm     muintptr                      // next m waiting for lock
-	waitunlockf   func(*g, unsafe.Pointer) bool // m park时的解锁函数
-	waitlock      unsafe.Pointer
+	waitunlockf   func(*g, unsafe.Pointer) bool // m park 时的解锁函数
+	waitlock      unsafe.Pointer 				// m park 时的锁
 	waittraceev   byte
 	waittraceskip int
 	startingtrace bool

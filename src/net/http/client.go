@@ -62,7 +62,7 @@ type Client struct {
 	// If nil, DefaultTransport is used.
 	Transport RoundTripper
 
-	// CheckRedirect 执行从定向
+	// CheckRedirect 执行重定向函数
 	// CheckRedirect specifies the policy for handling redirects.
 	// If CheckRedirect is not nil, the client calls it before
 	// following an HTTP redirect. The arguments req and via are
@@ -147,6 +147,7 @@ type RoundTripper interface {
 	RoundTrip(*Request) (*Response, error)
 }
 
+// refererForURL 将上次的请求认证信息抹去并返回
 // refererForURL returns a referer without any authentication info or
 // an empty string if lastReq scheme is https and newReq scheme is http.
 func refererForURL(lastReq, newReq *url.URL) string {
@@ -155,6 +156,7 @@ func refererForURL(lastReq, newReq *url.URL) string {
 	//    (non-secure) HTTP request if the referring page was
 	//    transferred with a secure protocol."
 	if lastReq.Scheme == "https" && newReq.Scheme == "http" {
+		// 上次请求是https 新请求是http 就返回空字符串
 		return ""
 	}
 	referer := lastReq.String()
@@ -176,7 +178,7 @@ func refererForURL(lastReq, newReq *url.URL) string {
 func (c *Client) send(req *Request, deadline time.Time) (resp *Response, didTimeout func() bool, err error) {
 	if c.Jar != nil {
 		for _, cookie := range c.Jar.Cookies(req.URL) {
-			req.AddCookie(cookie)
+			req.AddCookie(cookie) // 填充cookie
 		}
 	}
 	resp, didTimeout, err = send(req, c.transport(), deadline)
@@ -185,7 +187,7 @@ func (c *Client) send(req *Request, deadline time.Time) (resp *Response, didTime
 	}
 	if c.Jar != nil {
 		if rc := resp.Cookies(); len(rc) > 0 {
-			c.Jar.SetCookies(req.URL, rc)
+			c.Jar.SetCookies(req.URL, rc) // 设置cookie
 		}
 	}
 	return resp, nil, nil
@@ -239,7 +241,7 @@ func send(ireq *Request, rt RoundTripper, deadline time.Time) (resp *Response, d
 	// Transport that this has been initialized, though.
 	if req.Header == nil {
 		forkReq()
-		req.Header = make(Header)
+		req.Header = make(Header) // 新header
 	}
 
 	if u := req.URL.User; u != nil && req.Header.Get("Authorization") == "" {
