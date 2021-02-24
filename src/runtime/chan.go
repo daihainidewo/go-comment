@@ -652,16 +652,19 @@ func chanparkcommit(gp *g, chanLock unsafe.Pointer) bool {
 	// Set activeStackChans here instead of before we try parking
 	// because we could self-deadlock in stack growth on the
 	// channel lock.
+	// 标记栈收缩前需要锁保护
 	gp.activeStackChans = true
 	// Mark that it's safe for stack shrinking to occur now,
 	// because any thread acquiring this G's stack for shrinking
 	// is guaranteed to observe activeStackChans after this store.
+	// 标记栈收缩是安全的 栈收缩由activeStackChans字段守卫
 	atomic.Store8(&gp.parkingOnChan, 0)
 	// Make sure we unlock after setting activeStackChans and
 	// unsetting parkingOnChan. The moment we unlock chanLock
 	// we risk gp getting readied by a channel operation and
 	// so gp could continue running before everything before
 	// the unlock is visible (even to gp itself).
+	// 解锁
 	unlock((*mutex)(chanLock))
 	return true
 }

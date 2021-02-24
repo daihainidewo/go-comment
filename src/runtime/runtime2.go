@@ -454,7 +454,7 @@ type g struct {
 	// pointing into this goroutine's stack. If true, stack
 	// copying needs to acquire channel locks to protect these
 	// areas of the stack.
-	activeStackChans bool
+	activeStackChans bool // 存在没有锁定的堆栈channel 所以复制栈帧时需要锁保护栈帧
 	// parkingOnChan indicates that the goroutine is about to
 	// park on a chansend or chanrecv. Used to signal an unsafe point
 	// for stack shrinking. It's a boolean value, but is updated atomically.
@@ -539,7 +539,7 @@ type m struct {
 	lockedExt     uint32                        // tracking for external LockOSThread
 	lockedInt     uint32                        // tracking for internal lockOSThread
 	nextwaitm     muintptr                      // next m waiting for lock
-	waitunlockf   func(*g, unsafe.Pointer) bool // m park 时的解锁函数
+	waitunlockf   func(*g, unsafe.Pointer) bool // m park 时的附加函数
 	waitlock      unsafe.Pointer 				// m park 时的锁
 	waittraceev   byte
 	waittraceskip int
@@ -997,6 +997,7 @@ const _TracebackMaxFrames = 100
 // See gopark. Do not re-use waitReasons, add new ones.
 type waitReason uint8
 
+// 等待理由
 const (
 	waitReasonZero                  waitReason = iota // ""
 	waitReasonGCAssistMarking                         // "GC assist marking"

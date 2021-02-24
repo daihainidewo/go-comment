@@ -18,6 +18,7 @@ import (
 	"unsafe"
 )
 
+// 跟踪事件
 // Event types in the trace, args are given in square brackets.
 const (
 	traceEvNone              = 0  // unused

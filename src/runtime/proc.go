@@ -303,7 +303,7 @@ func goschedguarded() {
 	mcall(goschedguarded_m)
 }
 
-// gopark 将当前
+// gopark 休眠当前m
 // Puts the current goroutine into a waiting state and calls unlockf on the
 // system stack.
 //
@@ -332,11 +332,11 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason w
 		throw("gopark: bad g status")
 	}
 	// 填充相关参数
-	mp.waitlock = lock
-	mp.waitunlockf = unlockf
-	gp.waitreason = reason
-	mp.waittraceev = traceEv
-	mp.waittraceskip = traceskip
+	mp.waitlock = lock  		 // 锁对象
+	mp.waitunlockf = unlockf 	 // 附加函数
+	gp.waitreason = reason 		 // 锁住原因
+	mp.waittraceev = traceEv	 // 跟踪事件
+	mp.waittraceskip = traceskip // 跟踪跳数
 	releasem(mp)
 	// can't do anything that might move the G between Ms here.
 	mcall(park_m)
@@ -3459,11 +3459,11 @@ func park_m(gp *g) {
 	dropg() // 解绑curg和m
 
 	if fn := _g_.m.waitunlockf; fn != nil {
-		ok := fn(gp, _g_.m.waitlock) // 尝试调用解锁函数
+		ok := fn(gp, _g_.m.waitlock) // 在开始下一次调度前执行附加操作
 		_g_.m.waitunlockf = nil
 		_g_.m.waitlock = nil
 		if !ok {
-			// 如果解锁不成功
+			// 不成功继续执行
 			if trace.enabled {
 				traceGoUnpark(gp, 2)
 			}
