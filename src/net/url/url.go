@@ -92,6 +92,7 @@ func (e InvalidHostError) Error() string {
 	return "invalid character " + strconv.Quote(string(e)) + " in host name"
 }
 
+// shouldEscape 返回在指定的编码模式中是否需要转义
 // Return true if the specified character should be escaped when
 // appearing in a URL string, according to RFC 3986.
 //
@@ -174,6 +175,7 @@ func shouldEscape(c byte, mode encoding) bool {
 	return true
 }
 
+// QueryUnescape 对查询字段进行反转义
 // QueryUnescape does the inverse transformation of QueryEscape,
 // converting each 3-byte encoded substring of the form "%AB" into the
 // hex-decoded byte 0xAB.
@@ -183,6 +185,7 @@ func QueryUnescape(s string) (string, error) {
 	return unescape(s, encodeQueryComponent)
 }
 
+// PathUnescape 和 QueryUnescape 类似 除了不将 '+' 转化成 ' '
 // PathUnescape does the inverse transformation of PathEscape,
 // converting each 3-byte encoded substring of the form "%AB" into the
 // hex-decoded byte 0xAB. It returns an error if any % is not followed
@@ -194,6 +197,7 @@ func PathUnescape(s string) (string, error) {
 	return unescape(s, encodePathSegment)
 }
 
+// unescape 对s进行反转义
 // unescape unescapes a string; the mode specifies
 // which section of the URL string is being unescaped.
 func unescape(s string, mode encoding) (string, error) {
@@ -269,18 +273,21 @@ func unescape(s string, mode encoding) (string, error) {
 	return t.String(), nil
 }
 
+// QueryEscape 将s进行转义
 // QueryEscape escapes the string so it can be safely placed
 // inside a URL query.
 func QueryEscape(s string) string {
 	return escape(s, encodeQueryComponent)
 }
 
+// PathEscape 将s转义 包括 '/'
 // PathEscape escapes the string so it can be safely placed inside a URL path segment,
 // replacing special characters (including /) with %XX sequences as needed.
 func PathEscape(s string) string {
 	return escape(s, encodePathSegment)
 }
 
+// escape 转义s
 func escape(s string, mode encoding) string {
 	spaceCount, hexCount := 0, 0
 	for i := 0; i < len(s); i++ {
@@ -338,6 +345,8 @@ func escape(s string, mode encoding) string {
 }
 
 // URL url单元
+// 通常格式
+// scheme://user:passwd@host/path?query#fragment
 // A URL represents a parsed URL (technically, a URI reference).
 //
 // The general form represented is:
@@ -427,6 +436,7 @@ func (u *Userinfo) String() string {
 	return s
 }
 
+// getscheme 获取协议
 // Maybe rawurl is of the form scheme:path.
 // (Scheme must be [a-zA-Z][a-zA-Z0-9+-.]*)
 // If so, return scheme, path; else return "", rawurl.
@@ -468,6 +478,7 @@ func split(s string, sep byte, cutc bool) (string, string) {
 	return s[:i], s[i:]
 }
 
+// Parse 解析url为对象
 // Parse parses rawurl into a URL structure.
 //
 // The rawurl may be relative (a path, without a host) or absolute

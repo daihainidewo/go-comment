@@ -1931,7 +1931,7 @@ type persistConn struct {
 	// from the writeLoop goroutine to the readLoop which passes
 	// it off to the res.Body reader, which then uses it to decide
 	// whether or not a connection can be reused. Issue 7569.
-	writeErrCh chan error
+	writeErrCh chan error // 写入错误 传给readLoop
 
 	writeLoopDone chan struct{} // 写循环结束时关闭 closed when write loop ends
 
@@ -1940,16 +1940,15 @@ type persistConn struct {
 	idleTimer *time.Timer // 有 time.AfterFunc 生成的关闭timer holding an AfterFunc to close it
 
 	mu                   sync.Mutex // guards following fields
-	numExpectedResponses int   // 预期的响应数
-	closed               error // 当连接关闭时非空 set non-nil when conn is closed, before closech is closed
-	canceledErr          error // 如果连接被取消了非空 set non-nil if conn is canceled
-	broken               bool  // 连接发生错误 导致连接不可复用 an error has happened on this connection; marked broken so it's not reused.
-	reused               bool  // 连接成功完成请求响应 可以复用 whether conn has had successful request/response and is being reused.
-	// mutateHeaderFunc 在每次发出请求前修改 Header
+	numExpectedResponses int        // 预期的响应数
+	closed               error      // 当连接关闭时非空 set non-nil when conn is closed, before closech is closed
+	canceledErr          error      // 如果连接被取消了非空 set non-nil if conn is canceled
+	broken               bool       // 连接发生错误 导致连接不可复用 an error has happened on this connection; marked broken so it's not reused.
+	reused               bool       // 连接成功完成请求响应 可以复用 whether conn has had successful request/response and is being reused.
 	// mutateHeaderFunc is an optional func to modify extra
 	// headers on each outbound request before it's written. (the
 	// original Request given to RoundTrip is not modified)
-	mutateHeaderFunc func(Header)
+	mutateHeaderFunc func(Header) // mutateHeaderFunc 在每次发出请求前修改 Header
 }
 
 // maxHeaderResponseSize 最大响应头 默认10M
