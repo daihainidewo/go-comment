@@ -460,6 +460,7 @@ func (r *Reader) ReadDotLines() ([]string, error) {
 	return v, err
 }
 
+// ReadMIMEHeader 从r中读取header
 // ReadMIMEHeader reads a MIME-style header from r.
 // The header is a sequence of possibly continued Key: Value lines
 // ending in a blank line.

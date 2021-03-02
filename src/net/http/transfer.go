@@ -478,6 +478,7 @@ func suppressedHeaders(status int) []string {
 	return nil
 }
 
+// readTransfer 读取传输数据 支持请求和响应
 // msg is *Request or *Response.
 func readTransfer(msg interface{}, r *bufio.Reader) (err error) {
 	t := &transferReader{RequestMethod: "GET"}
@@ -508,11 +509,13 @@ func readTransfer(msg interface{}, r *bufio.Reader) (err error) {
 		panic("unexpected type")
 	}
 
+	// 默认 http 版本1.1
 	// Default to HTTP/1.1
 	if t.ProtoMajor == 0 && t.ProtoMinor == 0 {
 		t.ProtoMajor, t.ProtoMinor = 1, 1
 	}
 
+	// 检测是不是chunked传输
 	// Transfer-Encoding: chunked, and overriding Content-Length.
 	if err := t.parseTransferEncoding(); err != nil {
 		return err
@@ -618,16 +621,19 @@ func isUnsupportedTEError(err error) bool {
 	return ok
 }
 
+// parseTransferEncoding 根据 Transfer-Encoding header 设置 t.Chunked
 // parseTransferEncoding sets t.Chunked based on the Transfer-Encoding header.
 func (t *transferReader) parseTransferEncoding() error {
 	raw, present := t.Header["Transfer-Encoding"]
 	if !present {
+		// 没有就返回
 		return nil
 	}
 	delete(t.Header, "Transfer-Encoding")
 
 	// Issue 12785; ignore Transfer-Encoding on HTTP/1.0 requests.
 	if !t.protoAtLeast(1, 1) {
+		// 忽略1.0的Transfer-Encoding
 		return nil
 	}
 
@@ -636,9 +642,11 @@ func (t *transferReader) parseTransferEncoding() error {
 	// surfaces in HTTP/1.1 due to the risk of request smuggling, so we keep it
 	// strict and simple.
 	if len(raw) != 1 {
+		// 只能有一个值
 		return &unsupportedTEError{fmt.Sprintf("too many transfer encodings: %q", raw)}
 	}
 	if strings.ToLower(textproto.TrimString(raw[0])) != "chunked" {
+		// 只支持chunked
 		return &unsupportedTEError{fmt.Sprintf("unsupported transfer encoding: %q", raw[0])}
 	}
 
@@ -653,12 +661,15 @@ func (t *transferReader) parseTransferEncoding() error {
 	// Content-Length field prior to forwarding such a message downstream."
 	//
 	// Reportedly, these appear in the wild.
+	// 如果是chunked就忽略Content-Length
 	delete(t.Header, "Content-Length")
 
+	// 标记为chunked数据
 	t.Chunked = true
 	return nil
 }
 
+// fixLength 标准化 Content-Length
 // Determine the expected body length, using RFC 7230 Section 3.3. This
 // function is not a method, because ultimately it should be shared by
 // ReadResponse and ReadRequest.
@@ -666,8 +677,10 @@ func fixLength(isResponse bool, status int, requestMethod string, header Header,
 	isRequest := !isResponse
 	contentLens := header["Content-Length"]
 
+	// 优化 Content-Length Header
 	// Hardening against HTTP request smuggling
 	if len(contentLens) > 1 {
+		// 多个 Content-Length header 值不同返回err 值相同删除重复的
 		// Per RFC 7230 Section 3.3.2, prevent multiple
 		// Content-Length headers if they differ in value.
 		// If there are dups of the value, remove the dups.
@@ -739,6 +752,7 @@ func fixLength(isResponse bool, status int, requestMethod string, header Header,
 	return -1, nil
 }
 
+// shouldClose header中包含 Connection: close
 // Determine whether to hang up after sending a request and body, or
 // receiving a response and body
 // 'header' is the request headers
@@ -750,6 +764,7 @@ func shouldClose(major, minor int, header Header, removeCloseHeader bool) bool {
 	conv := header["Connection"]
 	hasClose := httpguts.HeaderValuesContainsToken(conv, "close")
 	if major == 1 && minor == 0 {
+		// http1.0 不是 keep-alive 就返回 false
 		return hasClose || !httpguts.HeaderValuesContainsToken(conv, "keep-alive")
 	}
 

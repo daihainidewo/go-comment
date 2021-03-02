@@ -1404,6 +1404,7 @@ func (c *Conn) Handshake() error {
 	return c.handshakeErr
 }
 
+// ConnectionState 返回连接TLS信息
 // ConnectionState returns basic TLS details about the connection.
 func (c *Conn) ConnectionState() ConnectionState {
 	c.handshakeMutex.Lock()

@@ -348,6 +348,7 @@ func (d *Dialer) Dial(network, address string) (Conn, error) {
 	return d.DialContext(context.Background(), network, address)
 }
 
+// DialContext 带有context的拨号器建立连接
 // DialContext connects to the address on the named network using
 // the provided context.
 //

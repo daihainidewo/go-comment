@@ -1405,6 +1405,7 @@ func (r *Request) closeBody() error {
 	return r.Body.Close()
 }
 
+// isReplayable 返回幂等的请求操作
 func (r *Request) isReplayable() bool {
 	if r.Body == nil || r.Body == NoBody || r.GetBody != nil {
 		switch valueOrDefault(r.Method, "GET") {

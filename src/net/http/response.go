@@ -145,6 +145,7 @@ func (r *Response) Location() (*url.URL, error) {
 	return url.Parse(lv)
 }
 
+// ReadResponse 从r中读取http响应 req可以为空
 // ReadResponse reads and returns an HTTP response from r.
 // The req parameter optionally specifies the Request that corresponds
 // to this Response. If nil, a GET request is assumed.
@@ -157,6 +158,7 @@ func ReadResponse(r *bufio.Reader, req *Request) (*Response, error) {
 		Request: req,
 	}
 
+	// 解析响应行
 	// Parse the first line of the response.
 	line, err := tp.ReadLine()
 	if err != nil {
@@ -187,6 +189,7 @@ func ReadResponse(r *bufio.Reader, req *Request) (*Response, error) {
 		return nil, badStringError("malformed HTTP version", resp.Proto)
 	}
 
+	// 读取header
 	// Parse the response headers.
 	mimeHeader, err := tp.ReadMIMEHeader()
 	if err != nil {
@@ -199,6 +202,7 @@ func ReadResponse(r *bufio.Reader, req *Request) (*Response, error) {
 
 	fixPragmaCacheControl(resp.Header)
 
+	//
 	err = readTransfer(resp, r)
 	if err != nil {
 		return nil, err
@@ -207,6 +211,7 @@ func ReadResponse(r *bufio.Reader, req *Request) (*Response, error) {
 	return resp, nil
 }
 
+// fixPragmaCacheControl 修复 Cache-Control Header
 // RFC 7234, section 5.4: Should treat
 //	Pragma: no-cache
 // like
