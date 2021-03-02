@@ -86,12 +86,15 @@ type AuxCall struct {
 	abiInfo *abi.ABIParamResultInfo // TODO remove fields above redundant with this information.
 }
 
-// ResultForOffset returns the index of the result at a particular offset among the results
+// ResultForOffsetAndType returns the index of a t-typed result at *A* particular offset among the results.
+// An arbitrary number of zero-width-typed results may reside at the same offset with a single not-zero-width
+// typed result, but the ones with the same type are all indistinguishable so it doesn't matter "which one"
+// is obtained.
 // This does not include the mem result for the call opcode.
-func (a *AuxCall) ResultForOffset(offset int64) int64 {
+func (a *AuxCall) ResultForOffsetAndType(offset int64, t *types.Type) int64 {
 	which := int64(-1)
 	for i := int64(0); i < a.NResults(); i++ { // note aux NResults does not include mem result.
-		if a.OffsetOfResult(i) == offset {
+		if a.OffsetOfResult(i) == offset && a.TypeOfResult(i) == t {
 			which = i
 			break
 		}
@@ -203,9 +206,19 @@ func (a *AuxCall) String() string {
 	return fn + "}"
 }
 
+func ACParamsToTypes(ps []Param) (ts []*types.Type) {
+	for _, p := range ps {
+		ts = append(ts, p.Type)
+	}
+	return
+}
+
 // StaticAuxCall returns an AuxCall for a static call.
 func StaticAuxCall(sym *obj.LSym, args []Param, results []Param, paramResultInfo *abi.ABIParamResultInfo) *AuxCall {
 	// TODO Create regInfo for AuxCall
+	if paramResultInfo == nil {
+		panic(fmt.Errorf("Nil paramResultInfo, sym=%v", sym))
+	}
 	return &AuxCall{Fn: sym, args: args, results: results, abiInfo: paramResultInfo}
 }
 
