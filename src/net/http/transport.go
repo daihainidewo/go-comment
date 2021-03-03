@@ -1219,6 +1219,7 @@ func (t *Transport) setReqCanceler(key cancelKey, fn func(error)) {
 	}
 }
 
+// replaceReqCanceler 用fn替换现有的取消函数
 // replaceReqCanceler replaces an existing cancel function. If there is no cancel function
 // for the request, we don't set the function and return false.
 // Since CancelRequest will clear the canceler, we can use the return value to detect if
@@ -2236,6 +2237,7 @@ func (pc *persistConn) readLoop() {
 
 		var resp *Response
 		if err == nil {
+			// 通过pc发送请求 获取响应
 			resp, err = pc.readResponse(rc, trace)
 		} else {
 			err = transportReadFromServerError{err}
@@ -2263,6 +2265,7 @@ func (pc *persistConn) readLoop() {
 		bodyWritable := resp.bodyIsWritable()
 		hasBody := rc.req.Method != "HEAD" && resp.ContentLength != 0
 
+		// 响应关闭 请求关闭 响应状态码小于等于199 可写的body 则标记连接不需要保活
 		if resp.Close || rc.req.Close || resp.StatusCode <= 199 || bodyWritable {
 			// Don't do keep-alive on error if either party requested a close
 			// or we get an unexpected informational (1xx) response.
@@ -2270,7 +2273,9 @@ func (pc *persistConn) readLoop() {
 			alive = false
 		}
 
+		// 没有body或者body可写
 		if !hasBody || bodyWritable {
+			// 删除原有的取消函数
 			replaced := pc.t.replaceReqCanceler(rc.cancelKey, nil)
 
 			// Put the idle conn back into the pool before we send the response
@@ -2297,6 +2302,7 @@ func (pc *persistConn) readLoop() {
 			// out of the select that also waits on this goroutine to die, so
 			// we're allowed to exit now if needed (if alive is false)
 			testHookReadLoopBeforeNextRead()
+			// 请求结束
 			continue
 		}
 
@@ -2324,6 +2330,7 @@ func (pc *persistConn) readLoop() {
 		}
 
 		resp.Body = body
+		// 解压body数据
 		if rc.addedGzip && strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 			resp.Body = &gzipReader{body: body}
 			resp.Header.Del("Content-Encoding")
@@ -2343,6 +2350,7 @@ func (pc *persistConn) readLoop() {
 		// reading the response body. (or for cancellation or death)
 		select {
 		case bodyEOF := <-waitForBodyRead:
+			// 从连接中读取完数据
 			replaced := pc.t.replaceReqCanceler(rc.cancelKey, nil) // before pc might return to idle pool
 			alive = alive &&
 				bodyEOF &&
@@ -2353,12 +2361,15 @@ func (pc *persistConn) readLoop() {
 				eofc <- struct{}{}
 			}
 		case <-rc.req.Cancel:
+			// 取消请求
 			alive = false
 			pc.t.CancelRequest(rc.req)
 		case <-rc.req.Context().Done():
+			// 取消请求
 			alive = false
 			pc.t.cancelRequest(rc.cancelKey, rc.req.Context().Err())
 		case <-pc.closech:
+			// 连接关闭
 			alive = false
 		}
 
@@ -2366,7 +2377,7 @@ func (pc *persistConn) readLoop() {
 	}
 }
 
-// readLoopPeekFailLocked
+// readLoopPeekFailLocked 预读消息关闭锁
 func (pc *persistConn) readLoopPeekFailLocked(peekErr error) {
 	if pc.closed != nil {
 		return
@@ -2418,12 +2429,14 @@ func (pc *persistConn) readResponse(rc requestAndChan, trace *httptrace.ClientTr
 
 	continueCh := rc.continueCh
 	for {
+		// 读取响应 处理或跳过1xx响应
 		resp, err = ReadResponse(pc.br, rc.req)
 		if err != nil {
 			return
 		}
 		resCode := resp.StatusCode
 		if continueCh != nil {
+			// 如果响应码是100就往continueCh发送信号
 			if resCode == 100 {
 				if trace != nil && trace.Got100Continue != nil {
 					trace.Got100Continue()
@@ -2454,13 +2467,16 @@ func (pc *persistConn) readResponse(rc requestAndChan, trace *httptrace.ClientTr
 		break
 	}
 	if resp.isProtocolSwitch() {
+		// 如果是协议转换成功响应 将body转化为io.ReadWriteCloser
 		resp.Body = newReadWriteCloserBody(pc.br, pc.conn)
 	}
 
+	// 将响应的TLS设置成当前pc的状态
 	resp.TLS = pc.tlsState
 	return
 }
 
+// waitForContinue 等待接收100响应
 // waitForContinue returns the function to block until
 // any response, timeout or connection close. After any of them,
 // the function returns a bool which indicates if the body should be sent.
@@ -2491,6 +2507,7 @@ func newReadWriteCloserBody(br *bufio.Reader, rwc io.ReadWriteCloser) io.ReadWri
 	return body
 }
 
+// readWriteCloserBody 返回可写body 用于升级协议之后
 // readWriteCloserBody is the Response.Body type used when we want to
 // give users write access to the Body through the underlying
 // connection (TCP, unless using custom dialers). This is then
@@ -2526,6 +2543,7 @@ func (pc *persistConn) writeLoop() {
 	for {
 		select {
 		case wr := <-pc.writech:
+			// 获取写消息
 			startBytesWritten := pc.nwrite
 			err := wr.req.Request.write(pc.bw, pc.isProxy, wr.req.extra, pc.waitForContinue(wr.continueCh))
 			if bre, ok := err.(requestBodyReadError); ok {
@@ -2554,6 +2572,7 @@ func (pc *persistConn) writeLoop() {
 				return
 			}
 		case <-pc.closech:
+			// 连接关闭
 			return
 		}
 	}
@@ -2884,6 +2903,9 @@ func canonicalAddr(url *url.URL) string {
 	return net.JoinHostPort(addr, port)
 }
 
+// bodyEOFSignal 描述http1读取到响应结尾时的信号 确保连接可以复用
+// fn至多执行一次 通过Read和Close返回的error 生成新的error
+// earlyCloseFn 是在Close函数返回非EOF错误时调用
 // bodyEOFSignal is used by the HTTP/1 transport when reading response
 // bodies to make sure we see the end of a response body before
 // proceeding and reading on the connection again.
@@ -2943,6 +2965,7 @@ func (es *bodyEOFSignal) Close() error {
 	return es.condfn(err)
 }
 
+// condfn 执行fn函数 执行后置空 防止重复调用
 // caller must hold es.mu.
 func (es *bodyEOFSignal) condfn(err error) error {
 	if es.fn == nil {

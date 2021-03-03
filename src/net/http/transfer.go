@@ -72,6 +72,7 @@ type transferWriter struct {
 	ByteReadCh   chan readResult // non-nil if probeRequestBody called
 }
 
+// newTransferWriter 把 Request 或 Response 转换成 transferWriter
 func newTransferWriter(r interface{}) (t *transferWriter, err error) {
 	t = &transferWriter{}
 
@@ -187,6 +188,7 @@ func (t *transferWriter) shouldSendChunkedRequestBody() bool {
 	return true
 }
 
+// probeRequestBody 检测是否是空body
 // probeRequestBody reads a byte from t.Body to see whether it's empty
 // (returns io.EOF right away).
 //
@@ -521,6 +523,7 @@ func readTransfer(msg interface{}, r *bufio.Reader) (err error) {
 		return err
 	}
 
+	// 标准化 Content-Length 的值
 	realLength, err := fixLength(isResponse, t.StatusCode, t.RequestMethod, t.Header, t.Chunked)
 	if err != nil {
 		return err
@@ -552,6 +555,7 @@ func readTransfer(msg interface{}, r *bufio.Reader) (err error) {
 		}
 	}
 
+	// 根据传输的数据类型创建不同的读者
 	// Prepare body reader. ContentLength < 0 means chunked encoding
 	// or close connection when finished, since multipart is not supported yet
 	switch {
@@ -576,6 +580,7 @@ func readTransfer(msg interface{}, r *bufio.Reader) (err error) {
 		}
 	}
 
+	// 统一输出内容
 	// Unify output
 	switch rr := msg.(type) {
 	case *Request:
@@ -669,7 +674,7 @@ func (t *transferReader) parseTransferEncoding() error {
 	return nil
 }
 
-// fixLength 标准化 Content-Length
+// fixLength 标准化 Content-Length 只有编码格式错误才会返回err
 // Determine the expected body length, using RFC 7230 Section 3.3. This
 // function is not a method, because ultimately it should be shared by
 // ReadResponse and ReadRequest.
@@ -775,6 +780,7 @@ func shouldClose(major, minor int, header Header, removeCloseHeader bool) bool {
 	return hasClose
 }
 
+// fixTrailer 修正header中的trailer
 // Parse the trailer header
 func fixTrailer(header Header, chunked bool) (Header, error) {
 	vv, ok := header["Trailer"]
@@ -1056,6 +1062,7 @@ func (bl bodyLocked) Read(p []byte) (n int, err error) {
 	return bl.b.readLocked(p)
 }
 
+// parseContentLength 解析 Content-Length 字段值
 // parseContentLength trims whitespace from s and returns -1 if no value
 // is set, or the value if it's >= 0.
 func parseContentLength(cl string) (int64, error) {

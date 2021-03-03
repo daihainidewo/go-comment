@@ -202,7 +202,7 @@ func ReadResponse(r *bufio.Reader, req *Request) (*Response, error) {
 
 	fixPragmaCacheControl(resp.Header)
 
-	//
+	// 从r中收到数据解析成resp
 	err = readTransfer(resp, r)
 	if err != nil {
 		return nil, err
@@ -345,6 +345,7 @@ func (r *Response) closeBody() {
 	}
 }
 
+// bodyIsWritable 返回body是否可写
 // bodyIsWritable reports whether the Body supports writing. The
 // Transport returns Writable bodies for 101 Switching Protocols
 // responses.
@@ -357,18 +358,21 @@ func (r *Response) bodyIsWritable() bool {
 	return ok
 }
 
+// isProtocolSwitch 返回响应码和是否成功升级协议
 // isProtocolSwitch reports whether the response code and header
 // indicate a successful protocol upgrade response.
 func (r *Response) isProtocolSwitch() bool {
 	return isProtocolSwitchResponse(r.StatusCode, r.Header)
 }
 
+// isProtocolSwitchResponse 返回响应码是否是协议转换且响应头是否表明是否成功升级
 // isProtocolSwitchResponse reports whether the response code and
 // response header indicate a successful protocol upgrade response.
 func isProtocolSwitchResponse(code int, h Header) bool {
 	return code == StatusSwitchingProtocols && isProtocolSwitchHeader(h)
 }
 
+// isProtocolSwitchHeader 返回请求或响应中的header是否有协议转换
 // isProtocolSwitchHeader reports whether the request or response header
 // is for a protocol switch.
 func isProtocolSwitchHeader(h Header) bool {

@@ -20,6 +20,7 @@ const maxLineLength = 4096 // assumed <= bufio.defaultBufSize
 
 var ErrLineTooLong = errors.New("header line too long")
 
+// NewChunkedReader 新建读取chunk的读者
 // NewChunkedReader returns a new chunkedReader that translates the data read from r
 // out of HTTP "chunked" format before returning it.
 // The chunkedReader returns io.EOF when the final 0-length chunk is read.

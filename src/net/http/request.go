@@ -541,6 +541,7 @@ func (r *Request) WriteProxy(w io.Writer) error {
 // the Request.
 var errMissingHost = errors.New("http: Request.Write on Request with no Host or URL set")
 
+// write 向 w 写入 http 协议
 // extraHeaders may be nil
 // waitForContinue may be nil
 // always closes body
@@ -567,11 +568,13 @@ func (r *Request) write(w io.Writer, usingProxy bool, extraHeaders Header, waitF
 	// is not given, use the host from the request URL.
 	//
 	// Clean the host, in case it arrives with unexpected stuff in it.
+	// 从请求中获取主机地址
 	host := cleanHost(r.Host)
 	if host == "" {
 		if r.URL == nil {
 			return errMissingHost
 		}
+		// 从url中获取请求地址
 		host = cleanHost(r.URL.Host)
 	}
 
@@ -580,6 +583,7 @@ func (r *Request) write(w io.Writer, usingProxy bool, extraHeaders Header, waitF
 	// to an outgoing URI.
 	host = removeZone(host)
 
+	// 拼接uri
 	ruri := r.URL.RequestURI()
 	if usingProxy && r.URL.Scheme != "" && r.URL.Opaque == "" {
 		ruri = r.URL.Scheme + "://" + host + ruri
@@ -607,11 +611,13 @@ func (r *Request) write(w io.Writer, usingProxy bool, extraHeaders Header, waitF
 		w = bw
 	}
 
+	// 向w写入请求行
 	_, err = fmt.Fprintf(w, "%s %s HTTP/1.1\r\n", valueOrDefault(r.Method, "GET"), ruri)
 	if err != nil {
 		return err
 	}
 
+	// 向w写入header
 	// Header lines
 	_, err = fmt.Fprintf(w, "Host: %s\r\n", host)
 	if err != nil {
@@ -729,6 +735,7 @@ func idnaASCII(v string) (string, error) {
 	return idna.Lookup.ToASCII(v)
 }
 
+// cleanHost 获取目标主机地址
 // cleanHost cleans up the host sent in request's Host header.
 //
 // It both strips anything after '/' or ' ', and puts the value
@@ -761,6 +768,7 @@ func cleanHost(in string) string {
 	return net.JoinHostPort(a, port)
 }
 
+// removeZone 移除ipv6的zone
 // removeZone removes IPv6 zone identifier from host.
 // E.g., "[fe80::1%en0]:8080" to "[fe80::1]:8080"
 func removeZone(host string) string {

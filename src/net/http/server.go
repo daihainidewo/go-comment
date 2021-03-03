@@ -1489,6 +1489,7 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	w.conn.bufw.Write(crlf)
 }
 
+// foreachHeaderElement 遍历每个header 每个非空header执行fn
 // foreachHeaderElement splits v according to the "#rule" construction
 // in RFC 7230 section 7 and calls fn for each non-empty element.
 func foreachHeaderElement(v string, fn func(string)) {
@@ -1507,6 +1508,7 @@ func foreachHeaderElement(v string, fn func(string)) {
 	}
 }
 
+// writeStatusLine 写入状态行
 // writeStatusLine writes an HTTP/1.x Status-Line (RFC 7230 Section 3.1.2)
 // to bw. is11 is whether the HTTP request is HTTP/1.1. false means HTTP/1.0.
 // code is the response status code.

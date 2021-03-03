@@ -1124,6 +1124,7 @@ func (u *URL) Query() Values {
 	return v
 }
 
+// RequestURI 拼接URL成uri
 // RequestURI returns the encoded path?query or opaque?query
 // string that would be used in an HTTP request for u.
 func (u *URL) RequestURI() string {
