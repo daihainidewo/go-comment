@@ -32,6 +32,10 @@ func isBlockMultiValueExit(b *Block) bool {
 	return (b.Kind == BlockRet || b.Kind == BlockRetJmp) && len(b.Controls) > 0 && b.Controls[0].Op == OpMakeResult
 }
 
+func badVal(s string, v *Value) error {
+	return fmt.Errorf("%s %s", s, v.LongString())
+}
+
 // removeTrivialWrapperTypes unwraps layers of
 // struct { singleField SomeType } and [1]SomeType
 // until a non-wrapper type is reached.  This is useful
@@ -231,6 +235,9 @@ func (x *expandState) splitSlots(ls []LocalSlot, sfx string, offset int64, ty *t
 
 // prAssignForArg returns the ABIParamAssignment for v, assumed to be an OpArg.
 func (x *expandState) prAssignForArg(v *Value) abi.ABIParamAssignment {
+	if v.Op != OpArg {
+		panic(badVal("Wanted OpArg, instead saw", v))
+	}
 	name := v.Aux.(*ir.Name)
 	fPri := x.f.OwnAux.abiInfo
 	for _, a := range fPri.InParams() {
@@ -275,9 +282,6 @@ func (x *expandState) rewriteSelect(leaf *Value, selector *Value, offset int64, 
 	}
 	switch selector.Op {
 	case OpArg:
-		paramAssignment := x.prAssignForArg(selector)
-		_ = paramAssignment
-		// TODO(register args)
 		if !x.isAlreadyExpandedAggregateType(selector.Type) {
 			if leafType == selector.Type { // OpIData leads us here, sometimes.
 				leaf.copyOf(selector)
@@ -364,7 +368,7 @@ func (x *expandState) rewriteSelect(leaf *Value, selector *Value, offset int64, 
 				// StaticCall selector will address last element of Result.
 				// TODO do this for all the other call types eventually.
 				if aux.abiInfo == nil {
-					panic(fmt.Errorf("aux.abiInfo nil for call %s", call.LongString()))
+					panic(badVal("aux.abiInfo nil for call", call))
 				}
 				if existing := x.memForCall[call.ID]; existing == nil {
 					selector.AuxInt = int64(aux.abiInfo.OutRegistersUsed())
@@ -566,9 +570,6 @@ func (x *expandState) decomposeArgOrLoad(pos src.XPos, b *Block, base, source, m
 // pos and b locate the store instruction, base is the base of the store target, source is the "base" of the value input,
 // mem is the input mem, t is the type in question, and offArg and offStore are the offsets from the respective bases.
 func storeOneArg(x *expandState, pos src.XPos, b *Block, base, source, mem *Value, t *types.Type, offArg, offStore int64, loadRegOffset Abi1RO, storeRc registerCursor) *Value {
-	paramAssignment := x.prAssignForArg(source)
-	_ = paramAssignment
-	// TODO(register args)
 	w := x.common[selKey{source, offArg, t.Width, t}]
 	if w == nil {
 		w = source.Block.NewValue0IA(source.Pos, OpArg, t, offArg, source.Aux)
@@ -807,9 +808,9 @@ func (x *expandState) rewriteArgs(v *Value, firstArg int) *Value {
 		}
 		auxI := int64(i - firstArg)
 		aRegs := aux.RegsOfArg(auxI)
-		aOffset := aux.OffsetOfArg(auxI)
 		aType := aux.TypeOfArg(auxI)
 		if a.Op == OpDereference {
+			aOffset := aux.OffsetOfArg(auxI)
 			if a.MemoryArg() != m0 {
 				x.f.Fatalf("Op...LECall and OpDereference have mismatched mem, %s and %s", v.LongString(), a.LongString())
 			}
@@ -820,13 +821,16 @@ func (x *expandState) rewriteArgs(v *Value, firstArg int) *Value {
 			// TODO(register args) this will be more complicated with registers in the picture.
 			mem = x.rewriteDereference(v.Block, x.sp, a, mem, aOffset, aux.SizeOfArg(auxI), aType, pos)
 		} else {
-			if x.debug {
-				fmt.Printf("storeArg %s, %v, %d\n", a.LongString(), aType, aOffset)
-			}
 			var rc registerCursor
 			var result *[]*Value
+			var aOffset int64
 			if len(aRegs) > 0 {
 				result = &allResults
+			} else {
+				aOffset = aux.OffsetOfArg(auxI)
+			}
+			if x.debug {
+				fmt.Printf("storeArg %s, %v, %d\n", a.LongString(), aType, aOffset)
 			}
 			rc.init(aRegs, aux.abiInfo, result)
 			mem = x.storeArgOrLoad(pos, v.Block, x.sp, a, mem, aType, aOffset, 0, rc)
@@ -1198,10 +1202,35 @@ func expandCalls(f *Func) {
 
 	deleteNamedVals(f, toDelete)
 
-	// Step 4: rewrite the calls themselves, correcting the type
+	// Step 4: rewrite the calls themselves, correcting the type.
 	for _, b := range f.Blocks {
 		for _, v := range b.Values {
 			switch v.Op {
+			case OpArg:
+				pa := x.prAssignForArg(v)
+				switch len(pa.Registers) {
+				case 0:
+					frameOff := v.Aux.(*ir.Name).FrameOffset()
+					if pa.Offset() != int32(frameOff+x.f.ABISelf.LocalsOffset()) {
+						panic(fmt.Errorf("Parameter assignment %d and OpArg.Aux frameOffset %d disagree, op=%s\n",
+							pa.Offset(), frameOff, v.LongString()))
+					}
+				case 1:
+					r := pa.Registers[0]
+					i := f.ABISelf.FloatIndexFor(r)
+					// TODO seems like this has implications for debugging. How does this affect the location?
+					if i >= 0 { // float PR
+						v.Op = OpArgFloatReg
+					} else {
+						v.Op = OpArgIntReg
+						i = int64(r)
+					}
+					v.AuxInt = i
+
+				default:
+					panic(badVal("Saw unexpanded OpArg", v))
+				}
+
 			case OpStaticLECall:
 				v.Op = OpStaticCall
 				// TODO need to insert all the register types.

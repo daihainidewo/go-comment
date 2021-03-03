@@ -39,10 +39,6 @@ func (pd *pollDesc) init(fd *FD) error {
 	serverInit.Do(runtime_pollServerInit) // 启动轮询服务
 	ctx, errno := runtime_pollOpen(uintptr(fd.Sysfd))
 	if errno != 0 {
-		if ctx != 0 {
-			runtime_pollUnblock(ctx)
-			runtime_pollClose(ctx)
-		}
 		return errnoErr(syscall.Errno(errno))
 	}
 	pd.runtimeCtx = ctx
