@@ -344,6 +344,9 @@ type sysDialer struct {
 //
 // See func Dial for a description of the network and address
 // parameters.
+//
+// Dial uses context.Background internally; to specify the context, use
+// DialContext.
 func (d *Dialer) Dial(network, address string) (Conn, error) {
 	return d.DialContext(context.Background(), network, address)
 }
@@ -702,6 +705,9 @@ type sysListener struct {
 //
 // See func Dial for a description of the network and address
 // parameters.
+//
+// Listen uses context.Background internally; to specify the context, use
+// ListenConfig.Listen.
 func Listen(network, address string) (Listener, error) {
 	var lc ListenConfig
 	return lc.Listen(context.Background(), network, address)
@@ -729,6 +735,9 @@ func Listen(network, address string) (Listener, error) {
 //
 // See func Dial for a description of the network and address
 // parameters.
+//
+// ListenPacket uses context.Background internally; to specify the context, use
+// ListenConfig.ListenPacket.
 func ListenPacket(network, address string) (PacketConn, error) {
 	var lc ListenConfig
 	return lc.ListenPacket(context.Background(), network, address)

@@ -222,7 +222,8 @@ func StartTrace() error {
 	stackID := traceStackID(mp, stkBuf, 2)
 	releasem(mp)
 
-	for _, gp := range allgs {
+	// World is stopped, no need to lock.
+	forEachGRace(func(gp *g) {
 		status := readgstatus(gp)
 		if status != _Gdead {
 			gp.traceseq = 0
@@ -242,7 +243,7 @@ func StartTrace() error {
 		} else {
 			gp.sysblocktraced = false
 		}
-	}
+	})
 	traceProcStart()
 	traceGoStart()
 	// Note: ticksStart needs to be set after we emit traceEvGoInSyscall events.

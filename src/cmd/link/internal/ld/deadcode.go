@@ -19,7 +19,7 @@ var _ = fmt.Print
 type deadcodePass struct {
 	ctxt *Link
 	ldr  *loader.Loader
-	wq   heap // work queue, using min-heap for beter locality
+	wq   heap // work queue, using min-heap for better locality
 
 	ifaceMethod     map[methodsig]bool // methods declared in reached interfaces
 	markableMethods []methodref        // methods of reached types
@@ -32,7 +32,7 @@ type deadcodePass struct {
 func (d *deadcodePass) init() {
 	d.ldr.InitReachable()
 	d.ifaceMethod = make(map[methodsig]bool)
-	if objabi.Fieldtrack_enabled != 0 {
+	if objabi.Experiment.FieldTrack {
 		d.ldr.Reachparent = make([]loader.Sym, d.ldr.NSym())
 	}
 	d.dynlink = d.ctxt.DynlinkingGo()
@@ -118,7 +118,7 @@ func (d *deadcodePass) flood() {
 
 		if isgotype {
 			if d.dynlink {
-				// When dynaamic linking, a type may be passed across DSO
+				// When dynamic linking, a type may be passed across DSO
 				// boundary and get converted to interface at the other side.
 				d.ldr.SetAttrUsedInIface(symIdx, true)
 			}
@@ -128,10 +128,11 @@ func (d *deadcodePass) flood() {
 		methods = methods[:0]
 		for i := 0; i < relocs.Count(); i++ {
 			r := relocs.At(i)
+			if r.Weak() {
+				continue
+			}
 			t := r.Type()
 			switch t {
-			case objabi.R_WEAKADDROFF:
-				continue
 			case objabi.R_METHODOFF:
 				if i+2 >= relocs.Count() {
 					panic("expect three consecutive R_METHODOFF relocs")
@@ -254,7 +255,7 @@ func (d *deadcodePass) mark(symIdx, parent loader.Sym) {
 	if symIdx != 0 && !d.ldr.AttrReachable(symIdx) {
 		d.wq.push(symIdx)
 		d.ldr.SetAttrReachable(symIdx, true)
-		if objabi.Fieldtrack_enabled != 0 && d.ldr.Reachparent[symIdx] == 0 {
+		if objabi.Experiment.FieldTrack && d.ldr.Reachparent[symIdx] == 0 {
 			d.ldr.Reachparent[symIdx] = parent
 		}
 		if *flagDumpDep {

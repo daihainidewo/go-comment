@@ -72,13 +72,18 @@ func listModules(ctx context.Context, args []string, listVersions, listRetracted
 		if search.IsRelativePath(arg) {
 			base.Fatalf("go: cannot use relative path %s to specify module", arg)
 		}
-		if !HasModRoot() && (arg == "all" || strings.Contains(arg, "...")) {
-			base.Fatalf("go: cannot match %q: working directory is not part of a module", arg)
+		if !HasModRoot() {
+			if arg == "all" || strings.Contains(arg, "...") {
+				base.Fatalf("go: cannot match %q: %v", arg, ErrNoModRoot)
+			}
+			if !listVersions && !strings.Contains(arg, "@") {
+				base.Fatalf("go: cannot match %q without -versions or an explicit version: %v", arg, ErrNoModRoot)
+			}
 		}
 		if i := strings.Index(arg, "@"); i >= 0 {
 			path := arg[:i]
 			vers := arg[i+1:]
-			var current string
+			current := "none"
 			for _, m := range buildList {
 				if m.Path == path {
 					current = m.Version

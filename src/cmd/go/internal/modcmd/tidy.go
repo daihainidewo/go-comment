@@ -60,6 +60,7 @@ func runTidy(ctx context.Context, cmd *base.Command, args []string) {
 	// request that their test dependencies be included.
 	modload.ForceUseModules = true
 	modload.RootMode = modload.NeedRoot
+	modload.DisallowWriteGoMod() // Suppress writing until we've tidied the file.
 
 	modload.LoadPackages(ctx, modload.PackageOpts{
 		Tags:                     imports.AnyTags(),
@@ -67,9 +68,12 @@ func runTidy(ctx context.Context, cmd *base.Command, args []string) {
 		ResolveMissingImports:    true,
 		LoadTests:                true,
 		AllowErrors:              tidyE,
+		SilenceMissingStdImports: true,
 	}, "all")
 
 	modload.TidyBuildList()
 	modload.TrimGoSum()
+
+	modload.AllowWriteGoMod()
 	modload.WriteGoMod()
 }

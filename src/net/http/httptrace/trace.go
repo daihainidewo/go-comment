@@ -146,7 +146,7 @@ type ClientTrace struct {
 	// ConnectDone 新建连接后调用
 	// ConnectDone is called when a new connection's Dial
 	// completes. The provided err indicates whether the
-	// connection completedly successfully.
+	// connection completed successfully.
 	// If net.Dialer.DualStack ("Happy Eyeballs") support is
 	// enabled, this may be called multiple times.
 	ConnectDone func(network, addr string, err error)

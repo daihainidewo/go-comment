@@ -177,10 +177,16 @@ type Type struct {
 
 	flags bitset8
 
-	// Type params (in order) of this named type that need to be instantiated.
+	// For defined (named) generic types, the list of type params (in order)
+	// of this type that need to be instantiated. For fully-instantiated
+	// generic types, this is the targs used to instantiate them (which are
+	// used when generating the corresponding instantiated methods). rparams
+	// is only set for named types that are generic or are fully-instantiated
+	// from a generic type.
+
 	// TODO(danscales): for space reasons, should probably be a pointer to a
 	// slice, possibly change the name of this field.
-	RParams []*Type
+	rparams []*Type
 }
 
 func (*Type) CanBeAnSSAAux() {}
@@ -234,6 +240,26 @@ func (t *Type) Pos() src.XPos {
 		return t.nod.Pos()
 	}
 	return src.NoXPos
+}
+
+func (t *Type) RParams() []*Type {
+	return t.rparams
+}
+
+func (t *Type) SetRParams(rparams []*Type) {
+	t.rparams = rparams
+	if t.HasTParam() {
+		return
+	}
+	// HasTParam should be set if any rparam is or has a type param. This is
+	// to handle the case of a generic type which doesn't reference any of its
+	// type params (e.g. most commonly, an empty struct).
+	for _, rparam := range rparams {
+		if rparam.HasTParam() {
+			t.SetHasTParam(true)
+			break
+		}
+	}
 }
 
 // NoPkg is a nil *Pkg value for clarity.
@@ -1702,6 +1728,13 @@ func NewBasic(kind Kind, obj Object) *Type {
 func NewInterface(pkg *Pkg, methods []*Field) *Type {
 	t := New(TINTER)
 	t.SetInterface(methods)
+	for _, f := range methods {
+		// f.Type could be nil for a broken interface declaration
+		if f.Type != nil && f.Type.HasTParam() {
+			t.SetHasTParam(true)
+			break
+		}
+	}
 	if anyBroke(methods) {
 		t.SetBroke(true)
 	}
@@ -1709,18 +1742,15 @@ func NewInterface(pkg *Pkg, methods []*Field) *Type {
 	return t
 }
 
-// NewTypeParam returns a new type param with the given constraint (which may
-// not really be needed except for the type checker).
-func NewTypeParam(pkg *Pkg, constraint *Type) *Type {
+// NewTypeParam returns a new type param.
+func NewTypeParam(pkg *Pkg) *Type {
 	t := New(TTYPEPARAM)
-	constraint.wantEtype(TINTER)
-	t.methods = constraint.methods
 	t.Extra.(*Interface).pkg = pkg
 	t.SetHasTParam(true)
 	return t
 }
 
-const BOGUS_FUNARG_OFFSET = 1000000000
+const BOGUS_FUNARG_OFFSET = -1000000000
 
 func unzeroFieldOffsets(f []*Field) {
 	for i := range f {
@@ -1729,7 +1759,7 @@ func unzeroFieldOffsets(f []*Field) {
 }
 
 // NewSignature returns a new function type for the given receiver,
-// parametes, results, and type parameters, any of which may be nil.
+// parameters, results, and type parameters, any of which may be nil.
 func NewSignature(pkg *Pkg, recv *Field, tparams, params, results []*Field) *Type {
 	var recvs []*Field
 	if recv != nil {
@@ -1754,6 +1784,7 @@ func NewSignature(pkg *Pkg, recv *Field, tparams, params, results []*Field) *Typ
 	unzeroFieldOffsets(params)
 	unzeroFieldOffsets(results)
 	ft.Receiver = funargs(recvs, FunargRcvr)
+	// TODO(danscales): just use nil here (save memory) if no tparams
 	ft.TParams = funargs(tparams, FunargTparams)
 	ft.Params = funargs(params, FunargParams)
 	ft.Results = funargs(results, FunargResults)
