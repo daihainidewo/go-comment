@@ -112,15 +112,13 @@ func walkRange(nrange *ir.RangeStmt) ir.Node {
 		}
 
 		// for v1, v2 := range ha { body }
-		if cheapComputableIndex(t.Elem().Width) {
+		if cheapComputableIndex(t.Elem().Size()) {
 			// v1, v2 = hv1, ha[hv1]
 			tmp := ir.NewIndexExpr(base.Pos, ha, hv1)
 			tmp.SetBounded(true)
 			// Use OAS2 to correctly handle assignments
 			// of the form "v1, a[v1] := range".
-			a := ir.NewAssignListStmt(base.Pos, ir.OAS2, nil, nil)
-			a.Lhs = []ir.Node{v1, v2}
-			a.Rhs = []ir.Node{hv1, tmp}
+			a := ir.NewAssignListStmt(base.Pos, ir.OAS2, []ir.Node{v1, v2}, []ir.Node{hv1, tmp})
 			body = []ir.Node{a}
 			break
 		}
@@ -148,9 +146,7 @@ func walkRange(nrange *ir.RangeStmt) ir.Node {
 
 		// Use OAS2 to correctly handle assignments
 		// of the form "v1, a[v1] := range".
-		a := ir.NewAssignListStmt(base.Pos, ir.OAS2, nil, nil)
-		a.Lhs = []ir.Node{v1, v2}
-		a.Rhs = []ir.Node{hv1, ir.NewStarExpr(base.Pos, hp)}
+		a := ir.NewAssignListStmt(base.Pos, ir.OAS2, []ir.Node{v1, v2}, []ir.Node{hv1, ir.NewStarExpr(base.Pos, hp)})
 		body = append(body, a)
 
 		// Advance pointer as part of the late increment.
@@ -158,7 +154,7 @@ func walkRange(nrange *ir.RangeStmt) ir.Node {
 		// This runs *after* the condition check, so we know
 		// advancing the pointer is safe and won't go past the
 		// end of the allocation.
-		as := ir.NewAssignStmt(base.Pos, hp, addptr(hp, t.Elem().Width))
+		as := ir.NewAssignStmt(base.Pos, hp, addptr(hp, t.Elem().Size()))
 		nfor.Late = []ir.Node{typecheck.Stmt(as)}
 
 	case types.TMAP:
@@ -168,7 +164,9 @@ func walkRange(nrange *ir.RangeStmt) ir.Node {
 
 		hit := nrange.Prealloc
 		th := hit.Type()
-		keysym := th.Field(0).Sym  // depends on layout of iterator struct.  See reflect.go:MapIterType
+		// depends on layout of iterator struct.
+		// See cmd/compile/internal/reflectdata/reflect.go:MapIterType
+		keysym := th.Field(0).Sym
 		elemsym := th.Field(1).Sym // ditto
 
 		fn := typecheck.LookupRuntime("mapiterinit")
@@ -188,9 +186,7 @@ func walkRange(nrange *ir.RangeStmt) ir.Node {
 			body = []ir.Node{ir.NewAssignStmt(base.Pos, v1, key)}
 		} else {
 			elem := ir.NewStarExpr(base.Pos, ir.NewSelectorExpr(base.Pos, ir.ODOT, hit, elemsym))
-			a := ir.NewAssignListStmt(base.Pos, ir.OAS2, nil, nil)
-			a.Lhs = []ir.Node{v1, v2}
-			a.Rhs = []ir.Node{key, elem}
+			a := ir.NewAssignListStmt(base.Pos, ir.OAS2, []ir.Node{v1, v2}, []ir.Node{key, elem})
 			body = []ir.Node{a}
 		}
 
@@ -206,10 +202,10 @@ func walkRange(nrange *ir.RangeStmt) ir.Node {
 		hb := typecheck.Temp(types.Types[types.TBOOL])
 
 		nfor.Cond = ir.NewBinaryExpr(base.Pos, ir.ONE, hb, ir.NewBool(false))
-		a := ir.NewAssignListStmt(base.Pos, ir.OAS2RECV, nil, nil)
+		lhs := []ir.Node{hv1, hb}
+		rhs := []ir.Node{ir.NewUnaryExpr(base.Pos, ir.ORECV, ha)}
+		a := ir.NewAssignListStmt(base.Pos, ir.OAS2RECV, lhs, rhs)
 		a.SetTypecheck(1)
-		a.Lhs = []ir.Node{hv1, hb}
-		a.Rhs = []ir.Node{ir.NewUnaryExpr(base.Pos, ir.ORECV, ha)}
 		nfor.Cond = ir.InitExpr([]ir.Node{a}, nfor.Cond)
 		if v1 == nil {
 			body = nil
@@ -268,24 +264,18 @@ func walkRange(nrange *ir.RangeStmt) ir.Node {
 		nif.Body = []ir.Node{ir.NewAssignStmt(base.Pos, hv1, ir.NewBinaryExpr(base.Pos, ir.OADD, hv1, ir.NewInt(1)))}
 
 		// } else {
-		eif := ir.NewAssignListStmt(base.Pos, ir.OAS2, nil, nil)
-
 		// hv2, hv1 = decoderune(ha, hv1)
-		eif.Lhs = []ir.Node{hv2, hv1}
 		fn := typecheck.LookupRuntime("decoderune")
-		var fnInit ir.Nodes
-		eif.Rhs = []ir.Node{mkcall1(fn, fn.Type().Results(), &fnInit, ha, hv1)}
-		fnInit.Append(eif)
-		nif.Else = fnInit
+		call := mkcall1(fn, fn.Type().Results(), &nif.Else, ha, hv1)
+		a := ir.NewAssignListStmt(base.Pos, ir.OAS2, []ir.Node{hv2, hv1}, []ir.Node{call})
+		nif.Else.Append(a)
 
 		body = append(body, nif)
 
 		if v1 != nil {
 			if v2 != nil {
 				// v1, v2 = hv1t, hv2
-				a := ir.NewAssignListStmt(base.Pos, ir.OAS2, nil, nil)
-				a.Lhs = []ir.Node{v1, v2}
-				a.Rhs = []ir.Node{hv1t, hv2}
+				a := ir.NewAssignListStmt(base.Pos, ir.OAS2, []ir.Node{v1, v2}, []ir.Node{hv1t, hv2})
 				body = append(body, a)
 			} else {
 				// v1 = hv1t
@@ -418,7 +408,7 @@ func arrayClear(loop *ir.RangeStmt, v1, v2, a ir.Node) ir.Node {
 		return nil
 	}
 
-	elemsize := typecheck.RangeExprType(loop.X.Type()).Elem().Width
+	elemsize := typecheck.RangeExprType(loop.X.Type()).Elem().Size()
 	if elemsize <= 0 || !ir.IsZero(stmt.Y) {
 		return nil
 	}
@@ -431,7 +421,6 @@ func arrayClear(loop *ir.RangeStmt, v1, v2, a ir.Node) ir.Node {
 	// 	i = len(a) - 1
 	// }
 	n := ir.NewIfStmt(base.Pos, nil, nil, nil)
-	n.Body = nil
 	n.Cond = ir.NewBinaryExpr(base.Pos, ir.ONE, ir.NewUnaryExpr(base.Pos, ir.OLEN, a), ir.NewInt(0))
 
 	// hp = &a[0]

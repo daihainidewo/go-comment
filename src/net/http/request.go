@@ -19,6 +19,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http/httptrace"
+	"net/http/internal/ascii"
 	"net/textproto"
 	"net/url"
 	urlpkg "net/url"
@@ -729,7 +730,7 @@ func idnaASCII(v string) (string, error) {
 	// version does not.
 	// Note that for correct ASCII IDNs ToASCII will only do considerably more
 	// work, but it will not cause an allocation.
-	if isASCII(v) {
+	if ascii.Is(v) {
 		return v, nil
 	}
 	return idna.Lookup.ToASCII(v)
@@ -956,7 +957,7 @@ func (r *Request) BasicAuth() (username, password string, ok bool) {
 func parseBasicAuth(auth string) (username, password string, ok bool) {
 	const prefix = "Basic "
 	// Case insensitive prefix match. See Issue 22736.
-	if len(auth) < len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
+	if len(auth) < len(prefix) || !ascii.EqualFold(auth[:len(prefix)], prefix) {
 		return
 	}
 	c, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
@@ -1018,16 +1019,16 @@ func putTextprotoReader(r *textproto.Reader) {
 // requests and handle them via the Handler interface. ReadRequest
 // only supports HTTP/1.x requests. For HTTP/2, use golang.org/x/net/http2.
 func ReadRequest(b *bufio.Reader) (*Request, error) {
-	return readRequest(b, deleteHostHeader)
+	req, err := readRequest(b)
+	if err != nil {
+		return nil, err
+	}
+
+	delete(req.Header, "Host")
+	return req, err
 }
 
-// Constants for readRequest's deleteHostHeader parameter.
-const (
-	deleteHostHeader = true
-	keepHostHeader   = false
-)
-
-func readRequest(b *bufio.Reader, deleteHostHeader bool) (req *Request, err error) {
+func readRequest(b *bufio.Reader) (req *Request, err error) {
 	tp := newTextprotoReader(b)
 	req = new(Request)
 
@@ -1085,6 +1086,9 @@ func readRequest(b *bufio.Reader, deleteHostHeader bool) (req *Request, err erro
 		return nil, err
 	}
 	req.Header = Header(mimeHeader)
+	if len(req.Header["Host"]) > 1 {
+		return nil, fmt.Errorf("too many Host headers")
+	}
 
 	// RFC 7230, section 5.3: Must treat
 	//	GET /index.html HTTP/1.1
@@ -1096,9 +1100,6 @@ func readRequest(b *bufio.Reader, deleteHostHeader bool) (req *Request, err erro
 	req.Host = req.URL.Host
 	if req.Host == "" {
 		req.Host = req.Header.get("Host")
-	}
-	if deleteHostHeader {
-		delete(req.Header, "Host")
 	}
 
 	fixPragmaCacheControl(req.Header)
@@ -1132,6 +1133,9 @@ func readRequest(b *bufio.Reader, deleteHostHeader bool) (req *Request, err erro
 // MaxBytesReader prevents clients from accidentally or maliciously
 // sending a large request and wasting server resources.
 func MaxBytesReader(w ResponseWriter, r io.ReadCloser, n int64) io.ReadCloser {
+	if n < 0 { // Treat negative limits as equivalent to 0.
+		n = 0
+	}
 	return &maxBytesReader{w: w, r: r, n: n}
 }
 
@@ -1297,16 +1301,18 @@ func (r *Request) ParseForm() error {
 // its file parts are stored in memory, with the remainder stored on
 // disk in temporary files.
 // ParseMultipartForm calls ParseForm if necessary.
+// If ParseForm returns an error, ParseMultipartForm returns it but also
+// continues parsing the request body.
 // After one call to ParseMultipartForm, subsequent calls have no effect.
 func (r *Request) ParseMultipartForm(maxMemory int64) error {
 	if r.MultipartForm == multipartByReader {
 		return errors.New("http: multipart handled by MultipartReader")
 	}
+	var parseFormErr error
 	if r.Form == nil {
-		err := r.ParseForm()
-		if err != nil {
-			return err
-		}
+		// Let errors in ParseForm fall through, and just
+		// return it at the end.
+		parseFormErr = r.ParseForm()
 	}
 	if r.MultipartForm != nil {
 		return nil
@@ -1333,7 +1339,7 @@ func (r *Request) ParseMultipartForm(maxMemory int64) error {
 
 	r.MultipartForm = f
 
-	return nil
+	return parseFormErr
 }
 
 // FormValue returns the first value for the named component of the query.
@@ -1464,5 +1470,5 @@ func requestMethodUsuallyLacksBody(method string) bool {
 // an HTTP/1 connection.
 func (r *Request) requiresHTTP1() bool {
 	return hasToken(r.Header.Get("Connection"), "upgrade") &&
-		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+		ascii.EqualFold(r.Header.Get("Upgrade"), "websocket")
 }

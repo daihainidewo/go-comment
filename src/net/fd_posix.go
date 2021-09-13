@@ -64,11 +64,22 @@ func (fd *netFD) readFrom(p []byte) (n int, sa syscall.Sockaddr, err error) {
 	runtime.KeepAlive(fd)
 	return n, sa, wrapSyscallError(readFromSyscallName, err)
 }
-
-func (fd *netFD) readMsg(p []byte, oob []byte) (n, oobn, flags int, sa syscall.Sockaddr, err error) {
-	n, oobn, flags, sa, err = fd.pfd.ReadMsg(p, oob)
+func (fd *netFD) readFromInet4(p []byte, from *syscall.SockaddrInet4) (n int, err error) {
+	n, err = fd.pfd.ReadFromInet4(p, from)
 	runtime.KeepAlive(fd)
-	return n, oobn, flags, sa, wrapSyscallError(readMsgSyscallName, err)
+	return n, wrapSyscallError(readFromSyscallName, err)
+}
+
+func (fd *netFD) readFromInet6(p []byte, from *syscall.SockaddrInet6) (n int, err error) {
+	n, err = fd.pfd.ReadFromInet6(p, from)
+	runtime.KeepAlive(fd)
+	return n, wrapSyscallError(readFromSyscallName, err)
+}
+
+func (fd *netFD) readMsg(p []byte, oob []byte, flags int) (n, oobn, retflags int, sa syscall.Sockaddr, err error) {
+	n, oobn, retflags, sa, err = fd.pfd.ReadMsg(p, oob, flags)
+	runtime.KeepAlive(fd)
+	return n, oobn, retflags, sa, wrapSyscallError(readMsgSyscallName, err)
 }
 
 func (fd *netFD) Write(p []byte) (nn int, err error) {
@@ -79,6 +90,18 @@ func (fd *netFD) Write(p []byte) (nn int, err error) {
 
 func (fd *netFD) writeTo(p []byte, sa syscall.Sockaddr) (n int, err error) {
 	n, err = fd.pfd.WriteTo(p, sa)
+	runtime.KeepAlive(fd)
+	return n, wrapSyscallError(writeToSyscallName, err)
+}
+
+func (fd *netFD) writeToInet4(p []byte, sa syscall.SockaddrInet4) (n int, err error) {
+	n, err = fd.pfd.WriteToInet4(p, sa)
+	runtime.KeepAlive(fd)
+	return n, wrapSyscallError(writeToSyscallName, err)
+}
+
+func (fd *netFD) writeToInet6(p []byte, sa syscall.SockaddrInet6) (n int, err error) {
+	n, err = fd.pfd.WriteToInet6(p, sa)
 	runtime.KeepAlive(fd)
 	return n, wrapSyscallError(writeToSyscallName, err)
 }

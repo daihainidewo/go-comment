@@ -23,6 +23,7 @@
 package parser
 
 import (
+	"go/internal/typeparams"
 	"go/scanner"
 	"go/token"
 	"os"
@@ -89,7 +90,7 @@ func expectedErrors(fset *token.FileSet, filename string, src []byte) map[token.
 				if s[1] == "HERE" {
 					pos = here
 				}
-				errors[pos] = string(s[2])
+				errors[pos] = s[2]
 			}
 		case token.SEMICOLON:
 			// don't use the position of auto-inserted (invisible) semicolons
@@ -185,12 +186,14 @@ func TestErrors(t *testing.T) {
 	}
 	for _, d := range list {
 		name := d.Name()
-		if !d.IsDir() && !strings.HasPrefix(name, ".") && (strings.HasSuffix(name, ".src") || strings.HasSuffix(name, ".go2")) {
-			mode := DeclarationErrors | AllErrors
-			if strings.HasSuffix(name, ".go2") {
-				mode |= parseTypeParams
+		t.Run(name, func(t *testing.T) {
+			if !d.IsDir() && !strings.HasPrefix(name, ".") && (strings.HasSuffix(name, ".src") || strings.HasSuffix(name, ".go2")) {
+				mode := DeclarationErrors | AllErrors
+				if !strings.HasSuffix(name, ".go2") {
+					mode |= typeparams.DisallowParsing
+				}
+				checkErrors(t, filepath.Join(testdata, name), nil, mode, true)
 			}
-			checkErrors(t, filepath.Join(testdata, name), nil, mode, true)
-		}
+		})
 	}
 }

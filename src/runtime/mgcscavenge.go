@@ -18,12 +18,12 @@
 // application down to a goal.
 //
 // That goal is defined as:
-//   (retainExtraPercent+100) / 100 * (next_gc / last_next_gc) * last_heap_inuse
+//   (retainExtraPercent+100) / 100 * (heapGoal / lastHeapGoal) * last_heap_inuse
 //
 // Essentially, we wish to have the application's RSS track the heap goal, but
 // the heap goal is defined in terms of bytes of objects, rather than pages like
 // RSS. As a result, we need to take into account for fragmentation internal to
-// spans. next_gc / last_next_gc defines the ratio between the current heap goal
+// spans. heapGoal / lastHeapGoal defines the ratio between the current heap goal
 // and the last heap goal, which tells us by how much the heap is growing and
 // shrinking. We estimate what the heap will grow to in terms of pages by taking
 // this ratio and multiplying it by heap_inuse at the end of the last GC, which
@@ -56,6 +56,7 @@
 package runtime
 
 import (
+	"internal/goos"
 	"runtime/internal/atomic"
 	"runtime/internal/sys"
 	"unsafe"
@@ -90,7 +91,7 @@ const (
 	//
 	// This ratio is used as part of multiplicative factor to help the scavenger account
 	// for the additional costs of using scavenged memory in its pacing.
-	scavengeCostRatio = 0.7 * (sys.GoosDarwin + sys.GoosIos)
+	scavengeCostRatio = 0.7 * (goos.IsDarwin + goos.IsIos)
 
 	// scavengeReservationShards determines the amount of memory the scavenger
 	// should reserve for scavenging at a time. Specifically, the amount of
@@ -118,12 +119,12 @@ func gcPaceScavenger() {
 	// We never scavenge before the 2nd GC cycle anyway (we don't have enough
 	// information about the heap yet) so this is fine, and avoids a fault
 	// or garbage data later.
-	if memstats.last_next_gc == 0 {
+	if gcController.lastHeapGoal == 0 {
 		mheap_.scavengeGoal = ^uint64(0)
 		return
 	}
 	// Compute our scavenging goal.
-	goalRatio := float64(atomic.Load64(&memstats.next_gc)) / float64(memstats.last_next_gc)
+	goalRatio := float64(atomic.Load64(&gcController.heapGoal)) / float64(gcController.lastHeapGoal)
 	retainedGoal := uint64(float64(memstats.last_heap_inuse) * goalRatio)
 	// Add retainExtraPercent overhead to retainedGoal. This calculation
 	// looks strange but the purpose is to arrive at an integer division
@@ -372,7 +373,7 @@ func bgscavenge(c chan int) {
 		// Due to OS-related anomalies we may "sleep" for an inordinate amount
 		// of time. Let's avoid letting the ratio get out of hand by bounding
 		// the sleep time we use in our EWMA.
-		const minFraction = 1 / 1000
+		const minFraction = 1.0 / 1000.0
 		if fraction < minFraction {
 			fraction = minFraction
 		}

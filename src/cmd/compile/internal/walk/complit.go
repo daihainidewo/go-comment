@@ -218,11 +218,11 @@ func fixedlit(ctxt initContext, kind initKind, n *ir.CompLitExpr, var_ ir.Node, 
 	case ir.OSTRUCTLIT:
 		splitnode = func(rn ir.Node) (ir.Node, ir.Node) {
 			r := rn.(*ir.StructKeyExpr)
-			if r.Field.IsBlank() || isBlank {
+			if r.Sym().IsBlank() || isBlank {
 				return ir.BlankNode, r.Value
 			}
 			ir.SetPos(r)
-			return ir.NewSelectorExpr(base.Pos, ir.ODOT, var_, r.Field), r.Value
+			return ir.NewSelectorExpr(base.Pos, ir.ODOT, var_, r.Sym()), r.Value
 		}
 	default:
 		base.Fatalf("fixedlit bad op: %v", n.Op())
@@ -277,7 +277,7 @@ func isSmallSliceLit(n *ir.CompLitExpr) bool {
 		return false
 	}
 
-	return n.Type().Elem().Width == 0 || n.Len <= ir.MaxSmallArraySize/n.Type().Elem().Width
+	return n.Type().Elem().Size() == 0 || n.Len <= ir.MaxSmallArraySize/n.Type().Elem().Size()
 }
 
 func slicelit(ctxt initContext, n *ir.CompLitExpr, var_ ir.Node, init *ir.Nodes) {
@@ -440,8 +440,8 @@ func maplit(n *ir.CompLitExpr, m ir.Node, init *ir.Nodes) {
 		tk := types.NewArray(n.Type().Key(), int64(len(entries)))
 		te := types.NewArray(n.Type().Elem(), int64(len(entries)))
 
-		tk.SetNoalg(true)
-		te.SetNoalg(true)
+		// TODO(#47904): mark tk and te NoAlg here once the
+		// compiler/linker can handle NoAlg types correctly.
 
 		types.CalcSize(tk)
 		types.CalcSize(te)
@@ -475,7 +475,10 @@ func maplit(n *ir.CompLitExpr, m ir.Node, init *ir.Nodes) {
 		zero := ir.NewAssignStmt(base.Pos, i, ir.NewInt(0))
 		cond := ir.NewBinaryExpr(base.Pos, ir.OLT, i, ir.NewInt(tk.NumElem()))
 		incr := ir.NewAssignStmt(base.Pos, i, ir.NewBinaryExpr(base.Pos, ir.OADD, i, ir.NewInt(1)))
-		body := ir.NewAssignStmt(base.Pos, lhs, rhs)
+
+		var body ir.Node = ir.NewAssignStmt(base.Pos, lhs, rhs)
+		body = typecheck.Stmt(body) // typechecker rewrites OINDEX to OINDEXMAP
+		body = orderStmtInPlace(body, map[string][]*ir.Name{})
 
 		loop := ir.NewForStmt(base.Pos, nil, cond, incr, nil)
 		loop.Body = []ir.Node{body}
@@ -503,7 +506,10 @@ func maplit(n *ir.CompLitExpr, m ir.Node, init *ir.Nodes) {
 		appendWalkStmt(init, ir.NewAssignStmt(base.Pos, tmpelem, elem))
 
 		ir.SetPos(tmpelem)
-		appendWalkStmt(init, ir.NewAssignStmt(base.Pos, ir.NewIndexExpr(base.Pos, m, tmpkey), tmpelem))
+		var a ir.Node = ir.NewAssignStmt(base.Pos, ir.NewIndexExpr(base.Pos, m, tmpkey), tmpelem)
+		a = typecheck.Stmt(a) // typechecker rewrites OINDEX to OINDEXMAP
+		a = orderStmtInPlace(a, map[string][]*ir.Name{})
+		appendWalkStmt(init, a)
 	}
 
 	appendWalkStmt(init, ir.NewUnaryExpr(base.Pos, ir.OVARKILL, tmpkey))
@@ -644,7 +650,7 @@ func genAsStatic(as *ir.AssignStmt) {
 
 	switch r := as.Y; r.Op() {
 	case ir.OLITERAL:
-		staticdata.InitConst(name, offset, r, int(r.Type().Width))
+		staticdata.InitConst(name, offset, r, int(r.Type().Size()))
 		return
 	case ir.OMETHEXPR:
 		r := r.(*ir.SelectorExpr)

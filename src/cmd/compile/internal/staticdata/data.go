@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"go/constant"
+	"internal/buildcfg"
 	"io"
 	"io/ioutil"
 	"os"
@@ -91,6 +92,10 @@ func StringSym(pos src.XPos, s string) (data *obj.LSym) {
 	return symdata
 }
 
+// maxFileSize is the maximum file size permitted by the linker
+// (see issue #9862).
+const maxFileSize = int64(2e9)
+
 // fileStringSym returns a symbol for the contents and the size of file.
 // If readonly is true, the symbol shares storage with any literal string
 // or other file with the same content and is placed in a read-only section.
@@ -132,12 +137,12 @@ func fileStringSym(pos src.XPos, file string, readonly bool, hash []byte) (*obj.
 		}
 		return sym, size, nil
 	}
-	if size > 2e9 {
+	if size > maxFileSize {
 		// ggloblsym takes an int32,
 		// and probably the rest of the toolchain
 		// can't handle such big symbols either.
 		// See golang.org/issue/9862.
-		return nil, 0, fmt.Errorf("file too large")
+		return nil, 0, fmt.Errorf("file too large (%d bytes > %d bytes)", size, maxFileSize)
 	}
 
 	// File is too big to read and keep in memory.
@@ -214,11 +219,16 @@ func dstringdata(s *obj.LSym, off int, t string, pos src.XPos, what string) int 
 
 var (
 	funcsymsmu sync.Mutex // protects funcsyms and associated package lookups (see func funcsym)
-	funcsyms   []*types.Sym
+	funcsyms   []*ir.Name // functions that need function value symbols
 )
 
-// FuncSym returns s·f.
-func FuncSym(s *types.Sym) *types.Sym {
+// FuncLinksym returns n·f, the function value symbol for n.
+func FuncLinksym(n *ir.Name) *obj.LSym {
+	if n.Op() != ir.ONAME || n.Class != ir.PFUNC {
+		base.Fatalf("expected func name: %v", n)
+	}
+	s := n.Sym()
+
 	// funcsymsmu here serves to protect not just mutations of funcsyms (below),
 	// but also the package lookup of the func sym name,
 	// since this function gets called concurrently from the backend.
@@ -235,17 +245,11 @@ func FuncSym(s *types.Sym) *types.Sym {
 	// symbols will be created explicitly with NeedFuncSym.
 	// See the NeedFuncSym comment for details.
 	if !base.Ctxt.Flag_dynlink && !existed {
-		funcsyms = append(funcsyms, s)
+		funcsyms = append(funcsyms, n)
 	}
 	funcsymsmu.Unlock()
-	return sf
-}
 
-func FuncLinksym(n *ir.Name) *obj.LSym {
-	if n.Op() != ir.ONAME || n.Class != ir.PFUNC {
-		base.Fatalf("expected func name: %v", n)
-	}
-	return FuncSym(n.Sym()).Linksym()
+	return sf.Linksym()
 }
 
 func GlobalLinksym(n *ir.Name) *obj.LSym {
@@ -255,43 +259,62 @@ func GlobalLinksym(n *ir.Name) *obj.LSym {
 	return n.Linksym()
 }
 
-// NeedFuncSym ensures that s·f is exported, if needed.
+// NeedFuncSym ensures that fn·f is exported, if needed.
 // It is only used with -dynlink.
 // When not compiling for dynamic linking,
 // the funcsyms are created as needed by
 // the packages that use them.
-// Normally we emit the s·f stubs as DUPOK syms,
+// Normally we emit the fn·f stubs as DUPOK syms,
 // but DUPOK doesn't work across shared library boundaries.
 // So instead, when dynamic linking, we only create
-// the s·f stubs in s's package.
-func NeedFuncSym(s *types.Sym) {
+// the fn·f stubs in fn's package.
+func NeedFuncSym(fn *ir.Func) {
 	if base.Ctxt.InParallel {
 		// The append below probably just needs to lock
 		// funcsymsmu, like in FuncSym.
 		base.Fatalf("NeedFuncSym must be called in serial")
 	}
+	if fn.ABI != obj.ABIInternal && buildcfg.Experiment.RegabiWrappers {
+		// Function values must always reference ABIInternal
+		// entry points, so it doesn't make sense to create a
+		// funcsym for other ABIs.
+		//
+		// (If we're using ABI aliases, it doesn't matter.)
+		base.Fatalf("expected ABIInternal: %v has %v", fn.Nname, fn.ABI)
+	}
+	if ir.IsBlank(fn.Nname) {
+		// Blank functions aren't unique, so we can't make a
+		// funcsym for them.
+		base.Fatalf("NeedFuncSym called for _")
+	}
 	if !base.Ctxt.Flag_dynlink {
 		return
 	}
-	if s.IsBlank() {
+	s := fn.Nname.Sym()
+	if base.Flag.CompilingRuntime && (s.Name == "getg" || s.Name == "getclosureptr" || s.Name == "getcallerpc" || s.Name == "getcallersp") ||
+		(base.Ctxt.Pkgpath == "internal/abi" && (s.Name == "FuncPCABI0" || s.Name == "FuncPCABIInternal")) {
+		// runtime.getg(), getclosureptr(), getcallerpc(), getcallersp(),
+		// and internal/abi.FuncPCABIxxx() are not real functions and so
+		// do not get funcsyms.
 		return
 	}
-	if base.Flag.CompilingRuntime && (s.Name == "getg" || s.Name == "getclosureptr" || s.Name == "getcallerpc" || s.Name == "getcallersp") {
-		// runtime.getg(), getclosureptr(), getcallerpc(), and
-		// getcallersp() are not real functions and so do not
-		// get funcsyms.
-		return
-	}
-	funcsyms = append(funcsyms, s)
+	funcsyms = append(funcsyms, fn.Nname)
 }
 
 func WriteFuncSyms() {
 	sort.Slice(funcsyms, func(i, j int) bool {
 		return funcsyms[i].Linksym().Name < funcsyms[j].Linksym().Name
 	})
-	for _, s := range funcsyms {
+	for _, nam := range funcsyms {
+		s := nam.Sym()
 		sf := s.Pkg.Lookup(ir.FuncSymName(s)).Linksym()
-		objw.SymPtr(sf, 0, s.Linksym(), 0)
+		// Function values must always reference ABIInternal
+		// entry points.
+		target := s.Linksym()
+		if target.ABI() != obj.ABIInternal {
+			base.Fatalf("expected ABIInternal: %v has %v", target, target.ABI())
+		}
+		objw.SymPtr(sf, 0, target, 0)
 		objw.Global(sf, int32(types.PtrSize), obj.DUPOK|obj.RODATA)
 	}
 }

@@ -260,6 +260,60 @@ func (n NullInt32) Value() (driver.Value, error) {
 	return int64(n.Int32), nil
 }
 
+// NullInt16 represents an int16 that may be null.
+// NullInt16 implements the Scanner interface so
+// it can be used as a scan destination, similar to NullString.
+type NullInt16 struct {
+	Int16 int16
+	Valid bool // Valid is true if Int16 is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (n *NullInt16) Scan(value interface{}) error {
+	if value == nil {
+		n.Int16, n.Valid = 0, false
+		return nil
+	}
+	err := convertAssign(&n.Int16, value)
+	n.Valid = err == nil
+	return err
+}
+
+// Value implements the driver Valuer interface.
+func (n NullInt16) Value() (driver.Value, error) {
+	if !n.Valid {
+		return nil, nil
+	}
+	return int64(n.Int16), nil
+}
+
+// NullByte represents a byte that may be null.
+// NullByte implements the Scanner interface so
+// it can be used as a scan destination, similar to NullString.
+type NullByte struct {
+	Byte  byte
+	Valid bool // Valid is true if Byte is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (n *NullByte) Scan(value interface{}) error {
+	if value == nil {
+		n.Byte, n.Valid = 0, false
+		return nil
+	}
+	err := convertAssign(&n.Byte, value)
+	n.Valid = err == nil
+	return err
+}
+
+// Value implements the driver Valuer interface.
+func (n NullByte) Value() (driver.Value, error) {
+	if !n.Valid {
+		return nil, nil
+	}
+	return int64(n.Byte), nil
+}
+
 // NullFloat64 represents a float64 that may be null.
 // NullFloat64 implements the Scanner interface so
 // it can be used as a scan destination, similar to NullString.
@@ -1795,7 +1849,7 @@ func (db *DB) beginDC(ctx context.Context, dc *driverConn, release func(error), 
 		return nil, err
 	}
 
-	// Schedule the transaction to rollback when the context is cancelled.
+	// Schedule the transaction to rollback when the context is canceled.
 	// The cancel function in Tx will be called after done is set to true.
 	ctx, cancel := context.WithCancel(ctx)
 	tx = &Tx{
@@ -1948,8 +2002,8 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (*Stmt, error) 
 // Raw executes f exposing the underlying driver connection for the
 // duration of f. The driverConn must not be used outside of f.
 //
-// Once f returns and err is nil, the Conn will continue to be usable
-// until Conn.Close is called.
+// Once f returns and err is not equal to driver.ErrBadConn, the Conn will
+// continue to be usable until Conn.Close is called.
 func (c *Conn) Raw(f func(driverConn interface{}) error) (err error) {
 	var dc *driverConn
 	var release releaseConn

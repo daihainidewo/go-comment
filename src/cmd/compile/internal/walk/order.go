@@ -6,9 +6,9 @@ package walk
 
 import (
 	"fmt"
+	"go/constant"
 
 	"cmd/compile/internal/base"
-	"cmd/compile/internal/escape"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/reflectdata"
 	"cmd/compile/internal/staticinit"
@@ -51,7 +51,7 @@ import (
 type orderState struct {
 	out  []ir.Node             // list of generated statements
 	temp []*ir.Name            // stack of temporary variables
-	free map[string][]*ir.Name // free list of unused temporaries, by type.LongString().
+	free map[string][]*ir.Name // free list of unused temporaries, by type.LinkString().
 	edit func(ir.Node) ir.Node // cached closure of o.exprNoLHS
 }
 
@@ -76,20 +76,14 @@ func (o *orderState) append(stmt ir.Node) {
 // If clear is true, newTemp emits code to zero the temporary.
 func (o *orderState) newTemp(t *types.Type, clear bool) *ir.Name {
 	var v *ir.Name
-	// Note: LongString is close to the type equality we want,
-	// but not exactly. We still need to double-check with types.Identical.
-	key := t.LongString()
-	a := o.free[key]
-	for i, n := range a {
-		if types.Identical(t, n.Type()) {
-			v = a[i]
-			a[i] = a[len(a)-1]
-			a = a[:len(a)-1]
-			o.free[key] = a
-			break
+	key := t.LinkString()
+	if a := o.free[key]; len(a) > 0 {
+		v = a[len(a)-1]
+		if !types.Identical(t, v.Type()) {
+			base.Fatalf("expected %L to have type %v", v, t)
 		}
-	}
-	if v == nil {
+		o.free[key] = a[:len(a)-1]
+	} else {
 		v = typecheck.Temp(t)
 	}
 	if clear {
@@ -268,10 +262,52 @@ func (o *orderState) addrTemp(n ir.Node) ir.Node {
 func (o *orderState) mapKeyTemp(t *types.Type, n ir.Node) ir.Node {
 	// Most map calls need to take the address of the key.
 	// Exception: map*_fast* calls. See golang.org/issue/19015.
-	if mapfast(t) == mapslow {
+	alg := mapfast(t)
+	if alg == mapslow {
 		return o.addrTemp(n)
 	}
-	return n
+	var kt *types.Type
+	switch alg {
+	case mapfast32:
+		kt = types.Types[types.TUINT32]
+	case mapfast64:
+		kt = types.Types[types.TUINT64]
+	case mapfast32ptr, mapfast64ptr:
+		kt = types.Types[types.TUNSAFEPTR]
+	case mapfaststr:
+		kt = types.Types[types.TSTRING]
+	}
+	nt := n.Type()
+	switch {
+	case nt == kt:
+		return n
+	case nt.Kind() == kt.Kind(), nt.IsPtrShaped() && kt.IsPtrShaped():
+		// can directly convert (e.g. named type to underlying type, or one pointer to another)
+		return typecheck.Expr(ir.NewConvExpr(n.Pos(), ir.OCONVNOP, kt, n))
+	case nt.IsInteger() && kt.IsInteger():
+		// can directly convert (e.g. int32 to uint32)
+		if n.Op() == ir.OLITERAL && nt.IsSigned() {
+			// avoid constant overflow error
+			n = ir.NewConstExpr(constant.MakeUint64(uint64(ir.Int64Val(n))), n)
+			n.SetType(kt)
+			return n
+		}
+		return typecheck.Expr(ir.NewConvExpr(n.Pos(), ir.OCONV, kt, n))
+	default:
+		// Unsafe cast through memory.
+		// We'll need to do a load with type kt. Create a temporary of type kt to
+		// ensure sufficient alignment. nt may be under-aligned.
+		if uint8(kt.Alignment()) < uint8(nt.Alignment()) {
+			base.Fatalf("mapKeyTemp: key type is not sufficiently aligned, kt=%v nt=%v", kt, nt)
+		}
+		tmp := o.newTemp(kt, true)
+		// *(*nt)(&tmp) = n
+		var e ir.Node = typecheck.NodAddr(tmp)
+		e = ir.NewConvExpr(n.Pos(), ir.OCONVNOP, nt.PtrTo(), e)
+		e = ir.NewStarExpr(n.Pos(), e)
+		o.append(ir.NewAssignStmt(base.Pos, e, n))
+		return tmp
+	}
 }
 
 // mapKeyReplaceStrConv replaces OBYTES2STR by OBYTES2STRTMP
@@ -328,7 +364,7 @@ func (o *orderState) markTemp() ordermarker {
 // which must have been returned by markTemp.
 func (o *orderState) popTemp(mark ordermarker) {
 	for _, n := range o.temp[mark:] {
-		key := n.Type().LongString()
+		key := n.Type().LinkString()
 		o.free[key] = append(o.free[key], n)
 	}
 	o.temp = o.temp[:mark]
@@ -470,15 +506,18 @@ func (o *orderState) init(n ir.Node) {
 }
 
 // call orders the call expression n.
-// n.Op is OCALLMETH/OCALLFUNC/OCALLINTER or a builtin like OCOPY.
+// n.Op is OCALLFUNC/OCALLINTER or a builtin like OCOPY.
 func (o *orderState) call(nn ir.Node) {
 	if len(nn.Init()) > 0 {
 		// Caller should have already called o.init(nn).
 		base.Fatalf("%v with unexpected ninit", nn.Op())
 	}
+	if nn.Op() == ir.OCALLMETH {
+		base.FatalfAt(nn.Pos(), "OCALLMETH missed by typecheck")
+	}
 
 	// Builtin functions.
-	if nn.Op() != ir.OCALLFUNC && nn.Op() != ir.OCALLMETH && nn.Op() != ir.OCALLINTER {
+	if nn.Op() != ir.OCALLFUNC && nn.Op() != ir.OCALLINTER {
 		switch n := nn.(type) {
 		default:
 			base.Fatalf("unexpected call: %+v", n)
@@ -500,41 +539,16 @@ func (o *orderState) call(nn ir.Node) {
 
 	n := nn.(*ir.CallExpr)
 	typecheck.FixVariadicCall(n)
-	n.X = o.expr(n.X, nil)
-	o.exprList(n.Args)
 
-	if n.Op() == ir.OCALLINTER {
+	if isFuncPCIntrinsic(n) && isIfaceOfFunc(n.Args[0]) {
+		// For internal/abi.FuncPCABIxxx(fn), if fn is a defined function,
+		// do not introduce temporaries here, so it is easier to rewrite it
+		// to symbol address reference later in walk.
 		return
 	}
-	keepAlive := func(arg ir.Node) {
-		// If the argument is really a pointer being converted to uintptr,
-		// arrange for the pointer to be kept alive until the call returns,
-		// by copying it into a temp and marking that temp
-		// still alive when we pop the temp stack.
-		if arg.Op() == ir.OCONVNOP {
-			arg := arg.(*ir.ConvExpr)
-			if arg.X.Type().IsUnsafePtr() {
-				x := o.copyExpr(arg.X)
-				arg.X = x
-				x.SetAddrtaken(true) // ensure SSA keeps the x variable
-				n.KeepAlive = append(n.KeepAlive, x)
-			}
-		}
-	}
 
-	// Check for "unsafe-uintptr" tag provided by escape analysis.
-	for i, param := range n.X.Type().Params().FieldSlice() {
-		if param.Note == escape.UnsafeUintptrNote || param.Note == escape.UintptrEscapesNote {
-			if arg := n.Args[i]; arg.Op() == ir.OSLICELIT {
-				arg := arg.(*ir.CompLitExpr)
-				for _, elt := range arg.List {
-					keepAlive(elt)
-				}
-			} else {
-				keepAlive(arg)
-			}
-		}
-	}
+	n.X = o.expr(n.X, nil)
+	o.exprList(n.Args)
 }
 
 // mapAssign appends n to o.out.
@@ -641,9 +655,20 @@ func (o *orderState) stmt(n ir.Node) {
 		n := n.(*ir.AssignListStmt)
 		t := o.markTemp()
 		o.exprList(n.Lhs)
-		o.init(n.Rhs[0])
-		o.call(n.Rhs[0])
-		o.as2func(n)
+		call := n.Rhs[0]
+		o.init(call)
+		if ic, ok := call.(*ir.InlinedCallExpr); ok {
+			o.stmtList(ic.Body)
+
+			n.SetOp(ir.OAS2)
+			n.Rhs = ic.ReturnVars
+
+			o.exprList(n.Rhs)
+			o.out = append(o.out, n)
+		} else {
+			o.call(call)
+			o.as2func(n)
+		}
 		o.cleanTemp(t)
 
 	// Special: use temporary variables to hold result,
@@ -661,6 +686,10 @@ func (o *orderState) stmt(n ir.Node) {
 		case ir.ODOTTYPE2:
 			r := r.(*ir.TypeAssertExpr)
 			r.X = o.expr(r.X, nil)
+		case ir.ODYNAMICDOTTYPE2:
+			r := r.(*ir.DynamicTypeAssertExpr)
+			r.X = o.expr(r.X, nil)
+			r.T = o.expr(r.T, nil)
 		case ir.ORECV:
 			r := r.(*ir.UnaryExpr)
 			r.X = o.expr(r.X, nil)
@@ -696,14 +725,25 @@ func (o *orderState) stmt(n ir.Node) {
 		o.out = append(o.out, n)
 
 	// Special: handle call arguments.
-	case ir.OCALLFUNC, ir.OCALLINTER, ir.OCALLMETH:
+	case ir.OCALLFUNC, ir.OCALLINTER:
 		n := n.(*ir.CallExpr)
 		t := o.markTemp()
 		o.call(n)
 		o.out = append(o.out, n)
 		o.cleanTemp(t)
 
-	case ir.OCLOSE, ir.ORECV:
+	case ir.OINLCALL:
+		n := n.(*ir.InlinedCallExpr)
+		o.stmtList(n.Body)
+
+		// discard results; double-check for no side effects
+		for _, result := range n.ReturnVars {
+			if staticinit.AnySideEffects(result) {
+				base.FatalfAt(result.Pos(), "inlined call result has side effects: %v", result)
+			}
+		}
+
+	case ir.OCHECKNIL, ir.OCLOSE, ir.OPANIC, ir.ORECV:
 		n := n.(*ir.UnaryExpr)
 		t := o.markTemp()
 		n.X = o.expr(n.X, nil)
@@ -718,10 +758,10 @@ func (o *orderState) stmt(n ir.Node) {
 		o.out = append(o.out, n)
 		o.cleanTemp(t)
 
-	case ir.OPRINT, ir.OPRINTN, ir.ORECOVER:
+	case ir.OPRINT, ir.OPRINTN, ir.ORECOVERFP:
 		n := n.(*ir.CallExpr)
 		t := o.markTemp()
-		o.exprList(n.Args)
+		o.call(n)
 		o.out = append(o.out, n)
 		o.cleanTemp(t)
 
@@ -767,16 +807,6 @@ func (o *orderState) stmt(n ir.Node) {
 		orderBlock(&n.Body, o.free)
 		orderBlock(&n.Else, o.free)
 		o.out = append(o.out, n)
-
-	case ir.OPANIC:
-		n := n.(*ir.UnaryExpr)
-		t := o.markTemp()
-		n.X = o.expr(n.X, nil)
-		if !n.X.Type().IsEmptyInterface() {
-			base.FatalfAt(n.Pos(), "bad argument to panic: %L", n.X)
-		}
-		o.out = append(o.out, n)
-		o.cleanTemp(t)
 
 	case ir.ORANGE:
 		// n.Right is the expression being ranged over.
@@ -1130,23 +1160,26 @@ func (o *orderState) expr1(n, lhs ir.Node) ir.Node {
 
 	// concrete type (not interface) argument might need an addressable
 	// temporary to pass to the runtime conversion routine.
-	case ir.OCONVIFACE:
+	case ir.OCONVIFACE, ir.OCONVIDATA:
 		n := n.(*ir.ConvExpr)
 		n.X = o.expr(n.X, nil)
 		if n.X.Type().IsInterface() {
 			return n
 		}
-		if _, needsaddr := convFuncName(n.X.Type(), n.Type()); needsaddr || isStaticCompositeLiteral(n.X) {
+		if _, _, needsaddr := dataWordFuncName(n.X.Type()); needsaddr || isStaticCompositeLiteral(n.X) {
 			// Need a temp if we need to pass the address to the conversion function.
 			// We also process static composite literal node here, making a named static global
-			// whose address we can put directly in an interface (see OCONVIFACE case in walk).
+			// whose address we can put directly in an interface (see OCONVIFACE/OCONVIDATA case in walk).
 			n.X = o.addrTemp(n.X)
 		}
 		return n
 
 	case ir.OCONVNOP:
 		n := n.(*ir.ConvExpr)
-		if n.Type().IsKind(types.TUNSAFEPTR) && n.X.Type().IsKind(types.TUINTPTR) && (n.X.Op() == ir.OCALLFUNC || n.X.Op() == ir.OCALLINTER || n.X.Op() == ir.OCALLMETH) {
+		if n.X.Op() == ir.OCALLMETH {
+			base.FatalfAt(n.X.Pos(), "OCALLMETH missed by typecheck")
+		}
+		if n.Type().IsKind(types.TUNSAFEPTR) && n.X.Type().IsKind(types.TUINTPTR) && (n.X.Op() == ir.OCALLFUNC || n.X.Op() == ir.OCALLINTER) {
 			call := n.X.(*ir.CallExpr)
 			// When reordering unsafe.Pointer(f()) into a separate
 			// statement, the conversion and function call must stay
@@ -1199,9 +1232,12 @@ func (o *orderState) expr1(n, lhs ir.Node) ir.Node {
 		o.out = append(o.out, nif)
 		return r
 
+	case ir.OCALLMETH:
+		base.FatalfAt(n.Pos(), "OCALLMETH missed by typecheck")
+		panic("unreachable")
+
 	case ir.OCALLFUNC,
 		ir.OCALLINTER,
-		ir.OCALLMETH,
 		ir.OCAP,
 		ir.OCOMPLEX,
 		ir.OCOPY,
@@ -1213,7 +1249,7 @@ func (o *orderState) expr1(n, lhs ir.Node) ir.Node {
 		ir.OMAKESLICECOPY,
 		ir.ONEW,
 		ir.OREAL,
-		ir.ORECOVER,
+		ir.ORECOVERFP,
 		ir.OSTR2BYTES,
 		ir.OSTR2BYTESTMP,
 		ir.OSTR2RUNES:
@@ -1230,6 +1266,11 @@ func (o *orderState) expr1(n, lhs ir.Node) ir.Node {
 			return o.copyExpr(n)
 		}
 		return n
+
+	case ir.OINLCALL:
+		n := n.(*ir.InlinedCallExpr)
+		o.stmtList(n.Body)
+		return n.SingleResult()
 
 	case ir.OAPPEND:
 		// Check for append(x, make([]T, y)...) .
@@ -1265,11 +1306,11 @@ func (o *orderState) expr1(n, lhs ir.Node) ir.Node {
 		}
 		return n
 
-	case ir.OCALLPART:
+	case ir.OMETHVALUE:
 		n := n.(*ir.SelectorExpr)
 		n.X = o.expr(n.X, nil)
 		if n.Transient() {
-			t := typecheck.PartialCallType(n)
+			t := typecheck.MethodValueType(n)
 			n.Prealloc = o.newTemp(t, false)
 		}
 		return n
@@ -1434,4 +1475,19 @@ func (o *orderState) as2ok(n *ir.AssignListStmt) {
 
 	o.out = append(o.out, n)
 	o.stmt(typecheck.Stmt(as))
+}
+
+// isFuncPCIntrinsic returns whether n is a direct call of internal/abi.FuncPCABIxxx functions.
+func isFuncPCIntrinsic(n *ir.CallExpr) bool {
+	if n.Op() != ir.OCALLFUNC || n.X.Op() != ir.ONAME {
+		return false
+	}
+	fn := n.X.(*ir.Name).Sym()
+	return (fn.Name == "FuncPCABI0" || fn.Name == "FuncPCABIInternal") &&
+		(fn.Pkg.Path == "internal/abi" || fn.Pkg == types.LocalPkg && base.Ctxt.Pkgpath == "internal/abi")
+}
+
+// isIfaceOfFunc returns whether n is an interface conversion from a direct reference of a func.
+func isIfaceOfFunc(n ir.Node) bool {
+	return n.Op() == ir.OCONVIFACE && n.(*ir.ConvExpr).X.Op() == ir.ONAME && n.(*ir.ConvExpr).X.(*ir.Name).Class == ir.PFUNC
 }

@@ -6,6 +6,8 @@ package runtime
 
 import (
 	"internal/abi"
+	"internal/goarch"
+	"internal/goexperiment"
 	"unsafe"
 )
 
@@ -108,13 +110,16 @@ func reflect_memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr) {
 //go:noescape
 func memmove(to, from unsafe.Pointer, n uintptr)
 
+// Outside assembly calls memmove. Make sure it has ABI wrappers.
+//go:linkname memmove
+
 //go:linkname reflect_memmove reflect.memmove
 func reflect_memmove(to, from unsafe.Pointer, n uintptr) {
 	memmove(to, from, n)
 }
 
 // exported value for testing
-var hashLoad = float32(loadFactorNum) / float32(loadFactorDen)
+const hashLoad = float32(loadFactorNum) / float32(loadFactorDen)
 
 //go:nosplit
 func fastrand() uint32 {
@@ -172,8 +177,6 @@ func cgocallback(fn, frame, ctxt uintptr)
 
 func gogo(buf *gobuf)   // 切换到buf
 
-//go:noescape
-func jmpdefer(fv *funcval, argp uintptr)
 func asminit()
 func setg(gg *g)
 func breakpoint()
@@ -395,8 +398,10 @@ func duffcopy()
 // Called from linker-generated .initarray; declared for go vet; do NOT call from Go.
 func addmoduledata()
 
-// Injected by the signal handler for panicking signals. On many platforms it just
-// jumps to sigpanic.
+// Injected by the signal handler for panicking signals.
+// Initializes any registers that have fixed meaning at calls but
+// are scratch in bodies and calls sigpanic.
+// On many platforms it just jumps to sigpanic.
 func sigpanic0()
 
 // intArgRegs is used by the various register assignment
@@ -417,12 +422,5 @@ func sigpanic0()
 // structure that is at least large enough to hold the
 // registers the system supports.
 //
-// Currently it's set to zero because using the actual
-// constant will break every part of the toolchain that
-// uses finalizers or Windows callbacks to call functions
-// The value that is currently commented out there should be
-// the actual value once we're ready to use the register ABI
-// everywhere.
-//
 // Protected by finlock.
-var intArgRegs = 0 // abi.IntArgRegs
+var intArgRegs = abi.IntArgRegs * (goexperiment.RegabiArgsInt | goarch.IsAmd64)

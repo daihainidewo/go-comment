@@ -224,7 +224,7 @@ func (n *ForStmt) SetOp(op Op) {
 
 // A GoDeferStmt is a go or defer statement: go Call / defer Call.
 //
-// The two opcodes use a signle syntax because the implementations
+// The two opcodes use a single syntax because the implementations
 // are very similar: both are concerned with saving Call and running it
 // in a different context (a separate goroutine or a later time).
 type GoDeferStmt struct {
@@ -244,7 +244,7 @@ func NewGoDeferStmt(pos src.XPos, op Op, call Node) *GoDeferStmt {
 	return n
 }
 
-// A IfStmt is a return statement: if Init; Cond { Then } else { Else }.
+// An IfStmt is a return statement: if Init; Cond { Body } else { Else }.
 type IfStmt struct {
 	miniStmt
 	Cond   Node

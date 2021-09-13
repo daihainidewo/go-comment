@@ -9,6 +9,7 @@
 #include "go_asm.h"
 #include "go_tls.h"
 #include "textflag.h"
+#include "cgo/abi_amd64.h"
 
 #define AT_FDCWD -100
 
@@ -203,9 +204,8 @@ TEXT runtime·mincore(SB),NOSPLIT,$0-28
 	MOVL	AX, ret+24(FP)
 	RET
 
-// func walltime1() (sec int64, nsec int32)
-// non-zero frame-size means bp is saved and restored
-TEXT runtime·walltime1(SB),NOSPLIT,$16-12
+// func nanotime1() int64
+TEXT runtime·nanotime1(SB),NOSPLIT,$16-8
 	// We don't know how much stack space the VDSO code will need,
 	// so switch to g0.
 	// In particular, a kernel configured with CONFIG_OPTIMIZE_INLINING=n
@@ -215,81 +215,7 @@ TEXT runtime·walltime1(SB),NOSPLIT,$16-12
 
 	MOVQ	SP, R12	// Save old SP; R12 unchanged by C code.
 
-#ifdef GOEXPERIMENT_REGABI_G
 	MOVQ	g_m(R14), BX // BX unchanged by C code.
-#else
-	get_tls(CX)
-	MOVQ	g(CX), AX
-	MOVQ	g_m(AX), BX // BX unchanged by C code.
-#endif
-
-	// Set vdsoPC and vdsoSP for SIGPROF traceback.
-	// Save the old values on stack and restore them on exit,
-	// so this function is reentrant.
-	MOVQ	m_vdsoPC(BX), CX
-	MOVQ	m_vdsoSP(BX), DX
-	MOVQ	CX, 0(SP)
-	MOVQ	DX, 8(SP)
-
-	LEAQ	sec+0(FP), DX
-	MOVQ	-8(DX), CX
-	MOVQ	CX, m_vdsoPC(BX)
-	MOVQ	DX, m_vdsoSP(BX)
-
-#ifdef GOEXPERIMENT_REGABI_G
-	CMPQ	R14, m_curg(BX)	// Only switch if on curg.
-#else
-	CMPQ	AX, m_curg(BX)	// Only switch if on curg.
-#endif
-	JNE	noswitch
-
-	MOVQ	m_g0(BX), DX
-	MOVQ	(g_sched+gobuf_sp)(DX), SP	// Set SP to g0 stack
-
-noswitch:
-	SUBQ	$16, SP		// Space for results
-	ANDQ	$~15, SP	// Align for C code
-
-	MOVL	$0, DI // CLOCK_REALTIME
-	LEAQ	0(SP), SI
-	MOVQ	runtime·vdsoClockgettimeSym(SB), AX
-	CMPQ	AX, $0
-	JEQ	fallback
-	CALL	AX
-ret:
-	MOVQ	0(SP), AX	// sec
-	MOVQ	8(SP), DX	// nsec
-	MOVQ	R12, SP		// Restore real SP
-	// Restore vdsoPC, vdsoSP
-	// We don't worry about being signaled between the two stores.
-	// If we are not in a signal handler, we'll restore vdsoSP to 0,
-	// and no one will care about vdsoPC. If we are in a signal handler,
-	// we cannot receive another signal.
-	MOVQ	8(SP), CX
-	MOVQ	CX, m_vdsoSP(BX)
-	MOVQ	0(SP), CX
-	MOVQ	CX, m_vdsoPC(BX)
-	MOVQ	AX, sec+0(FP)
-	MOVL	DX, nsec+8(FP)
-	RET
-fallback:
-	MOVQ	$SYS_clock_gettime, AX
-	SYSCALL
-	JMP ret
-
-// func nanotime1() int64
-TEXT runtime·nanotime1(SB),NOSPLIT,$16-8
-	// Switch to g0 stack. See comment above in runtime·walltime.
-
-	MOVQ	SP, R12	// Save old SP; R12 unchanged by C code.
-
-#ifdef GOEXPERIMENT_REGABI_G
-	MOVQ	g_m(R14), BX // BX unchanged by C code.
-#else
-	get_tls(CX)
-	MOVQ	g(CX), AX
-	MOVQ	g_m(AX), BX // BX unchanged by C code.
-#endif
 
 	// Set vdsoPC and vdsoSP for SIGPROF traceback.
 	// Save the old values on stack and restore them on exit,
@@ -304,11 +230,7 @@ TEXT runtime·nanotime1(SB),NOSPLIT,$16-8
 	MOVQ	CX, m_vdsoPC(BX)
 	MOVQ	DX, m_vdsoSP(BX)
 
-#ifdef GOEXPERIMENT_REGABI_G
 	CMPQ	R14, m_curg(BX)	// Only switch if on curg.
-#else
-	CMPQ	AX, m_curg(BX)	// Only switch if on curg.
-#endif
 	JNE	noswitch
 
 	MOVQ	m_g0(BX), DX
@@ -396,36 +318,26 @@ TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
 	POPQ	BP
 	RET
 
-// Defined as ABIInternal since it does not use the stack-based Go ABI.
-TEXT runtime·sigtramp<ABIInternal>(SB),NOSPLIT,$72
-	// Save callee-saved C registers, since the caller may be a C signal handler.
-	MOVQ	BX,  bx-8(SP)
-	MOVQ	BP,  bp-16(SP)  // save in case GOEXPERIMENT=noframepointer is set
-	MOVQ	R12, r12-24(SP)
-	MOVQ	R13, r13-32(SP)
-	MOVQ	R14, r14-40(SP)
-	MOVQ	R15, r15-48(SP)
-	// We don't save mxcsr or the x87 control word because sigtrampgo doesn't
-	// modify them.
+// Called using C ABI.
+TEXT runtime·sigtramp(SB),NOSPLIT,$0
+	// Transition from C ABI to Go ABI.
+	PUSH_REGS_HOST_TO_ABI0()
 
-	MOVQ	DX, ctx-56(SP)
-	MOVQ	SI, info-64(SP)
-	MOVQ	DI, signum-72(SP)
-	MOVQ	$runtime·sigtrampgo(SB), AX
-	CALL AX
+	// Call into the Go signal handler
+	NOP	SP		// disable vet stack checking
+        ADJSP   $24
+	MOVQ	DI, 0(SP)	// sig
+	MOVQ	SI, 8(SP)	// info
+	MOVQ	DX, 16(SP)	// ctx
+	CALL	·sigtrampgo(SB)
+	ADJSP	$-24
 
-	MOVQ	r15-48(SP), R15
-	MOVQ	r14-40(SP), R14
-	MOVQ	r13-32(SP), R13
-	MOVQ	r12-24(SP), R12
-	MOVQ	bp-16(SP),  BP
-	MOVQ	bx-8(SP),   BX
+        POP_REGS_HOST_TO_ABI0()
 	RET
 
 // Used instead of sigtramp in programs that use cgo.
 // Arguments from kernel are in DI, SI, DX.
-// Defined as ABIInternal since it does not use the stack-based Go ABI.
-TEXT runtime·cgoSigtramp<ABIInternal>(SB),NOSPLIT,$0
+TEXT runtime·cgoSigtramp(SB),NOSPLIT,$0
 	// If no traceback function, do usual sigtramp.
 	MOVQ	runtime·cgoTraceback(SB), AX
 	TESTQ	AX, AX
@@ -468,12 +380,12 @@ TEXT runtime·cgoSigtramp<ABIInternal>(SB),NOSPLIT,$0
 	// The first three arguments, and the fifth, are already in registers.
 	// Set the two remaining arguments now.
 	MOVQ	runtime·cgoTraceback(SB), CX
-	MOVQ	$runtime·sigtramp<ABIInternal>(SB), R9
+	MOVQ	$runtime·sigtramp(SB), R9
 	MOVQ	_cgo_callers(SB), AX
 	JMP	AX
 
 sigtramp:
-	JMP	runtime·sigtramp<ABIInternal>(SB)
+	JMP	runtime·sigtramp(SB)
 
 sigtrampnog:
 	// Signal arrived on a non-Go thread. If this is SIGPROF, get a
@@ -504,8 +416,7 @@ sigtrampnog:
 // https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysv/linux/x86_64/sigaction.c
 // The code that cares about the precise instructions used is:
 // https://gcc.gnu.org/viewcvs/gcc/trunk/libgcc/config/i386/linux-unwind.h?revision=219188&view=markup
-// Defined as ABIInternal since it does not use the stack-based Go ABI.
-TEXT runtime·sigreturn<ABIInternal>(SB),NOSPLIT,$0
+TEXT runtime·sigreturn(SB),NOSPLIT,$0
 	MOVQ	$SYS_rt_sigreturn, AX
 	SYSCALL
 	INT $3	// not reached
@@ -652,7 +563,7 @@ nog1:
 	CALL	runtime·stackcheck(SB)
 
 nog2:
-	// Call fn
+	// Call fn. This is the PC of an ABI0 function.
 	CALL	R12
 
 	// It shouldn't return. If it does, exit that thread.

@@ -29,10 +29,11 @@ import (
 	"cmd/go/internal/cfg"
 	"cmd/go/internal/load"
 	"cmd/go/internal/lockedfile"
+	"cmd/go/internal/modload"
 	"cmd/go/internal/search"
-	"cmd/go/internal/str"
 	"cmd/go/internal/trace"
 	"cmd/go/internal/work"
+	"cmd/internal/str"
 	"cmd/internal/test2json"
 )
 
@@ -78,7 +79,8 @@ binary. Only a high-confidence subset of the default go vet checks are
 used. That subset is: 'atomic', 'bool', 'buildtags', 'errorsas',
 'ifaceassert', 'nilfunc', 'printf', and 'stringintconv'. You can see
 the documentation for these and other vet tests via "go doc cmd/vet".
-To disable the running of go vet, use the -vet=off flag.
+To disable the running of go vet, use the -vet=off flag. To run all
+checks, use the -vet=all flag.
 
 All test output and summary lines are printed to the go command's
 standard output, even if the test printed them to its own standard
@@ -118,17 +120,17 @@ elapsed time in the summary line.
 
 The rule for a match in the cache is that the run involves the same
 test binary and the flags on the command line come entirely from a
-restricted set of 'cacheable' test flags, defined as -cpu, -list,
--parallel, -run, -short, and -v. If a run of go test has any test
-or non-test flags outside this set, the result is not cached. To
-disable test caching, use any test flag or argument other than the
-cacheable flags. The idiomatic way to disable test caching explicitly
-is to use -count=1. Tests that open files within the package's source
-root (usually $GOPATH) or that consult environment variables only
-match future runs in which the files and environment variables are unchanged.
-A cached test result is treated as executing in no time at all,
-so a successful package test result will be cached and reused
-regardless of -timeout setting.
+restricted set of 'cacheable' test flags, defined as -benchtime, -cpu,
+-list, -parallel, -run, -short, -timeout, -failfast, and -v.
+If a run of go test has any test or non-test flags outside this set,
+the result is not cached. To disable test caching, use any test flag
+or argument other than the cacheable flags. The idiomatic way to disable
+test caching explicitly is to use -count=1. Tests that open files within
+the package's source root (usually $GOPATH) or that consult environment
+variables only match future runs in which the files and environment
+variables are unchanged. A cached test result is treated as executing
+in no time at all,so a successful package test result will be cached and
+reused regardless of -timeout setting.
 
 In addition to the build flags, the flags handled by 'go test' itself are:
 
@@ -242,6 +244,10 @@ control the execution of any test:
 	-failfast
 	    Do not start new tests after the first test failure.
 
+	-json
+	    Log verbose output and test results in JSON. This presents the
+	    same information as the -v flag in a machine-readable format.
+
 	-list regexp
 	    List tests, benchmarks, or examples matching the regular expression.
 	    No tests, benchmarks or examples will be run. This will only
@@ -271,6 +277,13 @@ control the execution of any test:
 	    It is off by default but set during all.bash so that installing
 	    the Go tree can run a sanity check but not spend time running
 	    exhaustive tests.
+
+	-shuffle off,on,N
+		Randomize the execution order of tests and benchmarks.
+		It is off by default. If -shuffle is set to on, then it will seed
+		the randomizer using the system clock. If -shuffle is set to an
+		integer N, then N will be used as the seed value. In both cases,
+		the seed will be reported for reproducibility.
 
 	-timeout d
 	    If a test binary runs longer than duration d, panic.
@@ -479,7 +492,8 @@ var (
 	testJSON         bool                              // -json flag
 	testList         string                            // -list flag
 	testO            string                            // -o flag
-	testOutputDir    = base.Cwd                        // -outputdir flag
+	testOutputDir    outputdirFlag                     // -outputdir flag
+	testShuffle      shuffleFlag                       // -shuffle flag
 	testTimeout      time.Duration                     // -timeout flag
 	testV            bool                              // -v flag
 	testVet          = vetFlag{flags: defaultVetFlags} // -vet flag
@@ -569,8 +583,7 @@ var defaultVetFlags = []string{
 }
 
 func runTest(ctx context.Context, cmd *base.Command, args []string) {
-	load.ModResolveTests = true
-
+	modload.InitWorkfile()
 	pkgArgs, testArgs = testFlags(args)
 
 	if cfg.DebugTrace != "" {
@@ -596,7 +609,8 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 	work.VetFlags = testVet.flags
 	work.VetExplicit = testVet.explicit
 
-	pkgs = load.PackagesAndErrors(ctx, pkgArgs)
+	pkgOpts := load.PackageOpts{ModResolveTests: true}
+	pkgs = load.PackagesAndErrors(ctx, pkgOpts, pkgArgs)
 	load.CheckPackageErrors(pkgs)
 	if len(pkgs) == 0 {
 		base.Fatalf("no packages to test")
@@ -680,7 +694,7 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 		sort.Strings(all)
 
 		a := &work.Action{Mode: "go test -i"}
-		pkgs := load.PackagesAndErrors(ctx, all)
+		pkgs := load.PackagesAndErrors(ctx, pkgOpts, all)
 		load.CheckPackageErrors(pkgs)
 		for _, p := range pkgs {
 			if cfg.BuildToolchainName == "gccgo" && p.Standard {
@@ -703,17 +717,23 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 		match := make([]func(*load.Package) bool, len(testCoverPaths))
 		matched := make([]bool, len(testCoverPaths))
 		for i := range testCoverPaths {
-			match[i] = load.MatchPackage(testCoverPaths[i], base.Cwd)
+			match[i] = load.MatchPackage(testCoverPaths[i], base.Cwd())
 		}
 
 		// Select for coverage all dependencies matching the testCoverPaths patterns.
-		for _, p := range load.TestPackageList(ctx, pkgs) {
+		for _, p := range load.TestPackageList(ctx, pkgOpts, pkgs) {
 			haveMatch := false
 			for i := range testCoverPaths {
 				if match[i](p) {
 					matched[i] = true
 					haveMatch = true
 				}
+			}
+
+			// A package which only has test files can't be imported
+			// as a dependency, nor can it be instrumented for coverage.
+			if len(p.GoFiles)+len(p.CgoFiles) == 0 {
+				continue
 			}
 
 			// Silently ignore attempts to run coverage on
@@ -769,7 +789,7 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 			ensureImport(p, "sync/atomic")
 		}
 
-		buildTest, runTest, printTest, err := builderTest(&b, ctx, p)
+		buildTest, runTest, printTest, err := builderTest(&b, ctx, pkgOpts, p)
 		if err != nil {
 			str := err.Error()
 			str = strings.TrimPrefix(str, "\n")
@@ -836,7 +856,7 @@ var windowsBadWords = []string{
 	"update",
 }
 
-func builderTest(b *work.Builder, ctx context.Context, p *load.Package) (buildAction, runAction, printAction *work.Action, err error) {
+func builderTest(b *work.Builder, ctx context.Context, pkgOpts load.PackageOpts, p *load.Package) (buildAction, runAction, printAction *work.Action, err error) {
 	if len(p.TestGoFiles)+len(p.XTestGoFiles) == 0 {
 		build := b.CompileAction(work.ModeBuild, work.ModeBuild, p)
 		run := &work.Action{Mode: "test run", Package: p, Deps: []*work.Action{build}}
@@ -859,7 +879,7 @@ func builderTest(b *work.Builder, ctx context.Context, p *load.Package) (buildAc
 			DeclVars: declareCoverVars,
 		}
 	}
-	pmain, ptest, pxtest, err := load.TestPackagesFor(ctx, p, cover)
+	pmain, ptest, pxtest, err := load.TestPackagesFor(ctx, pkgOpts, p, cover)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -932,11 +952,11 @@ func builderTest(b *work.Builder, ctx context.Context, p *load.Package) (buildAc
 	var installAction, cleanAction *work.Action
 	if testC || testNeedBinary() {
 		// -c or profiling flag: create action to copy binary to ./test.out.
-		target := filepath.Join(base.Cwd, testBinary+cfg.ExeSuffix)
+		target := filepath.Join(base.Cwd(), testBinary+cfg.ExeSuffix)
 		if testO != "" {
 			target = testO
 			if !filepath.IsAbs(target) {
-				target = filepath.Join(base.Cwd, target)
+				target = filepath.Join(base.Cwd(), target)
 			}
 		}
 		if target == os.DevNull {
@@ -1327,12 +1347,14 @@ func (c *runCache) tryCacheWithID(b *work.Builder, a *work.Action, id string) bo
 			return false
 		}
 		switch arg[:i] {
-		case "-test.cpu",
+		case "-test.benchtime",
+			"-test.cpu",
 			"-test.list",
 			"-test.parallel",
 			"-test.run",
 			"-test.short",
 			"-test.timeout",
+			"-test.failfast",
 			"-test.v":
 			// These are cacheable.
 			// Note that this list is documented above,

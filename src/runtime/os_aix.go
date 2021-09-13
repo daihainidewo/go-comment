@@ -8,6 +8,7 @@
 package runtime
 
 import (
+	"internal/abi"
 	"unsafe"
 )
 
@@ -267,7 +268,7 @@ func setsig(i uint32, fn uintptr) {
 	var sa sigactiont
 	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK | _SA_RESTART
 	sa.sa_mask = sigset_all
-	if fn == funcPC(sighandler) {
+	if fn == abi.FuncPCABIInternal(sighandler) { // abi.FuncPCABIInternal(sighandler) matches the callers in signal_unix.go
 		fn = uintptr(unsafe.Pointer(&sigtramp))
 	}
 	sa.sa_handler = fn
@@ -336,7 +337,7 @@ func nanotime1() int64 {
 	return tp.tv_sec*1000000000 + tp.tv_nsec
 }
 
-func walltime1() (sec int64, nsec int32) {
+func walltime() (sec int64, nsec int32) {
 	ts := &timespec{}
 	if clock_gettime(_CLOCK_REALTIME, ts) != 0 {
 		throw("syscall clock_gettime failed")

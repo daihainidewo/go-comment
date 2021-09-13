@@ -32,8 +32,12 @@ type Sym struct {
 	Pkg  *Pkg
 	Name string // object name
 
-	// saved and restored by dcopy
-	Def        Object   // definition: ONAME OTYPE OPACK or OLITERAL
+	// Def, Block, and Lastlineno are saved and restored by Pushdcl/Popdcl.
+
+	// The unique ONAME, OTYPE, OPACK, or OLITERAL node that this symbol is
+	// bound to within the current scope. (Most parts of the compiler should
+	// prefer passing the Node directly, rather than relying on this field.)
+	Def        Object
 	Block      int32    // blocknumber to catch redeclaration
 	Lastlineno src.XPos // last declaration for diagnostic
 
@@ -45,7 +49,7 @@ const (
 	symUniq
 	symSiggen // type symbol has been generated
 	symAsm    // on asmlist, for writing to -asmhdr
-	symFunc   // function symbol; uses internal ABI
+	symFunc   // function symbol
 )
 
 func (sym *Sym) OnExportList() bool { return sym.flags&symOnExportList != 0 }
@@ -103,6 +107,14 @@ func (sym *Sym) LinksymABI(abi obj.ABI) *obj.LSym {
 // For more background, see issue #24693.
 func (a *Sym) Less(b *Sym) bool {
 	if a == b {
+		return false
+	}
+
+	// Nil before non-nil.
+	if a == nil {
+		return true
+	}
+	if b == nil {
 		return false
 	}
 

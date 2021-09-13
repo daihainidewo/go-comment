@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http/httptrace"
 	"net/http/internal"
+	"net/http/internal/ascii"
 	"net/textproto"
 	"reflect"
 	"sort"
@@ -213,6 +214,7 @@ func (t *transferWriter) probeRequestBody() {
 			rres.b = buf[0]
 		}
 		t.ByteReadCh <- rres
+		close(t.ByteReadCh)
 	}(t.Body)
 	timer := time.NewTimer(200 * time.Millisecond)
 	select {
@@ -650,8 +652,7 @@ func (t *transferReader) parseTransferEncoding() error {
 		// 只能有一个值
 		return &unsupportedTEError{fmt.Sprintf("too many transfer encodings: %q", raw)}
 	}
-	if strings.ToLower(textproto.TrimString(raw[0])) != "chunked" {
-		// 只支持chunked
+	if !ascii.EqualFold(textproto.TrimString(raw[0]), "chunked") {
 		return &unsupportedTEError{fmt.Sprintf("unsupported transfer encoding: %q", raw[0])}
 	}
 
@@ -1092,6 +1093,9 @@ func (fr finishAsyncByteRead) Read(p []byte) (n int, err error) {
 	n, err = rres.n, rres.err
 	if n == 1 {
 		p[0] = rres.b
+	}
+	if err == nil {
+		err = io.EOF
 	}
 	return
 }

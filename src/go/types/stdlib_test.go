@@ -26,9 +26,15 @@ import (
 	. "go/types"
 )
 
+// The cmd/*/internal packages may have been deleted as part of a binary
+// release. Import from source instead.
+//
+// (See https://golang.org/issue/43232 and
+// https://github.com/golang/build/blob/df58bbac082bc87c4a3cdfe336d1ffe60bbaa916/cmd/release/release.go#L533-L545.)
+//
 // Use the same importer for all std lib tests to
 // avoid repeated importing of the same packages.
-var stdLibImporter = importer.Default()
+var stdLibImporter = importer.ForCompiler(token.NewFileSet(), "source", nil)
 
 func TestStdlib(t *testing.T) {
 	testenv.MustHaveGoBuild(t)
@@ -188,6 +194,7 @@ func TestStdFixed(t *testing.T) {
 		"bug251.go",      // issue #34333 which was exposed with fix for #34151
 		"issue42058a.go", // go/types does not have constraints on channel element size
 		"issue42058b.go", // go/types does not have constraints on channel element size
+		"issue48097.go",  // go/types doesn't check validity of //go:xxx directives, and non-init bodyless function
 	)
 }
 
@@ -200,6 +207,9 @@ func TestStdKen(t *testing.T) {
 // Package paths of excluded packages.
 var excluded = map[string]bool{
 	"builtin": true,
+
+	// See #46027: some imports are missing for this submodule.
+	"crypto/ed25519/internal/edwards25519/field/_asm": true,
 }
 
 // typecheck typechecks the given package files.

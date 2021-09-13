@@ -46,6 +46,7 @@ func goPanicSlice3B(x int, y int)
 func goPanicSlice3BU(x uint, y int)
 func goPanicSlice3C(x int, y int)
 func goPanicSlice3CU(x uint, y int)
+func goPanicSliceConvert(x int, y int)
 
 func printbool(bool)
 func printfloat(float64)
@@ -83,23 +84,25 @@ func decoderune(string, int) (retv rune, retk int)
 func countrunes(string) int
 
 // Non-empty-interface to non-empty-interface conversion.
-func convI2I(typ *byte, elem any) (ret any)
+func convI2I(typ *byte, itab *uintptr) (ret *uintptr)
 
-// Specialized type-to-interface conversion.
-// These return only a data pointer.
-func convT16(val any) unsafe.Pointer     // val must be uint16-like (same size and alignment as a uint16)
-func convT32(val any) unsafe.Pointer     // val must be uint32-like (same size and alignment as a uint32)
-func convT64(val any) unsafe.Pointer     // val must be uint64-like (same size and alignment as a uint64 and contains no pointers)
-func convTstring(val any) unsafe.Pointer // val must be a string
-func convTslice(val any) unsafe.Pointer  // val must be a slice
+// Convert non-interface type to the data word of a (empty or nonempty) interface.
+func convT(typ *byte, elem *any) unsafe.Pointer
 
-// Type to empty-interface conversion.
-func convT2E(typ *byte, elem *any) (ret any)
-func convT2Enoptr(typ *byte, elem *any) (ret any)
+// Same as convT, for types with no pointers in them.
+func convTnoptr(typ *byte, elem *any) unsafe.Pointer
 
-// Type to non-empty-interface conversion.
-func convT2I(tab *byte, elem *any) (ret any)
-func convT2Inoptr(tab *byte, elem *any) (ret any)
+// Specialized versions of convT for specific types.
+// These functions take concrete types in the runtime. But they may
+// be used for a wider range of types, which have the same memory
+// layout as the parameter type. The compiler converts the
+// to-be-converted type to the parameter type before calling the
+// runtime function. This way, the call is ABI-insensitive.
+func convT16(val uint16) unsafe.Pointer
+func convT32(val uint32) unsafe.Pointer
+func convT64(val uint64) unsafe.Pointer
+func convTstring(val string) unsafe.Pointer
+func convTslice(val []uint8) unsafe.Pointer
 
 // interface type assertions x.(T)
 func assertE2I(inter *byte, typ *byte) *byte
@@ -122,26 +125,26 @@ func makemap64(mapType *byte, hint int64, mapbuf *any) (hmap map[any]any)
 func makemap(mapType *byte, hint int, mapbuf *any) (hmap map[any]any)
 func makemap_small() (hmap map[any]any)
 func mapaccess1(mapType *byte, hmap map[any]any, key *any) (val *any)
-func mapaccess1_fast32(mapType *byte, hmap map[any]any, key any) (val *any)
-func mapaccess1_fast64(mapType *byte, hmap map[any]any, key any) (val *any)
-func mapaccess1_faststr(mapType *byte, hmap map[any]any, key any) (val *any)
+func mapaccess1_fast32(mapType *byte, hmap map[any]any, key uint32) (val *any)
+func mapaccess1_fast64(mapType *byte, hmap map[any]any, key uint64) (val *any)
+func mapaccess1_faststr(mapType *byte, hmap map[any]any, key string) (val *any)
 func mapaccess1_fat(mapType *byte, hmap map[any]any, key *any, zero *byte) (val *any)
 func mapaccess2(mapType *byte, hmap map[any]any, key *any) (val *any, pres bool)
-func mapaccess2_fast32(mapType *byte, hmap map[any]any, key any) (val *any, pres bool)
-func mapaccess2_fast64(mapType *byte, hmap map[any]any, key any) (val *any, pres bool)
-func mapaccess2_faststr(mapType *byte, hmap map[any]any, key any) (val *any, pres bool)
+func mapaccess2_fast32(mapType *byte, hmap map[any]any, key uint32) (val *any, pres bool)
+func mapaccess2_fast64(mapType *byte, hmap map[any]any, key uint64) (val *any, pres bool)
+func mapaccess2_faststr(mapType *byte, hmap map[any]any, key string) (val *any, pres bool)
 func mapaccess2_fat(mapType *byte, hmap map[any]any, key *any, zero *byte) (val *any, pres bool)
 func mapassign(mapType *byte, hmap map[any]any, key *any) (val *any)
-func mapassign_fast32(mapType *byte, hmap map[any]any, key any) (val *any)
-func mapassign_fast32ptr(mapType *byte, hmap map[any]any, key any) (val *any)
-func mapassign_fast64(mapType *byte, hmap map[any]any, key any) (val *any)
-func mapassign_fast64ptr(mapType *byte, hmap map[any]any, key any) (val *any)
-func mapassign_faststr(mapType *byte, hmap map[any]any, key any) (val *any)
+func mapassign_fast32(mapType *byte, hmap map[any]any, key uint32) (val *any)
+func mapassign_fast32ptr(mapType *byte, hmap map[any]any, key unsafe.Pointer) (val *any)
+func mapassign_fast64(mapType *byte, hmap map[any]any, key uint64) (val *any)
+func mapassign_fast64ptr(mapType *byte, hmap map[any]any, key unsafe.Pointer) (val *any)
+func mapassign_faststr(mapType *byte, hmap map[any]any, key string) (val *any)
 func mapiterinit(mapType *byte, hmap map[any]any, hiter *any)
 func mapdelete(mapType *byte, hmap map[any]any, key *any)
-func mapdelete_fast32(mapType *byte, hmap map[any]any, key any)
-func mapdelete_fast64(mapType *byte, hmap map[any]any, key any)
-func mapdelete_faststr(mapType *byte, hmap map[any]any, key any)
+func mapdelete_fast32(mapType *byte, hmap map[any]any, key uint32)
+func mapdelete_fast64(mapType *byte, hmap map[any]any, key uint64)
+func mapdelete_faststr(mapType *byte, hmap map[any]any, key string)
 func mapiternext(hiter *any)
 func mapclear(mapType *byte, hmap map[any]any)
 
@@ -177,6 +180,10 @@ func makeslice(typ *byte, len int, cap int) unsafe.Pointer
 func makeslice64(typ *byte, len int64, cap int64) unsafe.Pointer
 func makeslicecopy(typ *byte, tolen int, fromlen int, from unsafe.Pointer) unsafe.Pointer
 func growslice(typ *byte, old []any, cap int) (ary []any)
+func unsafeslice(typ *byte, ptr unsafe.Pointer, len int)
+func unsafeslice64(typ *byte, ptr unsafe.Pointer, len int64)
+func unsafeslicecheckptr(typ *byte, ptr unsafe.Pointer, len int64)
+
 func memmove(to *any, frm *any, length uintptr)
 func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
 func memclrHasPointers(ptr unsafe.Pointer, n uintptr)

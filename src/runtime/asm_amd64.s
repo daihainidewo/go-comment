@@ -6,6 +6,7 @@
 #include "go_tls.h"
 #include "funcdata.h"
 #include "textflag.h"
+#include "cgo/abi_amd64.h"
 
 // _rt0_amd64 is common startup code for most amd64 systems when using
 // internal linking. This is the entry point for the program from the
@@ -28,18 +29,9 @@ TEXT main(SB),NOSPLIT,$-8
 // c-archive) or when the shared library is loaded (for c-shared).
 // We expect argc and argv to be passed in the usual C ABI registers
 // DI and SI.
-TEXT _rt0_amd64_lib(SB),NOSPLIT,$0x50
-	// Align stack per ELF ABI requirements.
-	MOVQ	SP, AX
-	ANDQ	$~15, SP
-	// Save C ABI callee-saved registers, as caller may need them.
-	MOVQ	BX, 0x10(SP)
-	MOVQ	BP, 0x18(SP)
-	MOVQ	R12, 0x20(SP)
-	MOVQ	R13, 0x28(SP)
-	MOVQ	R14, 0x30(SP)
-	MOVQ	R15, 0x38(SP)
-	MOVQ	AX, 0x40(SP)
+TEXT _rt0_amd64_lib(SB),NOSPLIT,$0
+	// Transition from C ABI to Go ABI.
+	PUSH_REGS_HOST_TO_ABI0()
 
 	MOVQ	DI, _rt0_amd64_lib_argc<>(SB)
 	MOVQ	SI, _rt0_amd64_lib_argv<>(SB)
@@ -51,25 +43,27 @@ TEXT _rt0_amd64_lib(SB),NOSPLIT,$0x50
 	MOVQ	_cgo_sys_thread_create(SB), AX
 	TESTQ	AX, AX
 	JZ	nocgo
+
+	// We're calling back to C.
+	// Align stack per ELF ABI requirements.
+	MOVQ	SP, BX  // Callee-save in C ABI
+	ANDQ	$~15, SP
 	MOVQ	$_rt0_amd64_lib_go(SB), DI
 	MOVQ	$0, SI
 	CALL	AX
+	MOVQ	BX, SP
 	JMP	restore
 
 nocgo:
+	ADJSP	$16
 	MOVQ	$0x800000, 0(SP)		// stacksize
 	MOVQ	$_rt0_amd64_lib_go(SB), AX
 	MOVQ	AX, 8(SP)			// fn
 	CALL	runtime·newosproc0(SB)
+	ADJSP	$-16
 
 restore:
-	MOVQ	0x10(SP), BX
-	MOVQ	0x18(SP), BP
-	MOVQ	0x20(SP), R12
-	MOVQ	0x28(SP), R13
-	MOVQ	0x30(SP), R14
-	MOVQ	0x38(SP), R15
-	MOVQ	0x40(SP), SP
+	POP_REGS_HOST_TO_ABI0()
 	RET
 
 // _rt0_amd64_lib_go initializes the Go runtime.
@@ -109,9 +103,6 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
 	CMPL	AX, $0
 	JE	nocpuinfo
 
-	// Figure out how to serialize RDTSC.
-	// On Intel processors LFENCE is enough. AMD requires MFENCE.
-	// Don't know about the rest, so let's do MFENCE.
 	CMPL	BX, $0x756E6547  // "Genu"
 	JNE	notintel
 	CMPL	DX, $0x49656E69  // "ineI"
@@ -119,7 +110,6 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
 	CMPL	CX, $0x6C65746E  // "ntel"
 	JNE	notintel
 	MOVB	$1, runtime·isIntel(SB)
-	MOVB	$1, runtime·lfenceBeforeRdtsc(SB)
 notintel:
 
 	// Load EAX=1 cpuid flags
@@ -220,9 +210,7 @@ ok:
 	// create a new goroutine to start program
 	MOVQ	$runtime·mainPC(SB), AX		// entry
 	PUSHQ	AX
-	PUSHQ	$0			// arg size
 	CALL	runtime·newproc(SB)
-	POPQ	AX
 	POPQ	AX
 
 	// start this M
@@ -231,9 +219,9 @@ ok:
 	CALL	runtime·abort(SB)	// mstart should never return
 	RET
 
-	// Prevent dead-code elimination of debugCallV1, which is
+	// Prevent dead-code elimination of debugCallV2, which is
 	// intended to be called by debuggers.
-	MOVQ	$runtime·debugCallV1<ABIInternal>(SB), AX
+	MOVQ	$runtime·debugCallV2<ABIInternal>(SB), AX
 	RET
 
 // mainPC is a function value for runtime.main, to be passed to newproc.
@@ -285,36 +273,33 @@ TEXT gogo<>(SB), NOSPLIT, $0
 // Switch to m->g0's stack, call fn(g).
 // Fn must never return. It should gogo(&g->sched)
 // to keep running g.
-TEXT runtime·mcall(SB), NOSPLIT, $0-8
-	MOVQ	fn+0(FP), DI
+TEXT runtime·mcall<ABIInternal>(SB), NOSPLIT, $0-8
+	MOVQ	AX, DX	// DX = fn
 
-    // 保存当前g信息到g->sched
-	get_tls(CX)
-	MOVQ	g(CX), AX	// save state in g->sched
+	// save state in g->sched
 	MOVQ	0(SP), BX	// caller's PC
-	MOVQ	BX, (g_sched+gobuf_pc)(AX)
+	MOVQ	BX, (g_sched+gobuf_pc)(R14)
 	LEAQ	fn+0(FP), BX	// caller's SP
-	MOVQ	BX, (g_sched+gobuf_sp)(AX)
-	MOVQ	BP, (g_sched+gobuf_bp)(AX)
+	MOVQ	BX, (g_sched+gobuf_sp)(R14)
+	MOVQ	BP, (g_sched+gobuf_bp)(R14)
 
 	// switch to m->g0 & its stack, call fn
-	MOVQ	g(CX), BX
-	MOVQ	g_m(BX), BX
-	MOVQ	m_g0(BX), SI
-	CMPQ	SI, AX	// if g == m->g0 call badmcall
-	JNE	3(PC)
-	MOVQ	$runtime·badmcall(SB), AX
-	JMP	AX
-	MOVQ	SI, g(CX)	// g = m->g0
-	MOVQ	SI, R14	// set the g register
-	MOVQ	(g_sched+gobuf_sp)(SI), SP	// sp = m->g0->sched.sp
-	PUSHQ	AX
-	MOVQ	DI, DX
-	MOVQ	0(DI), DI
-	CALL	DI // 执行fn，不能返回
+	MOVQ	g_m(R14), BX
+	MOVQ	m_g0(BX), SI	// SI = g.m.g0
+	CMPQ	SI, R14	// if g == m->g0 call badmcall
+	JNE	goodm
+	JMP	runtime·badmcall(SB)
+goodm:
+	MOVQ	R14, AX		// AX (and arg 0) = g
+	MOVQ	SI, R14		// g = g.m.g0
+	get_tls(CX)		// Set G in TLS
+	MOVQ	R14, g(CX)
+	MOVQ	(g_sched+gobuf_sp)(R14), SP	// sp = g0.sched.sp
+	PUSHQ	AX	// open up space for fn's arg spill slot
+	MOVQ	0(DX), R12
+	CALL	R12		// fn(g)
 	POPQ	AX
-	MOVQ	$runtime·badmcall2(SB), AX
-	JMP	AX
+	JMP	runtime·badmcall2(SB)
 	RET
 
 // systemstack_switch is a dummy routine that systemstack leaves at the bottom
@@ -451,9 +436,8 @@ TEXT runtime·morestack_noctxt(SB),NOSPLIT,$0
 	MOVL	$0, DX
 	JMP	runtime·morestack(SB)
 
-#ifdef GOEXPERIMENT_REGABI_REFLECT
 // spillArgs stores return values from registers to a *internal/abi.RegArgs in R12.
-TEXT spillArgs<>(SB),NOSPLIT,$0-0
+TEXT ·spillArgs(SB),NOSPLIT,$0-0
 	MOVQ AX, 0(R12)
 	MOVQ BX, 8(R12)
 	MOVQ CX, 16(R12)
@@ -481,7 +465,7 @@ TEXT spillArgs<>(SB),NOSPLIT,$0-0
 	RET
 
 // unspillArgs loads args into registers from a *internal/abi.RegArgs in R12.
-TEXT unspillArgs<>(SB),NOSPLIT,$0-0
+TEXT ·unspillArgs(SB),NOSPLIT,$0-0
 	MOVQ 0(R12), AX
 	MOVQ 8(R12), BX
 	MOVQ 16(R12), CX
@@ -507,15 +491,6 @@ TEXT unspillArgs<>(SB),NOSPLIT,$0-0
 	MOVQ 176(R12), X13
 	MOVQ 184(R12), X14
 	RET
-#else
-// spillArgs stores return values from registers to a pointer in R12.
-TEXT spillArgs<>(SB),NOSPLIT,$0-0
-	RET
-
-// unspillArgs loads args into registers from a pointer in R12.
-TEXT unspillArgs<>(SB),NOSPLIT,$0-0
-	RET
-#endif
 
 // reflectcall: call a function with the given argument list
 // func call(stackArgsType *_type, f *FuncVal, stackArgs *byte, stackArgsSize, stackRetOffset, frameSize uint32, regArgs *abi.RegArgs).
@@ -530,7 +505,7 @@ TEXT unspillArgs<>(SB),NOSPLIT,$0-0
 	JMP	AX
 // Note: can't just "JMP NAME(SB)" - bad inlining results.
 
-TEXT ·reflectcall<ABIInternal>(SB), NOSPLIT, $0-48
+TEXT ·reflectcall(SB), NOSPLIT, $0-48
 	MOVLQZX frameSize+32(FP), CX
 	DISPATCH(runtime·call16, 16)
 	DISPATCH(runtime·call32, 32)
@@ -572,7 +547,7 @@ TEXT NAME(SB), WRAPPER, $MAXSIZE-48;		\
 	REP;MOVSB;				\
 	/* set up argument registers */		\
 	MOVQ    regArgs+40(FP), R12;		\
-	CALL    unspillArgs<>(SB);		\
+	CALL    ·unspillArgs(SB);		\
 	/* call function */			\
 	MOVQ	f+8(FP), DX;			\
 	PCDATA  $PCDATA_StackMapIndex, $0;	\
@@ -580,7 +555,7 @@ TEXT NAME(SB), WRAPPER, $MAXSIZE-48;		\
 	CALL	R12;				\
 	/* copy register return values back */		\
 	MOVQ    regArgs+40(FP), R12;		\
-	CALL    spillArgs<>(SB);		\
+	CALL    ·spillArgs(SB);		\
 	MOVLQZX	stackArgsSize+24(FP), CX;		\
 	MOVLQZX	stackRetOffset+28(FP), BX;		\
 	MOVQ	stackArgs+16(FP), DI;		\
@@ -648,31 +623,12 @@ TEXT ·publicationBarrier(SB),NOSPLIT,$0-0
 	// compile barrier.
 	RET
 
-// func jmpdefer(fv *funcval, argp uintptr)
-// argp is a caller SP.
-// called from deferreturn.
-// 1. pop the caller
-// 2. sub 5 bytes from the callers return
-// 3. jmp to the argument
-TEXT runtime·jmpdefer(SB), NOSPLIT, $0-16
-	MOVQ	fv+0(FP), DX	// fn
-	MOVQ	argp+8(FP), BX	// caller sp
-	LEAQ	-8(BX), SP	// caller sp after CALL
-	MOVQ	-8(SP), BP	// restore BP as if deferreturn returned (harmless if framepointers not in use)
-	SUBQ	$5, (SP)	// return to CALL again
-	MOVQ	0(DX), BX
-	JMP	BX	// but first run the deferred function
-
 // Save state of caller into g->sched,
 // but using fake PC from systemstack_switch.
 // Must only be called from functions with no locals ($0)
 // or else unwinding from systemstack_switch is incorrect.
 // Smashes R9.
 TEXT gosave_systemstack_switch<>(SB),NOSPLIT,$0
-#ifndef GOEXPERIMENT_REGABI_G
-	get_tls(R14)
-	MOVQ	g(R14), R14
-#endif
 	MOVQ	$runtime·systemstack_switch(SB), R9
 	MOVQ	R9, (g_sched+gobuf_pc)(R14)
 	LEAQ	8(SP), R9
@@ -715,22 +671,21 @@ TEXT ·asmcgocall(SB),NOSPLIT,$0-20
 
 	// Figure out if we need to switch to m->g0 stack.
 	// We get called to create new OS threads too, and those
-	// come in on the m->g0 stack already.
+	// come in on the m->g0 stack already. Or we might already
+	// be on the m->gsignal stack.
 	get_tls(CX)
-	MOVQ	g(CX), R8
-	CMPQ	R8, $0
-	JEQ	nosave
-	MOVQ	g_m(R8), R8
-	MOVQ	m_g0(R8), SI
 	MOVQ	g(CX), DI
-	CMPQ	SI, DI
+	CMPQ	DI, $0
 	JEQ	nosave
+	MOVQ	g_m(DI), R8
 	MOVQ	m_gsignal(R8), SI
-	CMPQ	SI, DI
+	CMPQ	DI, SI
+	JEQ	nosave
+	MOVQ	m_g0(R8), SI
+	CMPQ	DI, SI
 	JEQ	nosave
 
 	// Switch to system stack.
-	MOVQ	m_g0(R8), SI
 	CALL	gosave_systemstack_switch<>(SB)
 	MOVQ	SI, g(CX)
 	MOVQ	(g_sched+gobuf_sp)(SI), SP
@@ -782,6 +737,14 @@ nosave:
 	MOVL	AX, ret+16(FP)
 	RET
 
+#ifdef GOOS_windows
+// Dummy TLS that's used on Windows so that we don't crash trying
+// to restore the G register in needm. needm and its callees are
+// very careful never to actually use the G, the TLS just can't be
+// unset since we're in Go code.
+GLOBL zeroTLS<>(SB),RODATA,$const_tlsSize
+#endif
+
 // func cgocallback(fn, frame unsafe.Pointer, ctxt uintptr)
 // See cgocall.go for more details.
 TEXT ·cgocallback(SB),NOSPLIT,$24-24
@@ -805,7 +768,27 @@ TEXT ·cgocallback(SB),NOSPLIT,$24-24
 	MOVQ	BX, savedm-8(SP)	// saved copy of oldm
 	JMP	havem
 needm:
-	MOVQ    $runtime·needm(SB), AX
+#ifdef GOOS_windows
+	// Set up a dummy TLS value. needm is careful not to use it,
+	// but it needs to be there to prevent autogenerated code from
+	// crashing when it loads from it.
+	// We don't need to clear it or anything later because needm
+	// will set up TLS properly.
+	MOVQ	$zeroTLS<>(SB), DI
+	CALL	runtime·settls(SB)
+#endif
+	// On some platforms (Windows) we cannot call needm through
+	// an ABI wrapper because there's no TLS set up, and the ABI
+	// wrapper will try to restore the G register (R14) from TLS.
+	// Clear X15 because Go expects it and we're not calling
+	// through a wrapper, but otherwise avoid setting the G
+	// register in the wrapper and call needm directly. It
+	// takes no arguments and doesn't return any values so
+	// there's no need to handle that. Clear R14 so that there's
+	// a bad value in there, in case needm tries to use it.
+	XORPS	X15, X15
+	XORQ    R14, R14
+	MOVQ	$runtime·needm<ABIInternal>(SB), AX
 	CALL	AX
 	MOVQ	$0, savedm-8(SP) // dropm on return
 	get_tls(CX)
@@ -867,7 +850,8 @@ havem:
 	MOVQ	BX, 0(SP)
 	MOVQ	CX, 8(SP)
 	MOVQ	DX, 16(SP)
-	CALL	runtime·cgocallbackg(SB)
+	MOVQ	$runtime·cgocallbackg(SB), AX
+	CALL	AX	// indirect call to bypass nosplit check. We're on a different stack now.
 
 	// Compute the size of the frame again. FP and SP have
 	// completely different values here than they did above,
@@ -899,9 +883,17 @@ havem:
 	// for the duration of the call. Since the call is over, return it with dropm.
 	MOVQ	savedm-8(SP), BX
 	CMPQ	BX, $0
-	JNE 3(PC)
+	JNE	done
 	MOVQ	$runtime·dropm(SB), AX
 	CALL	AX
+#ifdef GOOS_windows
+	// We need to clear the TLS pointer in case the next
+	// thread that comes into Go tries to reuse that space
+	// but uses the same M.
+	XORQ	DI, DI
+	CALL	runtime·settls(SB)
+#endif
+done:
 
 	// Done!
 	RET
@@ -910,16 +902,6 @@ havem:
 // set g. for use by needm.
 TEXT runtime·setg(SB), NOSPLIT, $0-8
 	MOVQ	gg+0(FP), BX
-#ifdef GOOS_windows
-	CMPQ	BX, $0
-	JNE	settls
-	MOVQ	$0, 0x28(GS)
-	RET
-settls:
-	MOVQ	g_m(BX), AX
-	LEAQ	m_tls(AX), AX
-	MOVQ	AX, 0x28(GS)
-#endif
 	get_tls(CX)
 	MOVQ	BX, g(CX)
 	RET
@@ -950,49 +932,62 @@ TEXT runtime·stackcheck(SB), NOSPLIT, $0-0
 
 // func cputicks() int64
 TEXT runtime·cputicks(SB),NOSPLIT,$0-0
-	CMPB	runtime·lfenceBeforeRdtsc(SB), $1
-	JNE	mfence
-	LFENCE
-	JMP	done
-mfence:
-	MFENCE
+	CMPB	internal∕cpu·X86+const_offsetX86HasRDTSCP(SB), $1
+	JNE	fences
+	// Instruction stream serializing RDTSCP is supported.
+	// RDTSCP is supported by Intel Nehalem (2008) and
+	// AMD K8 Rev. F (2006) and newer.
+	RDTSCP
 done:
-	RDTSC
 	SHLQ	$32, DX
 	ADDQ	DX, AX
 	MOVQ	AX, ret+0(FP)
 	RET
+fences:
+	// MFENCE is instruction stream serializing and flushes the
+	// store buffers on AMD. The serialization semantics of LFENCE on AMD
+	// are dependent on MSR C001_1029 and CPU generation.
+	// LFENCE on Intel does wait for all previous instructions to have executed.
+	// Intel recommends MFENCE;LFENCE in its manuals before RDTSC to have all
+	// previous instructions executed and all previous loads and stores to globally visible.
+	// Using MFENCE;LFENCE here aligns the serializing properties without
+	// runtime detection of CPU manufacturer.
+	MFENCE
+	LFENCE
+	RDTSC
+	JMP done
 
 // func memhash(p unsafe.Pointer, h, s uintptr) uintptr
 // hash function using AES hardware instructions
-TEXT runtime·memhash(SB),NOSPLIT,$0-32
+TEXT runtime·memhash<ABIInternal>(SB),NOSPLIT,$0-32
+	// AX = ptr to data
+	// BX = seed
+	// CX = size
 	CMPB	runtime·useAeshash(SB), $0
 	JEQ	noaes
-	MOVQ	p+0(FP), AX	// ptr to data
-	MOVQ	s+16(FP), CX	// size
-	LEAQ	ret+24(FP), DX
 	JMP	aeshashbody<>(SB)
 noaes:
-	JMP	runtime·memhashFallback(SB)
+	JMP	runtime·memhashFallback<ABIInternal>(SB)
 
 // func strhash(p unsafe.Pointer, h uintptr) uintptr
-TEXT runtime·strhash(SB),NOSPLIT,$0-24
+TEXT runtime·strhash<ABIInternal>(SB),NOSPLIT,$0-24
+	// AX = ptr to string struct
+	// BX = seed
 	CMPB	runtime·useAeshash(SB), $0
 	JEQ	noaes
-	MOVQ	p+0(FP), AX	// ptr to string struct
 	MOVQ	8(AX), CX	// length of string
 	MOVQ	(AX), AX	// string data
-	LEAQ	ret+16(FP), DX
 	JMP	aeshashbody<>(SB)
 noaes:
-	JMP	runtime·strhashFallback(SB)
+	JMP	runtime·strhashFallback<ABIInternal>(SB)
 
 // AX: data
+// BX: hash seed
 // CX: length
-// DX: address to put return value
+// At return: AX = return value
 TEXT aeshashbody<>(SB),NOSPLIT,$0-0
 	// Fill an SSE register with our seeds.
-	MOVQ	h+8(FP), X0			// 64 bits of per-table hash seed
+	MOVQ	BX, X0				// 64 bits of per-table hash seed
 	PINSRW	$4, CX, X0			// 16 bits of length
 	PSHUFHW $0, X0, X0			// repeat length 4 times total
 	MOVO	X0, X1				// save unscrambled seed
@@ -1029,7 +1024,7 @@ final1:
 	AESENC	X1, X1	// scramble combo 3 times
 	AESENC	X1, X1
 	AESENC	X1, X1
-	MOVQ	X1, (DX)
+	MOVQ	X1, AX	// return X1
 	RET
 
 endofpage:
@@ -1045,7 +1040,7 @@ endofpage:
 aes0:
 	// Return scrambled input seed
 	AESENC	X0, X0
-	MOVQ	X0, (DX)
+	MOVQ	X0, AX	// return X0
 	RET
 
 aes16:
@@ -1075,7 +1070,7 @@ aes17to32:
 
 	// combine results
 	PXOR	X3, X2
-	MOVQ	X2, (DX)
+	MOVQ	X2, AX	// return X2
 	RET
 
 aes33to64:
@@ -1117,7 +1112,7 @@ aes33to64:
 	PXOR	X6, X4
 	PXOR	X7, X5
 	PXOR	X5, X4
-	MOVQ	X4, (DX)
+	MOVQ	X4, AX	// return X4
 	RET
 
 aes65to128:
@@ -1199,7 +1194,9 @@ aes65to128:
 	PXOR	X10, X8
 	PXOR	X11, X9
 	PXOR	X9, X8
-	MOVQ	X8, (DX)
+	// X15 must be zero on return
+	PXOR	X15, X15
+	MOVQ	X8, AX	// return X8
 	RET
 
 aes129plus:
@@ -1315,38 +1312,44 @@ aesloop:
 	PXOR	X10, X8
 	PXOR	X11, X9
 	PXOR	X9, X8
-	MOVQ	X8, (DX)
+	// X15 must be zero on return
+	PXOR	X15, X15
+	MOVQ	X8, AX	// return X8
 	RET
 
 // func memhash32(p unsafe.Pointer, h uintptr) uintptr
-TEXT runtime·memhash32(SB),NOSPLIT,$0-24
+// ABIInternal for performance.
+TEXT runtime·memhash32<ABIInternal>(SB),NOSPLIT,$0-24
+	// AX = ptr to data
+	// BX = seed
 	CMPB	runtime·useAeshash(SB), $0
 	JEQ	noaes
-	MOVQ	p+0(FP), AX	// ptr to data
-	MOVQ	h+8(FP), X0	// seed
+	MOVQ	BX, X0	// X0 = seed
 	PINSRD	$2, (AX), X0	// data
 	AESENC	runtime·aeskeysched+0(SB), X0
 	AESENC	runtime·aeskeysched+16(SB), X0
 	AESENC	runtime·aeskeysched+32(SB), X0
-	MOVQ	X0, ret+16(FP)
+	MOVQ	X0, AX	// return X0
 	RET
 noaes:
-	JMP	runtime·memhash32Fallback(SB)
+	JMP	runtime·memhash32Fallback<ABIInternal>(SB)
 
 // func memhash64(p unsafe.Pointer, h uintptr) uintptr
-TEXT runtime·memhash64(SB),NOSPLIT,$0-24
+// ABIInternal for performance.
+TEXT runtime·memhash64<ABIInternal>(SB),NOSPLIT,$0-24
+	// AX = ptr to data
+	// BX = seed
 	CMPB	runtime·useAeshash(SB), $0
 	JEQ	noaes
-	MOVQ	p+0(FP), AX	// ptr to data
-	MOVQ	h+8(FP), X0	// seed
+	MOVQ	BX, X0	// X0 = seed
 	PINSRQ	$1, (AX), X0	// data
 	AESENC	runtime·aeskeysched+0(SB), X0
 	AESENC	runtime·aeskeysched+16(SB), X0
 	AESENC	runtime·aeskeysched+32(SB), X0
-	MOVQ	X0, ret+16(FP)
+	MOVQ	X0, AX	// return X0
 	RET
 noaes:
-	JMP	runtime·memhash64Fallback(SB)
+	JMP	runtime·memhash64Fallback<ABIInternal>(SB)
 
 // simple mask to get rid of data in the high part of the register.
 DATA masks<>+0x00(SB)/8, $0x0000000000000000
@@ -1446,11 +1449,8 @@ TEXT _cgo_topofstack(SB),NOSPLIT,$0
 	RET
 
 // The top-most function running on a goroutine
-// returns to goexit+PCQuantum. Defined as ABIInternal
-// so as to make it identifiable to traceback (this
-// function it used as a sentinel; traceback wants to
-// see the func PC, not a wrapper PC).
-TEXT runtime·goexit<ABIInternal>(SB),NOSPLIT|TOPFRAME,$0-0
+// returns to goexit+PCQuantum.
+TEXT runtime·goexit(SB),NOSPLIT|TOPFRAME,$0-0
 	BYTE	$0x90	// NOP
 	CALL	runtime·goexit1(SB)	// does not return
 	// traceback from goexit1 must hit code range of goexit
@@ -1469,10 +1469,10 @@ TEXT runtime·addmoduledata(SB),NOSPLIT,$0-0
 // This function is injected from the signal handler for panicking
 // signals. It is quite painful to set X15 in the signal context,
 // so we do it here.
-TEXT ·sigpanic0<ABIInternal>(SB),NOSPLIT,$0-0
-#ifdef GOEXPERIMENT_REGABI_G
+TEXT ·sigpanic0(SB),NOSPLIT,$0-0
 	get_tls(R14)
 	MOVQ	g(R14), R14
+#ifndef GOOS_plan9
 	XORPS	X15, X15
 #endif
 	JMP	·sigpanic<ABIInternal>(SB)
@@ -1493,13 +1493,7 @@ TEXT runtime·gcWriteBarrier<ABIInternal>(SB),NOSPLIT,$112
 	MOVQ	R13, 104(SP)
 	// TODO: Consider passing g.m.p in as an argument so they can be shared
 	// across a sequence of write barriers.
-#ifdef GOEXPERIMENT_REGABI_G
 	MOVQ	g_m(R14), R13
-#else
-	get_tls(R13)
-	MOVQ	g(R13), R13
-	MOVQ	g_m(R13), R13
-#endif
 	MOVQ	m_p(R13), R13
 	MOVQ	(p_wbBuf+wbBuf_next)(R13), R12
 	// Increment wbBuf.next position.
@@ -1631,7 +1625,7 @@ TEXT runtime·gcWriteBarrierR9<ABIInternal>(SB),NOSPLIT,$0
 DATA	debugCallFrameTooLarge<>+0x00(SB)/20, $"call frame too large"
 GLOBL	debugCallFrameTooLarge<>(SB), RODATA, $20	// Size duplicated below
 
-// debugCallV1 is the entry point for debugger-injected function
+// debugCallV2 is the entry point for debugger-injected function
 // calls on running goroutines. It informs the runtime that a
 // debug call has been injected and creates a call frame for the
 // debugger to fill in.
@@ -1644,7 +1638,7 @@ GLOBL	debugCallFrameTooLarge<>(SB), RODATA, $20	// Size duplicated below
 //    after step 2).
 // 4. Save all machine registers (including flags and XMM reigsters)
 //    so they can be restored later by the debugger.
-// 5. Set the PC to debugCallV1 and resume execution.
+// 5. Set the PC to debugCallV2 and resume execution.
 //
 // If the goroutine is in state _Grunnable, then it's not generally
 // safe to inject a call because it may return out via other runtime
@@ -1654,19 +1648,19 @@ GLOBL	debugCallFrameTooLarge<>(SB), RODATA, $20	// Size duplicated below
 //
 // If the goroutine is in any other state, it's not safe to inject a call.
 //
-// This function communicates back to the debugger by setting RAX and
+// This function communicates back to the debugger by setting R12 and
 // invoking INT3 to raise a breakpoint signal. See the comments in the
 // implementation for the protocol the debugger is expected to
 // follow. InjectDebugCall in the runtime tests demonstrates this protocol.
 //
 // The debugger must ensure that any pointers passed to the function
 // obey escape analysis requirements. Specifically, it must not pass
-// a stack pointer to an escaping argument. debugCallV1 cannot check
+// a stack pointer to an escaping argument. debugCallV2 cannot check
 // this invariant.
 //
 // This is ABIInternal because Go code injects its PC directly into new
 // goroutine stacks.
-TEXT runtime·debugCallV1<ABIInternal>(SB),NOSPLIT,$152-0
+TEXT runtime·debugCallV2<ABIInternal>(SB),NOSPLIT,$152-0
 	// Save all registers that may contain pointers so they can be
 	// conservatively scanned.
 	//
@@ -1706,10 +1700,10 @@ TEXT runtime·debugCallV1<ABIInternal>(SB),NOSPLIT,$152-0
 	MOVQ	AX, 0(SP)
 	MOVQ	16(SP), AX
 	MOVQ	AX, 8(SP)
-	// Set AX to 8 and invoke INT3. The debugger should get the
+	// Set R12 to 8 and invoke INT3. The debugger should get the
 	// reason a call can't be injected from the top of the stack
 	// and resume execution.
-	MOVQ	$8, AX
+	MOVQ	$8, R12
 	BYTE	$0xcc
 	JMP	restore
 
@@ -1717,17 +1711,18 @@ good:
 	// Registers are saved and it's safe to make a call.
 	// Open up a call frame, moving the stack if necessary.
 	//
-	// Once the frame is allocated, this will set AX to 0 and
+	// Once the frame is allocated, this will set R12 to 0 and
 	// invoke INT3. The debugger should write the argument
-	// frame for the call at SP, push the trapping PC on the
-	// stack, set the PC to the function to call, set RCX to point
-	// to the closure (if a closure call), and resume execution.
+	// frame for the call at SP, set up argument registers, push
+	// the trapping PC on the stack, set the PC to the function to
+	// call, set RDX to point to the closure (if a closure call),
+	// and resume execution.
 	//
-	// If the function returns, this will set AX to 1 and invoke
+	// If the function returns, this will set R12 to 1 and invoke
 	// INT3. The debugger can then inspect any return value saved
-	// on the stack at SP and resume execution again.
+	// on the stack at SP and in registers and resume execution again.
 	//
-	// If the function panics, this will set AX to 2 and invoke INT3.
+	// If the function panics, this will set R12 to 2 and invoke INT3.
 	// The interface{} value of the panic will be at SP. The debugger
 	// can inspect the panic value and resume execution again.
 #define DEBUG_CALL_DISPATCH(NAME,MAXSIZE)	\
@@ -1755,16 +1750,16 @@ good:
 	MOVQ	$debugCallFrameTooLarge<>(SB), AX
 	MOVQ	AX, 0(SP)
 	MOVQ	$20, 8(SP) // length of debugCallFrameTooLarge string
-	MOVQ	$8, AX
+	MOVQ	$8, R12
 	BYTE	$0xcc
 	JMP	restore
 
 restore:
 	// Calls and failures resume here.
 	//
-	// Set AX to 16 and invoke INT3. The debugger should restore
+	// Set R12 to 16 and invoke INT3. The debugger should restore
 	// all registers except RIP and RSP and resume execution.
-	MOVQ	$16, AX
+	MOVQ	$16, R12
 	BYTE	$0xcc
 	// We must not modify flags after this point.
 
@@ -1793,9 +1788,9 @@ restore:
 #define DEBUG_CALL_FN(NAME,MAXSIZE)		\
 TEXT NAME(SB),WRAPPER,$MAXSIZE-0;		\
 	NO_LOCAL_POINTERS;			\
-	MOVQ	$0, AX;				\
+	MOVQ	$0, R12;				\
 	BYTE	$0xcc;				\
-	MOVQ	$1, AX;				\
+	MOVQ	$1, R12;				\
 	BYTE	$0xcc;				\
 	RET
 DEBUG_CALL_FN(debugCall32<>, 32)
@@ -1818,7 +1813,7 @@ TEXT runtime·debugCallPanicked(SB),NOSPLIT,$16-16
 	MOVQ	AX, 0(SP)
 	MOVQ	val_data+8(FP), AX
 	MOVQ	AX, 8(SP)
-	MOVQ	$2, AX
+	MOVQ	$2, R12
 	BYTE	$0xcc
 	RET
 
@@ -1829,69 +1824,62 @@ TEXT runtime·debugCallPanicked(SB),NOSPLIT,$16-16
 // The tail call makes these stubs disappear in backtraces.
 // Defined as ABIInternal since they do not use the stack-based Go ABI.
 TEXT runtime·panicIndex<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	AX, x+0(FP)
-	MOVQ	CX, y+8(FP)
+	MOVQ	CX, BX
 	JMP	runtime·goPanicIndex<ABIInternal>(SB)
 TEXT runtime·panicIndexU<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	AX, x+0(FP)
-	MOVQ	CX, y+8(FP)
+	MOVQ	CX, BX
 	JMP	runtime·goPanicIndexU<ABIInternal>(SB)
 TEXT runtime·panicSliceAlen<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	CX, x+0(FP)
-	MOVQ	DX, y+8(FP)
+	MOVQ	CX, AX
+	MOVQ	DX, BX
 	JMP	runtime·goPanicSliceAlen<ABIInternal>(SB)
 TEXT runtime·panicSliceAlenU<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	CX, x+0(FP)
-	MOVQ	DX, y+8(FP)
+	MOVQ	CX, AX
+	MOVQ	DX, BX
 	JMP	runtime·goPanicSliceAlenU<ABIInternal>(SB)
 TEXT runtime·panicSliceAcap<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	CX, x+0(FP)
-	MOVQ	DX, y+8(FP)
+	MOVQ	CX, AX
+	MOVQ	DX, BX
 	JMP	runtime·goPanicSliceAcap<ABIInternal>(SB)
 TEXT runtime·panicSliceAcapU<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	CX, x+0(FP)
-	MOVQ	DX, y+8(FP)
+	MOVQ	CX, AX
+	MOVQ	DX, BX
 	JMP	runtime·goPanicSliceAcapU<ABIInternal>(SB)
 TEXT runtime·panicSliceB<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	AX, x+0(FP)
-	MOVQ	CX, y+8(FP)
+	MOVQ	CX, BX
 	JMP	runtime·goPanicSliceB<ABIInternal>(SB)
 TEXT runtime·panicSliceBU<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	AX, x+0(FP)
-	MOVQ	CX, y+8(FP)
+	MOVQ	CX, BX
 	JMP	runtime·goPanicSliceBU<ABIInternal>(SB)
 TEXT runtime·panicSlice3Alen<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	DX, x+0(FP)
-	MOVQ	BX, y+8(FP)
+	MOVQ	DX, AX
 	JMP	runtime·goPanicSlice3Alen<ABIInternal>(SB)
 TEXT runtime·panicSlice3AlenU<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	DX, x+0(FP)
-	MOVQ	BX, y+8(FP)
+	MOVQ	DX, AX
 	JMP	runtime·goPanicSlice3AlenU<ABIInternal>(SB)
 TEXT runtime·panicSlice3Acap<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	DX, x+0(FP)
-	MOVQ	BX, y+8(FP)
+	MOVQ	DX, AX
 	JMP	runtime·goPanicSlice3Acap<ABIInternal>(SB)
 TEXT runtime·panicSlice3AcapU<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	DX, x+0(FP)
-	MOVQ	BX, y+8(FP)
+	MOVQ	DX, AX
 	JMP	runtime·goPanicSlice3AcapU<ABIInternal>(SB)
 TEXT runtime·panicSlice3B<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	CX, x+0(FP)
-	MOVQ	DX, y+8(FP)
+	MOVQ	CX, AX
+	MOVQ	DX, BX
 	JMP	runtime·goPanicSlice3B<ABIInternal>(SB)
 TEXT runtime·panicSlice3BU<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	CX, x+0(FP)
-	MOVQ	DX, y+8(FP)
+	MOVQ	CX, AX
+	MOVQ	DX, BX
 	JMP	runtime·goPanicSlice3BU<ABIInternal>(SB)
 TEXT runtime·panicSlice3C<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	AX, x+0(FP)
-	MOVQ	CX, y+8(FP)
+	MOVQ	CX, BX
 	JMP	runtime·goPanicSlice3C<ABIInternal>(SB)
 TEXT runtime·panicSlice3CU<ABIInternal>(SB),NOSPLIT,$0-16
-	MOVQ	AX, x+0(FP)
-	MOVQ	CX, y+8(FP)
+	MOVQ	CX, BX
 	JMP	runtime·goPanicSlice3CU<ABIInternal>(SB)
+TEXT runtime·panicSliceConvert<ABIInternal>(SB),NOSPLIT,$0-16
+	MOVQ	DX, AX
+	JMP	runtime·goPanicSliceConvert<ABIInternal>(SB)
 
 #ifdef GOOS_android
 // Use the free TLS_SLOT_APP slot #2 on Android Q.

@@ -23,10 +23,14 @@ func (g *irgen) match(t1 *types.Type, t2 types2.Type, hasOK bool) bool {
 	}
 
 	if hasOK {
-		// For has-ok values, types2 represents the expression's type as
-		// a 2-element tuple, whereas ir just uses the first type and
-		// infers that the second type is boolean.
-		return tuple.Len() == 2 && types.Identical(t1, g.typ(tuple.At(0).Type()))
+		// For has-ok values, types2 represents the expression's type as a
+		// 2-element tuple, whereas ir just uses the first type and infers
+		// that the second type is boolean. Must match either, since we
+		// sometimes delay the transformation to the ir form.
+		if tuple.Len() == 2 && types.Identical(t1, g.typ(tuple.At(0).Type())) {
+			return true
+		}
+		return types.Identical(t1, g.typ(t2))
 	}
 
 	if t1 == nil || tuple == nil {
@@ -51,7 +55,15 @@ func (g *irgen) validate(n syntax.Node) {
 	case *syntax.CallExpr:
 		tv := g.info.Types[n.Fun]
 		if tv.IsBuiltin() {
-			switch builtin := n.Fun.(type) {
+			fun := n.Fun
+			for {
+				builtin, ok := fun.(*syntax.ParenExpr)
+				if !ok {
+					break
+				}
+				fun = builtin.X
+			}
+			switch builtin := fun.(type) {
 			case *syntax.Name:
 				g.validateBuiltin(builtin.Value, n)
 			case *syntax.SelectorExpr:
@@ -69,7 +81,16 @@ func (g *irgen) validateBuiltin(name string, call *syntax.CallExpr) {
 		// Check that types2+gcSizes calculates sizes the same
 		// as cmd/compile does.
 
-		got, ok := constant.Int64Val(g.info.Types[call].Value)
+		tv := g.info.Types[call]
+		if !tv.IsValue() {
+			base.FatalfAt(g.pos(call), "expected a value")
+		}
+
+		if tv.Value == nil {
+			break // unsafe op is not a constant, so no further validation
+		}
+
+		got, ok := constant.Int64Val(tv.Value)
 		if !ok {
 			base.FatalfAt(g.pos(call), "expected int64 constant value")
 		}

@@ -32,6 +32,7 @@ func SubstArgTypes(old *ir.Name, types_ ...*types.Type) *ir.Name {
 	n := ir.NewNameAt(old.Pos(), old.Sym())
 	n.Class = old.Class
 	n.SetType(types.SubstAny(old.Type(), &types_))
+	n.Func = old.Func
 	if len(types_) > 0 {
 		base.Fatalf("SubstArgTypes: too many argument types")
 	}
@@ -74,9 +75,9 @@ func InitRuntime() {
 		typ := typs[d.typ]
 		switch d.tag {
 		case funcTag:
-			importfunc(ir.Pkgs.Runtime, src.NoXPos, sym, typ)
+			importfunc(src.NoXPos, sym, typ)
 		case varTag:
-			importvar(ir.Pkgs.Runtime, src.NoXPos, sym, typ)
+			importvar(src.NoXPos, sym, typ)
 		default:
 			base.Fatalf("unhandled declaration tag %v", d.tag)
 		}

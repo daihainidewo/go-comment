@@ -259,7 +259,7 @@ func (f *FieldList) End() token.Pos {
 	return token.NoPos
 }
 
-// NumFields returns the number of (type) parameters or struct fields represented by a FieldList.
+// NumFields returns the number of parameters or struct fields represented by a FieldList.
 func (f *FieldList) NumFields() int {
 	n := 0
 	if f != nil {
@@ -344,6 +344,15 @@ type (
 		Rbrack token.Pos // position of "]"
 	}
 
+	// An IndexListExpr node represents an expression followed by multiple
+	// indices.
+	IndexListExpr struct {
+		X       Expr      // expression
+		Lbrack  token.Pos // position of "["
+		Indices []Expr    // index expressions
+		Rbrack  token.Pos // position of "]"
+	}
+
 	// A SliceExpr node represents an expression followed by slice indices.
 	SliceExpr struct {
 		X      Expr      // expression
@@ -372,13 +381,6 @@ type (
 		Args     []Expr    // function arguments; or nil
 		Ellipsis token.Pos // position of "..." (token.NoPos if there is no "...")
 		Rparen   token.Pos // position of ")"
-	}
-
-	// A ListExpr node represents a list of expressions separated by commas.
-	// ListExpr nodes are used as index in IndexExpr nodes representing type
-	// or function instantiations with more than one type argument.
-	ListExpr struct {
-		ElemList []Expr
 	}
 
 	// A StarExpr node represents an expression of the form "*" Expression.
@@ -449,10 +451,10 @@ type (
 
 	// A FuncType node represents a function type.
 	FuncType struct {
-		Func    token.Pos  // position of "func" keyword (token.NoPos if there is no "func")
-		TParams *FieldList // type parameters; or nil
-		Params  *FieldList // (incoming) parameters; non-nil
-		Results *FieldList // (outgoing) results; or nil
+		Func       token.Pos  // position of "func" keyword (token.NoPos if there is no "func")
+		TypeParams *FieldList // type parameters; or nil
+		Params     *FieldList // (incoming) parameters; non-nil
+		Results    *FieldList // (outgoing) results; or nil
 	}
 
 	// An InterfaceType node represents an interface type.
@@ -494,21 +496,16 @@ func (x *CompositeLit) Pos() token.Pos {
 func (x *ParenExpr) Pos() token.Pos      { return x.Lparen }
 func (x *SelectorExpr) Pos() token.Pos   { return x.X.Pos() }
 func (x *IndexExpr) Pos() token.Pos      { return x.X.Pos() }
+func (x *IndexListExpr) Pos() token.Pos  { return x.X.Pos() }
 func (x *SliceExpr) Pos() token.Pos      { return x.X.Pos() }
 func (x *TypeAssertExpr) Pos() token.Pos { return x.X.Pos() }
 func (x *CallExpr) Pos() token.Pos       { return x.Fun.Pos() }
-func (x *ListExpr) Pos() token.Pos {
-	if len(x.ElemList) > 0 {
-		return x.ElemList[0].Pos()
-	}
-	return token.NoPos
-}
-func (x *StarExpr) Pos() token.Pos     { return x.Star }
-func (x *UnaryExpr) Pos() token.Pos    { return x.OpPos }
-func (x *BinaryExpr) Pos() token.Pos   { return x.X.Pos() }
-func (x *KeyValueExpr) Pos() token.Pos { return x.Key.Pos() }
-func (x *ArrayType) Pos() token.Pos    { return x.Lbrack }
-func (x *StructType) Pos() token.Pos   { return x.Struct }
+func (x *StarExpr) Pos() token.Pos       { return x.Star }
+func (x *UnaryExpr) Pos() token.Pos      { return x.OpPos }
+func (x *BinaryExpr) Pos() token.Pos     { return x.X.Pos() }
+func (x *KeyValueExpr) Pos() token.Pos   { return x.Key.Pos() }
+func (x *ArrayType) Pos() token.Pos      { return x.Lbrack }
+func (x *StructType) Pos() token.Pos     { return x.Struct }
 func (x *FuncType) Pos() token.Pos {
 	if x.Func.IsValid() || x.Params == nil { // see issue 3870
 		return x.Func
@@ -533,21 +530,16 @@ func (x *CompositeLit) End() token.Pos   { return x.Rbrace + 1 }
 func (x *ParenExpr) End() token.Pos      { return x.Rparen + 1 }
 func (x *SelectorExpr) End() token.Pos   { return x.Sel.End() }
 func (x *IndexExpr) End() token.Pos      { return x.Rbrack + 1 }
+func (x *IndexListExpr) End() token.Pos  { return x.Rbrack + 1 }
 func (x *SliceExpr) End() token.Pos      { return x.Rbrack + 1 }
 func (x *TypeAssertExpr) End() token.Pos { return x.Rparen + 1 }
 func (x *CallExpr) End() token.Pos       { return x.Rparen + 1 }
-func (x *ListExpr) End() token.Pos {
-	if len(x.ElemList) > 0 {
-		return x.ElemList[len(x.ElemList)-1].End()
-	}
-	return token.NoPos
-}
-func (x *StarExpr) End() token.Pos     { return x.X.End() }
-func (x *UnaryExpr) End() token.Pos    { return x.X.End() }
-func (x *BinaryExpr) End() token.Pos   { return x.Y.End() }
-func (x *KeyValueExpr) End() token.Pos { return x.Value.End() }
-func (x *ArrayType) End() token.Pos    { return x.Elt.End() }
-func (x *StructType) End() token.Pos   { return x.Fields.End() }
+func (x *StarExpr) End() token.Pos       { return x.X.End() }
+func (x *UnaryExpr) End() token.Pos      { return x.X.End() }
+func (x *BinaryExpr) End() token.Pos     { return x.Y.End() }
+func (x *KeyValueExpr) End() token.Pos   { return x.Value.End() }
+func (x *ArrayType) End() token.Pos      { return x.Elt.End() }
+func (x *StructType) End() token.Pos     { return x.Fields.End() }
 func (x *FuncType) End() token.Pos {
 	if x.Results != nil {
 		return x.Results.End()
@@ -570,10 +562,10 @@ func (*CompositeLit) exprNode()   {}
 func (*ParenExpr) exprNode()      {}
 func (*SelectorExpr) exprNode()   {}
 func (*IndexExpr) exprNode()      {}
+func (*IndexListExpr) exprNode()  {}
 func (*SliceExpr) exprNode()      {}
 func (*TypeAssertExpr) exprNode() {}
 func (*CallExpr) exprNode()       {}
-func (*ListExpr) exprNode()       {}
 func (*StarExpr) exprNode()       {}
 func (*UnaryExpr) exprNode()      {}
 func (*BinaryExpr) exprNode()     {}
@@ -923,12 +915,12 @@ type (
 
 	// A TypeSpec node represents a type declaration (TypeSpec production).
 	TypeSpec struct {
-		Doc     *CommentGroup // associated documentation; or nil
-		Name    *Ident        // type name
-		TParams *FieldList    // type parameters; or nil
-		Assign  token.Pos     // position of '=', if any
-		Type    Expr          // *Ident, *ParenExpr, *SelectorExpr, *StarExpr, or any of the *XxxTypes
-		Comment *CommentGroup // line comments; or nil
+		Doc        *CommentGroup // associated documentation; or nil
+		Name       *Ident        // type name
+		TypeParams *FieldList    // type parameters; or nil
+		Assign     token.Pos     // position of '=', if any
+		Type       Expr          // *Ident, *ParenExpr, *SelectorExpr, *StarExpr, or any of the *XxxTypes
+		Comment    *CommentGroup // line comments; or nil
 	}
 )
 
@@ -1010,10 +1002,6 @@ type (
 		//                they are only valid for declared functions
 	}
 )
-
-func (f *FuncDecl) IsMethod() bool {
-	return f.Recv.NumFields() != 0
-}
 
 // Pos and End implementations for declaration nodes.
 

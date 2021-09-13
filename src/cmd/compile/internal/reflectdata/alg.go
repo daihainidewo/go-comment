@@ -6,6 +6,7 @@ package reflectdata
 
 import (
 	"fmt"
+	"math/bits"
 	"sort"
 
 	"cmd/compile/internal/base"
@@ -47,7 +48,12 @@ func eqCanPanic(t *types.Type) bool {
 func AlgType(t *types.Type) types.AlgKind {
 	a, _ := types.AlgType(t)
 	if a == types.AMEM {
-		switch t.Width {
+		if t.Alignment() < int64(base.Ctxt.Arch.Alignment) && t.Alignment() < t.Size() {
+			// For example, we can't treat [2]int16 as an int32 if int32s require
+			// 4-byte alignment. See issue 46283.
+			return a
+		}
+		switch t.Size() {
 		case 0:
 			return types.AMEM0
 		case 1:
@@ -104,7 +110,7 @@ func genhash(t *types.Type) *obj.LSym {
 		// For other sizes of plain memory, we build a closure
 		// that calls memhash_varlen. The size of the memory is
 		// encoded in the first slot of the closure.
-		closure := TypeLinksymLookup(fmt.Sprintf(".hashfunc%d", t.Width))
+		closure := TypeLinksymLookup(fmt.Sprintf(".hashfunc%d", t.Size()))
 		if len(closure.P) > 0 { // already generated
 			return closure
 		}
@@ -113,7 +119,7 @@ func genhash(t *types.Type) *obj.LSym {
 		}
 		ot := 0
 		ot = objw.SymPtr(closure, ot, memhashvarlen, 0)
-		ot = objw.Uintptr(closure, ot, uint64(t.Width)) // size encoded in closure
+		ot = objw.Uintptr(closure, ot, uint64(t.Size())) // size encoded in closure
 		objw.Global(closure, int32(ot), obj.DUPOK|obj.RODATA)
 		return closure
 	case types.ASPECIAL:
@@ -287,6 +293,7 @@ func hashfor(t *types.Type) ir.Node {
 		sym = TypeSymPrefix(".hash", t)
 	}
 
+	// TODO(austin): This creates an ir.Name with a nil Func.
 	n := typecheck.NewName(sym)
 	ir.MarkFunc(n)
 	n.SetType(types.NewSignature(types.NoPkg, nil, nil, []*types.Field{
@@ -347,16 +354,16 @@ func geneq(t *types.Type) *obj.LSym {
 	case types.AMEM:
 		// make equality closure. The size of the type
 		// is encoded in the closure.
-		closure := TypeLinksymLookup(fmt.Sprintf(".eqfunc%d", t.Width))
+		closure := TypeLinksymLookup(fmt.Sprintf(".eqfunc%d", t.Size()))
 		if len(closure.P) != 0 {
 			return closure
 		}
 		if memequalvarlen == nil {
-			memequalvarlen = typecheck.LookupRuntimeVar("memequal_varlen") // asm func
+			memequalvarlen = typecheck.LookupRuntimeFunc("memequal_varlen")
 		}
 		ot := 0
 		ot = objw.SymPtr(closure, ot, memequalvarlen, 0)
-		ot = objw.Uintptr(closure, ot, uint64(t.Width))
+		ot = objw.Uintptr(closure, ot, uint64(t.Size()))
 		objw.Global(closure, int32(ot), obj.DUPOK|obj.RODATA)
 		return closure
 	case types.ASPECIAL:
@@ -672,8 +679,7 @@ func EqString(s, t ir.Node) (eqlen *ir.BinaryExpr, eqmem *ir.CallExpr) {
 
 	fn := typecheck.LookupRuntime("memequal")
 	fn = typecheck.SubstArgTypes(fn, types.Types[types.TUINT8], types.Types[types.TUINT8])
-	call := ir.NewCallExpr(base.Pos, ir.OCALL, fn, []ir.Node{sptr, tptr, ir.Copy(slen)})
-	typecheck.Call(call)
+	call := typecheck.Call(base.Pos, fn, []ir.Node{sptr, tptr, ir.Copy(slen)}, false).(*ir.CallExpr)
 
 	cmp := ir.NewBinaryExpr(base.Pos, ir.OEQ, slen, tlen)
 	cmp = typecheck.Expr(cmp).(*ir.BinaryExpr)
@@ -709,8 +715,7 @@ func EqInterface(s, t ir.Node) (eqtab *ir.BinaryExpr, eqdata *ir.CallExpr) {
 	sdata.SetTypecheck(1)
 	tdata.SetTypecheck(1)
 
-	call := ir.NewCallExpr(base.Pos, ir.OCALL, fn, []ir.Node{stab, sdata, tdata})
-	typecheck.Call(call)
+	call := typecheck.Call(base.Pos, fn, []ir.Node{stab, sdata, tdata}, false).(*ir.CallExpr)
 
 	cmp := ir.NewBinaryExpr(base.Pos, ir.OEQ, stab, ttab)
 	cmp = typecheck.Expr(cmp).(*ir.BinaryExpr)
@@ -768,6 +773,20 @@ func memrun(t *types.Type, start int) (size int64, next int) {
 		if f := t.Field(next); f.Sym.IsBlank() || !isRegularMemory(f.Type) {
 			break
 		}
+		// For issue 46283, don't combine fields if the resulting load would
+		// require a larger alignment than the component fields.
+		if base.Ctxt.Arch.Alignment > 1 {
+			align := t.Alignment()
+			if off := t.Field(start).Offset; off&(align-1) != 0 {
+				// Offset is less aligned than the containing type.
+				// Use offset to determine alignment.
+				align = 1 << uint(bits.TrailingZeros64(uint64(off)))
+			}
+			size := t.Field(next).End() - t.Field(start).Offset
+			if size > align {
+				break
+			}
+		}
 	}
 	return t.Field(next-1).End() - t.Field(start).Offset, next
 }
@@ -775,6 +794,7 @@ func memrun(t *types.Type, start int) (size int64, next int) {
 func hashmem(t *types.Type) ir.Node {
 	sym := ir.Pkgs.Runtime.Lookup("memhash")
 
+	// TODO(austin): This creates an ir.Name with a nil Func.
 	n := typecheck.NewName(sym)
 	ir.MarkFunc(n)
 	n.SetType(types.NewSignature(types.NoPkg, nil, nil, []*types.Field{

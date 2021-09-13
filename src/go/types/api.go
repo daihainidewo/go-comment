@@ -34,6 +34,8 @@ import (
 	"go/token"
 )
 
+const allowTypeLists = false
+
 // An Error describes a type-checking error; it implements the error interface.
 // A "soft" error is an error that still permits a valid interpretation of a
 // package (such as "unused variable"); "hard" errors may lead to unpredictable
@@ -58,6 +60,18 @@ type Error struct {
 // filename:line:column: message
 func (err Error) Error() string {
 	return fmt.Sprintf("%s: %s", err.Fset.Position(err.Pos), err.Msg)
+}
+
+// An ArgumentError holds an error associated with an argument index.
+type ArgumentError struct {
+	index int
+	error
+}
+
+// Index returns the positional index of the argument associated with the
+// error.
+func (e ArgumentError) Index() int {
+	return e.index
 }
 
 // An Importer resolves import paths to Packages.
@@ -101,6 +115,11 @@ type ImporterFrom interface {
 // A Config specifies the configuration for type checking.
 // The zero value for Config is a ready-to-use default configuration.
 type Config struct {
+	// Environment is the environment used for resolving global
+	// identifiers. If nil, the type checker will initialize this
+	// field with a newly created environment.
+	Environment *Environment
+
 	// GoVersion describes the accepted Go language version. The string
 	// must follow the format "go%d.%d" (e.g. "go1.12") or it must be
 	// empty; an empty string indicates the latest language version.
@@ -184,11 +203,11 @@ type Info struct {
 	// qualified identifiers are collected in the Uses map.
 	Types map[ast.Expr]TypeAndValue
 
-	// _Inferred maps calls of parameterized functions that use
-	// type inference to the _Inferred type arguments and signature
+	// Inferred maps calls of parameterized functions that use
+	// type inference to the inferred type arguments and signature
 	// of the function called. The recorded "call" expression may be
 	// an *ast.CallExpr (as in f(x)), or an *ast.IndexExpr (s in f[T]).
-	_Inferred map[ast.Expr]_Inferred
+	Inferred map[ast.Expr]Inferred
 
 	// Defs maps identifiers to the objects they define (including
 	// package names, dots "." of dot-imports, and blank "_" identifiers).
@@ -346,10 +365,10 @@ func (tv TypeAndValue) HasOk() bool {
 	return tv.mode == commaok || tv.mode == mapindex
 }
 
-// _Inferred reports the _Inferred type arguments and signature
+// Inferred reports the Inferred type arguments and signature
 // for a parameterized function call that uses type inference.
-type _Inferred struct {
-	Targs []Type
+type Inferred struct {
+	TArgs *TypeList
 	Sig   *Signature
 }
 
@@ -406,7 +425,7 @@ func AssignableTo(V, T Type) bool {
 // ConvertibleTo reports whether a value of type V is convertible to a value of type T.
 func ConvertibleTo(V, T Type) bool {
 	x := operand{mode: value, typ: V}
-	return x.convertibleTo(nil, T) // check not needed for non-constant x
+	return x.convertibleTo(nil, T, nil) // check not needed for non-constant x
 }
 
 // Implements reports whether type V implements interface T.
@@ -418,11 +437,11 @@ func Implements(V Type, T *Interface) bool {
 // Identical reports whether x and y are identical types.
 // Receivers of Signature types are ignored.
 func Identical(x, y Type) bool {
-	return (*Checker)(nil).identical(x, y)
+	return identical(x, y, true, nil)
 }
 
 // IdenticalIgnoreTags reports whether x and y are identical types if tags are ignored.
 // Receivers of Signature types are ignored.
 func IdenticalIgnoreTags(x, y Type) bool {
-	return (*Checker)(nil).identicalIgnoreTags(x, y)
+	return identical(x, y, false, nil)
 }

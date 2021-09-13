@@ -63,7 +63,7 @@ func (s *MethodSet) Lookup(pkg *Package, name string) *Selection {
 var emptyMethodSet MethodSet
 
 // Note: NewMethodSet is intended for external use only as it
-//       requires interfaces to be complete. If may be used
+//       requires interfaces to be complete. It may be used
 //       internally if LookupFieldOrMethod completed the same
 //       interfaces beforehand.
 
@@ -73,8 +73,8 @@ func NewMethodSet(T Type) *MethodSet {
 	// WARNING: The code in this function is extremely subtle - do not modify casually!
 	//          This function and lookupFieldOrMethod should be kept in sync.
 
-	// TODO(gri) This code is out-of-sync with the lookup code at this point.
-	//           Need to update.
+	// TODO(rfindley) confirm that this code is in sync with lookupFieldOrMethod
+	//                with respect to type params.
 
 	// method set up to the current depth, allocated lazily
 	var base methodSet
@@ -127,8 +127,12 @@ func NewMethodSet(T Type) *MethodSet {
 
 				mset = mset.add(named.methods, e.index, e.indirect, e.multiples)
 
-				// continue with underlying type
+				// continue with underlying type, but only if it's not a type parameter
+				// TODO(rFindley): should this use named.under()? Can there be a difference?
 				typ = named.underlying
+				if _, ok := typ.(*TypeParam); ok {
+					continue
+				}
 			}
 
 			switch t := typ.(type) {
@@ -153,7 +157,10 @@ func NewMethodSet(T Type) *MethodSet {
 				}
 
 			case *Interface:
-				mset = mset.add(t.allMethods, e.index, true, e.multiples)
+				mset = mset.add(t.typeSet().methods, e.index, true, e.multiples)
+
+			case *TypeParam:
+				mset = mset.add(t.iface().typeSet().methods, e.index, true, e.multiples)
 			}
 		}
 
@@ -183,12 +190,7 @@ func NewMethodSet(T Type) *MethodSet {
 			}
 		}
 
-		// It's ok to call consolidateMultiples with a nil *Checker because
-		// MethodSets are not used internally (outside debug mode). When used
-		// externally, interfaces are expected to be completed and then we do
-		// not need a *Checker to complete them when (indirectly) calling
-		// Checker.identical via consolidateMultiples.
-		current = (*Checker)(nil).consolidateMultiples(next)
+		current = consolidateMultiples(next)
 	}
 
 	if len(base) == 0 {

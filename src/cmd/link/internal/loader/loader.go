@@ -257,6 +257,9 @@ type Loader struct {
 	// the symbol that triggered the marking of symbol K as live.
 	Reachparent []Sym
 
+	// CgoExports records cgo-exported symbols by SymName.
+	CgoExports map[string]Sym
+
 	flags uint32
 
 	hasUnknownPkgPath bool // if any Go object has unknown package path
@@ -456,6 +459,15 @@ func (st *loadState) addSym(name string, ver int, r *oReader, li uint32, kind in
 		if l.flags&FlagStrictDups != 0 {
 			l.checkdup(name, r, li, oldi)
 		}
+		// Fix for issue #47185 -- given two dupok symbols with
+		// different sizes, favor symbol with larger size. See
+		// also issue #46653.
+		szdup := l.SymSize(oldi)
+		sz := int64(r.Sym(li).Siz())
+		if szdup < sz {
+			// new symbol overwrites old symbol.
+			l.objSyms[oldi] = objSym{r.objidx, li}
+		}
 		return oldi
 	}
 	oldr, oldli := l.toLocal(oldi)
@@ -468,14 +480,14 @@ func (st *loadState) addSym(name string, ver int, r *oReader, li uint32, kind in
 		// new symbol overwrites old symbol.
 		oldtyp := sym.AbiSymKindToSymKind[objabi.SymKind(oldsym.Type())]
 		if !(oldtyp.IsData() && oldr.DataSize(oldli) == 0) {
-			log.Fatalf("duplicated definition of symbol " + name)
+			log.Fatalf("duplicated definition of symbol %s, from %s and %s", name, r.unit.Lib.Pkg, oldr.unit.Lib.Pkg)
 		}
 		l.objSyms[oldi] = objSym{r.objidx, li}
 	} else {
 		// old symbol overwrites new symbol.
 		typ := sym.AbiSymKindToSymKind[objabi.SymKind(oldsym.Type())]
 		if !typ.IsData() { // only allow overwriting data symbol
-			log.Fatalf("duplicated definition of symbol " + name)
+			log.Fatalf("duplicated definition of symbol %s, from %s and %s", name, r.unit.Lib.Pkg, oldr.unit.Lib.Pkg)
 		}
 	}
 	return oldi
@@ -512,6 +524,36 @@ func (l *Loader) LookupOrCreateSym(name string, ver int) Sym {
 		l.symsByName[ver][name] = i
 	}
 	return i
+}
+
+// AddCgoExport records a cgo-exported symbol in l.CgoExports.
+// This table is used to identify the correct Go symbol ABI to use
+// to resolve references from host objects (which don't have ABIs).
+func (l *Loader) AddCgoExport(s Sym) {
+	if l.CgoExports == nil {
+		l.CgoExports = make(map[string]Sym)
+	}
+	l.CgoExports[l.SymName(s)] = s
+}
+
+// LookupOrCreateCgoExport is like LookupOrCreateSym, but if ver
+// indicates a global symbol, it uses the CgoExport table to determine
+// the appropriate symbol version (ABI) to use. ver must be either 0
+// or a static symbol version.
+func (l *Loader) LookupOrCreateCgoExport(name string, ver int) Sym {
+	if ver >= sym.SymVerStatic {
+		return l.LookupOrCreateSym(name, ver)
+	}
+	if ver != 0 {
+		panic("ver must be 0 or a static version")
+	}
+	// Look for a cgo-exported symbol from Go.
+	if s, ok := l.CgoExports[name]; ok {
+		return s
+	}
+	// Otherwise, this must just be a symbol in the host object.
+	// Create a version 0 symbol for it.
+	return l.LookupOrCreateSym(name, 0)
 }
 
 func (l *Loader) IsExternal(i Sym) bool {
@@ -666,12 +708,18 @@ func (l *Loader) checkdup(name string, r *oReader, li uint32, dup Sym) {
 	p := r.Data(li)
 	rdup, ldup := l.toLocal(dup)
 	pdup := rdup.Data(ldup)
-	if bytes.Equal(p, pdup) {
-		return
-	}
 	reason := "same length but different contents"
 	if len(p) != len(pdup) {
 		reason = fmt.Sprintf("new length %d != old length %d", len(p), len(pdup))
+	} else if bytes.Equal(p, pdup) {
+		// For BSS symbols, we need to check size as well, see issue 46653.
+		szdup := l.SymSize(dup)
+		sz := int64(r.Sym(li).Siz())
+		if szdup == sz {
+			return
+		}
+		reason = fmt.Sprintf("different sizes: new size %d != old size %d",
+			sz, szdup)
 	}
 	fmt.Fprintf(os.Stderr, "cmd/link: while reading object for '%v': duplicate symbol '%s', previous def at '%v', with mismatched payload: %s\n", r.unit.Lib, name, rdup.unit.Lib, reason)
 
@@ -738,6 +786,9 @@ func (l *Loader) SymName(i Sym) string {
 		return pp.name
 	}
 	r, li := l.toLocal(i)
+	if r == nil {
+		return "?"
+	}
 	name := r.Sym(li).Name(r.Reader)
 	if !r.NeedNameExpansion() {
 		return name
@@ -1410,7 +1461,7 @@ func (l *Loader) SetSymLocalElfSym(i Sym, es int32) {
 	}
 }
 
-// SymPlt returns the plt value for pe symbols.
+// SymPlt returns the PLT offset of symbol s.
 func (l *Loader) SymPlt(s Sym) int32 {
 	if v, ok := l.plt[s]; ok {
 		return v
@@ -1418,7 +1469,7 @@ func (l *Loader) SymPlt(s Sym) int32 {
 	return -1
 }
 
-// SetPlt sets the plt value for pe symbols.
+// SetPlt sets the PLT offset of symbol i.
 func (l *Loader) SetPlt(i Sym, v int32) {
 	if i >= Sym(len(l.objSyms)) || i == 0 {
 		panic("bad symbol for SetPlt")
@@ -1430,7 +1481,7 @@ func (l *Loader) SetPlt(i Sym, v int32) {
 	}
 }
 
-// SymGot returns the got value for pe symbols.
+// SymGot returns the GOT offset of symbol s.
 func (l *Loader) SymGot(s Sym) int32 {
 	if v, ok := l.got[s]; ok {
 		return v
@@ -1438,7 +1489,7 @@ func (l *Loader) SymGot(s Sym) int32 {
 	return -1
 }
 
-// SetGot sets the got value for pe symbols.
+// SetGot sets the GOT offset of symbol i.
 func (l *Loader) SetGot(i Sym, v int32) {
 	if i >= Sym(len(l.objSyms)) || i == 0 {
 		panic("bad symbol for SetGot")
@@ -2158,7 +2209,6 @@ func (l *Loader) LoadSyms(arch *sys.Arch) {
 	// Index 0 is invalid for symbols.
 	l.objSyms = make([]objSym, 1, symSize)
 
-	l.npkgsyms = l.NSym()
 	st := loadState{
 		l:            l,
 		hashed64Syms: make(map[uint64]symAndSize, hashed64Size),
@@ -2168,6 +2218,7 @@ func (l *Loader) LoadSyms(arch *sys.Arch) {
 	for _, o := range l.objs[goObjStart:] {
 		st.preloadSyms(o.r, pkgDef)
 	}
+	l.npkgsyms = l.NSym()
 	for _, o := range l.objs[goObjStart:] {
 		st.preloadSyms(o.r, hashed64Def)
 		st.preloadSyms(o.r, hashedDef)
@@ -2538,7 +2589,7 @@ func (l *Loader) AssignTextSymbolOrder(libs []*sym.Library, intlibs []bool, exts
 			for i, list := range lists {
 				for _, s := range list {
 					sym := Sym(s)
-					if l.attrReachable.Has(sym) && !assignedToUnit.Has(sym) {
+					if !assignedToUnit.Has(sym) {
 						textp = append(textp, sym)
 						unit := l.SymUnit(sym)
 						if unit != nil {

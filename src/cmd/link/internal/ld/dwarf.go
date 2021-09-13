@@ -22,6 +22,7 @@ import (
 	"cmd/link/internal/loader"
 	"cmd/link/internal/sym"
 	"fmt"
+	"internal/buildcfg"
 	"log"
 	"path"
 	"runtime"
@@ -185,6 +186,16 @@ func (c dwctxt) RecordChildDieOffsets(s dwarf.Sym, vars []*dwarf.Var, offsets []
 func isDwarf64(ctxt *Link) bool {
 	return ctxt.HeadType == objabi.Haix
 }
+
+// https://sourceware.org/gdb/onlinedocs/gdb/dotdebug_005fgdb_005fscripts-section.html
+// Each entry inside .debug_gdb_scripts section begins with a non-null prefix
+// byte that specifies the kind of entry. The following entries are supported:
+const (
+	GdbScriptPythonFileId = 1
+	GdbScriptSchemeFileId = 3
+	GdbScriptPythonTextId = 4
+	GdbScriptSchemeTextId = 6
+)
 
 var gdbscript string
 
@@ -1189,7 +1200,7 @@ func (d *dwctxt) writeDirFileTables(unit *sym.CompilationUnit, lsu *loader.Symbo
 		// We can't use something that may be dead-code
 		// eliminated from a binary here. proc.go contains
 		// main and the scheduler, so it's not going anywhere.
-		if i := strings.Index(name, "runtime/proc.go"); i >= 0 {
+		if i := strings.Index(name, "runtime/proc.go"); i >= 0 && unit.Lib.Pkg == "runtime" {
 			d.dwmu.Lock()
 			if gdbscript == "" {
 				k := strings.Index(name, "runtime/proc.go")
@@ -1617,7 +1628,7 @@ func (d *dwctxt) writegdbscript() dwarfSecInfo {
 	gs := d.ldr.CreateSymForUpdate(".debug_gdb_scripts", 0)
 	gs.SetType(sym.SDWARFSECT)
 
-	gs.AddUint8(1) // magic 1 byte?
+	gs.AddUint8(GdbScriptPythonFileId)
 	gs.Addstring(gdbscript)
 	return dwarfSecInfo{syms: []loader.Sym{gs.Sym()}}
 }
@@ -1843,7 +1854,7 @@ func dwarfGenerateDebugInfo(ctxt *Link) {
 			if producerExtra := d.ldr.Lookup(dwarf.CUInfoPrefix+"producer."+unit.Lib.Pkg, 0); producerExtra != 0 {
 				peData = d.ldr.Data(producerExtra)
 			}
-			producer := "Go cmd/compile " + objabi.Version
+			producer := "Go cmd/compile " + buildcfg.Version
 			if len(peData) > 0 {
 				// We put a semicolon before the flags to clearly
 				// separate them from the version, which can be long
@@ -2288,12 +2299,6 @@ var dwsectCUSize map[string]uint64
 // getDwsectCUSize retrieves the corresponding package size inside the current section.
 func getDwsectCUSize(sname string, pkgname string) uint64 {
 	return dwsectCUSize[sname+"."+pkgname]
-}
-
-func saveDwsectCUSize(sname string, pkgname string, size uint64) {
-	dwsectCUSizeMu.Lock()
-	defer dwsectCUSizeMu.Unlock()
-	dwsectCUSize[sname+"."+pkgname] = size
 }
 
 func addDwsectCUSize(sname string, pkgname string, size uint64) {

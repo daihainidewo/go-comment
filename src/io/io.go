@@ -567,7 +567,7 @@ func (t *teeReader) Read(p []byte) (n int, err error) {
 }
 
 // Discard 用于操作成功的但不做任何事的 Writer
-// Discard is an Writer on which all Write calls succeed
+// Discard is a Writer on which all Write calls succeed
 // without doing anything.
 var Discard Writer = discard{}
 

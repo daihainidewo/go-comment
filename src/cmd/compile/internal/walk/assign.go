@@ -157,15 +157,7 @@ func walkAssignMapRead(init *ir.Nodes, n *ir.AssignListStmt) ir.Node {
 	t := r.X.Type()
 
 	fast := mapfast(t)
-	var key ir.Node
-	if fast != mapslow {
-		// fast versions take key by value
-		key = r.Index
-	} else {
-		// standard version takes key by reference
-		// order.expr made sure key is addressable.
-		key = typecheck.NodAddr(r.Index)
-	}
+	key := mapKeyArg(fast, r, r.Index)
 
 	// from:
 	//   a,b = m[i]
@@ -175,11 +167,11 @@ func walkAssignMapRead(init *ir.Nodes, n *ir.AssignListStmt) ir.Node {
 	a := n.Lhs[0]
 
 	var call *ir.CallExpr
-	if w := t.Elem().Width; w <= zeroValSize {
-		fn := mapfn(mapaccess2[fast], t)
+	if w := t.Elem().Size(); w <= zeroValSize {
+		fn := mapfn(mapaccess2[fast], t, false)
 		call = mkcall1(fn, fn.Type().Results(), init, reflectdata.TypePtr(t), r.X, key)
 	} else {
-		fn := mapfn("mapaccess2_fat", t)
+		fn := mapfn("mapaccess2_fat", t, true)
 		z := reflectdata.ZeroAddr(w)
 		call = mkcall1(fn, fn.Type().Results(), init, reflectdata.TypePtr(t), r.X, key, z)
 	}
@@ -330,6 +322,13 @@ func ascompatee(op ir.Op, nl, nr []ir.Node) []ir.Node {
 		// Save subexpressions needed on left side.
 		// Drill through non-dereferences.
 		for {
+			// If an expression has init statements, they must be evaluated
+			// before any of its saved sub-operands (#45706).
+			// TODO(mdempsky): Disallow init statements on lvalues.
+			init := ir.TakeInit(l)
+			walkStmtList(init)
+			early.Append(init...)
+
 			switch ll := l.(type) {
 			case *ir.IndexExpr:
 				if ll.X.Type().IsArray() {
@@ -430,6 +429,7 @@ func readsMemory(n ir.Node) bool {
 		ir.OBITNOT,
 		ir.OCONV,
 		ir.OCONVIFACE,
+		ir.OCONVIDATA,
 		ir.OCONVNOP,
 		ir.ODIV,
 		ir.ODOT,
@@ -533,7 +533,7 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 
 		fn := typecheck.LookupRuntime("slicecopy")
 		fn = typecheck.SubstArgTypes(fn, ptr1.Type().Elem(), ptr2.Type().Elem())
-		ncopy = mkcall1(fn, types.Types[types.TINT], &nodes, ptr1, len1, ptr2, len2, ir.NewInt(elemtype.Width))
+		ncopy = mkcall1(fn, types.Types[types.TINT], &nodes, ptr1, len1, ptr2, len2, ir.NewInt(elemtype.Size()))
 	} else {
 		// memmove(&s[len(l1)], &l2[0], len(l2)*sizeof(T))
 		ix := ir.NewIndexExpr(base.Pos, s, ir.NewUnaryExpr(base.Pos, ir.OLEN, l1))
@@ -543,7 +543,7 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 		sptr := ir.NewUnaryExpr(base.Pos, ir.OSPTR, l2)
 
 		nwid := cheapExpr(typecheck.Conv(ir.NewUnaryExpr(base.Pos, ir.OLEN, l2), types.Types[types.TUINTPTR]), &nodes)
-		nwid = ir.NewBinaryExpr(base.Pos, ir.OMUL, nwid, ir.NewInt(elemtype.Width))
+		nwid = ir.NewBinaryExpr(base.Pos, ir.OMUL, nwid, ir.NewInt(elemtype.Size()))
 
 		// instantiate func memmove(to *any, frm *any, length uintptr)
 		fn := typecheck.LookupRuntime("memmove")
@@ -558,7 +558,7 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 	return s
 }
 
-// isAppendOfMake reports whether n is of the form append(x , make([]T, y)...).
+// isAppendOfMake reports whether n is of the form append(x, make([]T, y)...).
 // isAppendOfMake assumes n has already been typechecked.
 func isAppendOfMake(n ir.Node) bool {
 	if base.Flag.N != 0 || base.Flag.Cfg.Instrumenting {
@@ -690,7 +690,7 @@ func extendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 	hp := typecheck.ConvNop(typecheck.NodAddr(ix), types.Types[types.TUNSAFEPTR])
 
 	// hn := l2 * sizeof(elem(s))
-	hn := typecheck.Conv(ir.NewBinaryExpr(base.Pos, ir.OMUL, l2, ir.NewInt(elemtype.Width)), types.Types[types.TUINTPTR])
+	hn := typecheck.Conv(ir.NewBinaryExpr(base.Pos, ir.OMUL, l2, ir.NewInt(elemtype.Size())), types.Types[types.TUINTPTR])
 
 	clrname := "memclrNoHeapPointers"
 	hasPointers := elemtype.HasPointers()

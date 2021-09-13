@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/internal/typeparams"
 )
 
 // ExprString returns the (possibly shortened) string representation for x.
@@ -66,19 +67,17 @@ func WriteExpr(buf *bytes.Buffer, x ast.Expr) {
 		buf.WriteByte('.')
 		buf.WriteString(x.Sel.Name)
 
-	case *ast.IndexExpr:
-		WriteExpr(buf, x.X)
+	case *ast.IndexExpr, *ast.IndexListExpr:
+		ix := typeparams.UnpackIndexExpr(x)
+		WriteExpr(buf, ix.X)
 		buf.WriteByte('[')
-		WriteExpr(buf, x.Index)
-		buf.WriteByte(']')
-
-	case *ast.ListExpr:
-		for i, e := range x.ElemList {
+		for i, e := range ix.Indices {
 			if i > 0 {
 				buf.WriteString(", ")
 			}
 			WriteExpr(buf, e)
 		}
+		buf.WriteByte(']')
 
 	case *ast.SliceExpr:
 		WriteExpr(buf, x.X)

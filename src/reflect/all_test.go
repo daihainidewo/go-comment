@@ -10,11 +10,14 @@ import (
 	"flag"
 	"fmt"
 	"go/token"
+	"internal/goarch"
 	"io"
 	"math"
 	"math/rand"
 	"os"
 	. "reflect"
+	"reflect/internal/example1"
+	"reflect/internal/example2"
 	"runtime"
 	"sort"
 	"strconv"
@@ -330,6 +333,46 @@ func TestSetValue(t *testing.T) {
 		if s != tt.s {
 			t.Errorf("#%d: have %#q, want %#q", i, s, tt.s)
 		}
+	}
+}
+
+func TestMapIterSet(t *testing.T) {
+	m := make(map[string]interface{}, len(valueTests))
+	for _, tt := range valueTests {
+		m[tt.s] = tt.i
+	}
+	v := ValueOf(m)
+
+	k := New(v.Type().Key()).Elem()
+	e := New(v.Type().Elem()).Elem()
+
+	iter := v.MapRange()
+	for iter.Next() {
+		iter.SetKey(k)
+		iter.SetValue(e)
+		want := m[k.String()]
+		got := e.Interface()
+		if got != want {
+			t.Errorf("%q: want (%T) %v, got (%T) %v", k.String(), want, want, got, got)
+		}
+		if setkey, key := valueToString(k), valueToString(iter.Key()); setkey != key {
+			t.Errorf("MapIter.Key() = %q, MapIter.SetKey() = %q", key, setkey)
+		}
+		if setval, val := valueToString(e), valueToString(iter.Value()); setval != val {
+			t.Errorf("MapIter.Value() = %q, MapIter.SetValue() = %q", val, setval)
+		}
+	}
+
+	got := int(testing.AllocsPerRun(10, func() {
+		iter := v.MapRange()
+		for iter.Next() {
+			iter.SetKey(k)
+			iter.SetValue(e)
+		}
+	}))
+	// Making a *MapIter allocates. This should be the only allocation.
+	if got != 1 {
+		t.Errorf("wanted 1 alloc, got %d", got)
 	}
 }
 
@@ -1940,6 +1983,22 @@ func BenchmarkCall(b *testing.B) {
 			fv.Call(args)
 		}
 	})
+}
+
+type myint int64
+
+func (i *myint) inc() {
+	*i = *i + 1
+}
+
+func BenchmarkCallMethod(b *testing.B) {
+	b.ReportAllocs()
+	z := new(myint)
+
+	v := ValueOf(z.inc)
+	for i := 0; i < b.N; i++ {
+		v.Call(nil)
+	}
 }
 
 func BenchmarkCallArgCopy(b *testing.B) {
@@ -3792,8 +3851,22 @@ type Empty struct{}
 type MyStruct struct {
 	x int `some:"tag"`
 }
+type MyStruct1 struct {
+	x struct {
+		int `some:"bar"`
+	}
+}
+type MyStruct2 struct {
+	x struct {
+		int `some:"foo"`
+	}
+}
 type MyString string
 type MyBytes []byte
+type MyBytesArrayPtr0 *[0]byte
+type MyBytesArrayPtr *[4]byte
+type MyBytesArray0 [0]byte
+type MyBytesArray [4]byte
 type MyRunes []int32
 type MyFunc func()
 type MyByte byte
@@ -4100,6 +4173,30 @@ var convertTests = []struct {
 	{V(MyString("runes♝")), V(MyRunes("runes♝"))},
 	{V(MyRunes("runes♕")), V(MyString("runes♕"))},
 
+	// slice to array pointer
+	{V([]byte(nil)), V((*[0]byte)(nil))},
+	{V([]byte{}), V(new([0]byte))},
+	{V([]byte{7}), V(&[1]byte{7})},
+	{V(MyBytes([]byte(nil))), V((*[0]byte)(nil))},
+	{V(MyBytes([]byte{})), V(new([0]byte))},
+	{V(MyBytes([]byte{9})), V(&[1]byte{9})},
+	{V([]byte(nil)), V(MyBytesArrayPtr0(nil))},
+	{V([]byte{}), V(MyBytesArrayPtr0(new([0]byte)))},
+	{V([]byte{1, 2, 3, 4}), V(MyBytesArrayPtr(&[4]byte{1, 2, 3, 4}))},
+	{V(MyBytes([]byte{})), V(MyBytesArrayPtr0(new([0]byte)))},
+	{V(MyBytes([]byte{5, 6, 7, 8})), V(MyBytesArrayPtr(&[4]byte{5, 6, 7, 8}))},
+
+	{V([]byte(nil)), V((*MyBytesArray0)(nil))},
+	{V([]byte{}), V((*MyBytesArray0)(new([0]byte)))},
+	{V([]byte{1, 2, 3, 4}), V(&MyBytesArray{1, 2, 3, 4})},
+	{V(MyBytes([]byte(nil))), V((*MyBytesArray0)(nil))},
+	{V(MyBytes([]byte{})), V((*MyBytesArray0)(new([0]byte)))},
+	{V(MyBytes([]byte{5, 6, 7, 8})), V(&MyBytesArray{5, 6, 7, 8})},
+	{V(new([0]byte)), V(new(MyBytesArray0))},
+	{V(new(MyBytesArray0)), V(new([0]byte))},
+	{V(MyBytesArrayPtr0(nil)), V((*[0]byte)(nil))},
+	{V((*[0]byte)(nil)), V(MyBytesArrayPtr0(nil))},
+
 	// named types and equal underlying types
 	{V(new(int)), V(new(integer))},
 	{V(new(integer)), V(new(int))},
@@ -4141,6 +4238,9 @@ var convertTests = []struct {
 	{V(struct {
 		x int `some:"bar"`
 	}{}), V(MyStruct{})},
+
+	{V(MyStruct1{}), V(MyStruct2{})},
+	{V(MyStruct2{}), V(MyStruct1{})},
 
 	// can convert *byte and *MyByte
 	{V((*byte)(nil)), V((*MyByte)(nil))},
@@ -4245,6 +4345,9 @@ func TestConvert(t *testing.T) {
 
 		// vout1 represents the in value converted to the in type.
 		v1 := tt.in
+		if !v1.CanConvert(t1) {
+			t.Errorf("ValueOf(%T(%[1]v)).CanConvert(%s) = false, want true", tt.in.Interface(), t1)
+		}
 		vout1 := v1.Convert(t1)
 		out1 := vout1.Interface()
 		if vout1.Type() != tt.in.Type() || !DeepEqual(out1, tt.in.Interface()) {
@@ -4252,10 +4355,16 @@ func TestConvert(t *testing.T) {
 		}
 
 		// vout2 represents the in value converted to the out type.
+		if !v1.CanConvert(t2) {
+			t.Errorf("ValueOf(%T(%[1]v)).CanConvert(%s) = false, want true", tt.in.Interface(), t2)
+		}
 		vout2 := v1.Convert(t2)
 		out2 := vout2.Interface()
 		if vout2.Type() != tt.out.Type() || !DeepEqual(out2, tt.out.Interface()) {
 			t.Errorf("ValueOf(%T(%[1]v)).Convert(%s) = %T(%[3]v), want %T(%[4]v)", tt.in.Interface(), t2, out2, tt.out.Interface())
+		}
+		if got, want := vout2.Kind(), vout2.Type().Kind(); got != want {
+			t.Errorf("ValueOf(%T(%[1]v)).Convert(%s) has internal kind %v want %v", tt.in.Interface(), t1, got, want)
 		}
 
 		// vout3 represents a new value of the out type, set to vout2.  This makes
@@ -4301,10 +4410,35 @@ func TestConvert(t *testing.T) {
 	}
 }
 
+func TestConvertPanic(t *testing.T) {
+	s := make([]byte, 4)
+	p := new([8]byte)
+	v := ValueOf(s)
+	pt := TypeOf(p)
+	if !v.Type().ConvertibleTo(pt) {
+		t.Errorf("[]byte should be convertible to *[8]byte")
+	}
+	if v.CanConvert(pt) {
+		t.Errorf("slice with length 4 should not be convertible to *[8]byte")
+	}
+	shouldPanic("reflect: cannot convert slice with length 4 to pointer to array with length 8", func() {
+		_ = v.Convert(pt)
+	})
+}
+
 var gFloat32 float32
 
+const snan uint32 = 0x7f800001
+
 func TestConvertNaNs(t *testing.T) {
-	const snan uint32 = 0x7f800001
+	// Test to see if a store followed by a load of a signaling NaN
+	// maintains the signaling bit. (This used to fail on the 387 port.)
+	gFloat32 = math.Float32frombits(snan)
+	runtime.Gosched() // make sure we don't optimize the store/load away
+	if got := math.Float32bits(gFloat32); got != snan {
+		t.Errorf("store/load of sNaN not faithful, got %x want %x", got, snan)
+	}
+	// Test reflect's conversion between float32s. See issue 36400.
 	type myFloat32 float32
 	x := V(myFloat32(math.Float32frombits(snan)))
 	y := x.Convert(TypeOf(float32(0)))
@@ -6380,144 +6514,135 @@ func clobber() {
 	runtime.GC()
 }
 
-type funcLayoutTest struct {
-	rcvr, t                  Type
-	size, argsize, retOffset uintptr
-	stack                    []byte // pointer bitmap: 1 is pointer, 0 is scalar
-	gc                       []byte
-}
-
-var funcLayoutTests []funcLayoutTest
-
-func init() {
-	var argAlign uintptr = PtrSize
-	roundup := func(x uintptr, a uintptr) uintptr {
-		return (x + a - 1) / a * a
+func TestFuncLayout(t *testing.T) {
+	align := func(x uintptr) uintptr {
+		return (x + goarch.PtrSize - 1) &^ (goarch.PtrSize - 1)
 	}
-
-	funcLayoutTests = append(funcLayoutTests,
-		funcLayoutTest{
-			nil,
-			ValueOf(func(a, b string) string { return "" }).Type(),
-			6 * PtrSize,
-			4 * PtrSize,
-			4 * PtrSize,
-			[]byte{1, 0, 1, 0, 1},
-			[]byte{1, 0, 1, 0, 1},
-		})
-
 	var r []byte
-	if PtrSize == 4 {
+	if goarch.PtrSize == 4 {
 		r = []byte{0, 0, 0, 1}
 	} else {
 		r = []byte{0, 0, 1}
 	}
-	funcLayoutTests = append(funcLayoutTests,
-		funcLayoutTest{
-			nil,
-			ValueOf(func(a, b, c uint32, p *byte, d uint16) {}).Type(),
-			roundup(roundup(3*4, PtrSize)+PtrSize+2, argAlign),
-			roundup(3*4, PtrSize) + PtrSize + 2,
-			roundup(roundup(3*4, PtrSize)+PtrSize+2, argAlign),
-			r,
-			r,
-		})
-
-	funcLayoutTests = append(funcLayoutTests,
-		funcLayoutTest{
-			nil,
-			ValueOf(func(a map[int]int, b uintptr, c interface{}) {}).Type(),
-			4 * PtrSize,
-			4 * PtrSize,
-			4 * PtrSize,
-			[]byte{1, 0, 1, 1},
-			[]byte{1, 0, 1, 1},
-		})
 
 	type S struct {
 		a, b uintptr
 		c, d *byte
 	}
-	funcLayoutTests = append(funcLayoutTests,
-		funcLayoutTest{
-			nil,
-			ValueOf(func(a S) {}).Type(),
-			4 * PtrSize,
-			4 * PtrSize,
-			4 * PtrSize,
-			[]byte{0, 0, 1, 1},
-			[]byte{0, 0, 1, 1},
-		})
 
-	funcLayoutTests = append(funcLayoutTests,
-		funcLayoutTest{
-			ValueOf((*byte)(nil)).Type(),
-			ValueOf(func(a uintptr, b *int) {}).Type(),
-			roundup(3*PtrSize, argAlign),
-			3 * PtrSize,
-			roundup(3*PtrSize, argAlign),
-			[]byte{1, 0, 1},
-			[]byte{1, 0, 1},
-		})
-
-	funcLayoutTests = append(funcLayoutTests,
-		funcLayoutTest{
-			nil,
-			ValueOf(func(a uintptr) {}).Type(),
-			roundup(PtrSize, argAlign),
-			PtrSize,
-			roundup(PtrSize, argAlign),
-			[]byte{},
-			[]byte{},
-		})
-
-	funcLayoutTests = append(funcLayoutTests,
-		funcLayoutTest{
-			nil,
-			ValueOf(func() uintptr { return 0 }).Type(),
-			PtrSize,
-			0,
-			0,
-			[]byte{},
-			[]byte{},
-		})
-
-	funcLayoutTests = append(funcLayoutTests,
-		funcLayoutTest{
-			ValueOf(uintptr(0)).Type(),
-			ValueOf(func(a uintptr) {}).Type(),
-			2 * PtrSize,
-			2 * PtrSize,
-			2 * PtrSize,
-			[]byte{1},
-			[]byte{1},
+	type test struct {
+		rcvr, typ                  Type
+		size, argsize, retOffset   uintptr
+		stack, gc, inRegs, outRegs []byte // pointer bitmap: 1 is pointer, 0 is scalar
+		intRegs, floatRegs         int
+		floatRegSize               uintptr
+	}
+	tests := []test{
+		{
+			typ:       ValueOf(func(a, b string) string { return "" }).Type(),
+			size:      6 * goarch.PtrSize,
+			argsize:   4 * goarch.PtrSize,
+			retOffset: 4 * goarch.PtrSize,
+			stack:     []byte{1, 0, 1, 0, 1},
+			gc:        []byte{1, 0, 1, 0, 1},
+		},
+		{
+			typ:       ValueOf(func(a, b, c uint32, p *byte, d uint16) {}).Type(),
+			size:      align(align(3*4) + goarch.PtrSize + 2),
+			argsize:   align(3*4) + goarch.PtrSize + 2,
+			retOffset: align(align(3*4) + goarch.PtrSize + 2),
+			stack:     r,
+			gc:        r,
+		},
+		{
+			typ:       ValueOf(func(a map[int]int, b uintptr, c interface{}) {}).Type(),
+			size:      4 * goarch.PtrSize,
+			argsize:   4 * goarch.PtrSize,
+			retOffset: 4 * goarch.PtrSize,
+			stack:     []byte{1, 0, 1, 1},
+			gc:        []byte{1, 0, 1, 1},
+		},
+		{
+			typ:       ValueOf(func(a S) {}).Type(),
+			size:      4 * goarch.PtrSize,
+			argsize:   4 * goarch.PtrSize,
+			retOffset: 4 * goarch.PtrSize,
+			stack:     []byte{0, 0, 1, 1},
+			gc:        []byte{0, 0, 1, 1},
+		},
+		{
+			rcvr:      ValueOf((*byte)(nil)).Type(),
+			typ:       ValueOf(func(a uintptr, b *int) {}).Type(),
+			size:      3 * goarch.PtrSize,
+			argsize:   3 * goarch.PtrSize,
+			retOffset: 3 * goarch.PtrSize,
+			stack:     []byte{1, 0, 1},
+			gc:        []byte{1, 0, 1},
+		},
+		{
+			typ:       ValueOf(func(a uintptr) {}).Type(),
+			size:      goarch.PtrSize,
+			argsize:   goarch.PtrSize,
+			retOffset: goarch.PtrSize,
+			stack:     []byte{},
+			gc:        []byte{},
+		},
+		{
+			typ:       ValueOf(func() uintptr { return 0 }).Type(),
+			size:      goarch.PtrSize,
+			argsize:   0,
+			retOffset: 0,
+			stack:     []byte{},
+			gc:        []byte{},
+		},
+		{
+			rcvr:      ValueOf(uintptr(0)).Type(),
+			typ:       ValueOf(func(a uintptr) {}).Type(),
+			size:      2 * goarch.PtrSize,
+			argsize:   2 * goarch.PtrSize,
+			retOffset: 2 * goarch.PtrSize,
+			stack:     []byte{1},
+			gc:        []byte{1},
 			// Note: this one is tricky, as the receiver is not a pointer. But we
 			// pass the receiver by reference to the autogenerated pointer-receiver
 			// version of the function.
-		})
-}
+		},
+		// TODO(mknyszek): Add tests for non-zero register count.
+	}
+	for _, lt := range tests {
+		name := lt.typ.String()
+		if lt.rcvr != nil {
+			name = lt.rcvr.String() + "." + name
+		}
+		t.Run(name, func(t *testing.T) {
+			defer SetArgRegs(SetArgRegs(lt.intRegs, lt.floatRegs, lt.floatRegSize))
 
-func TestFuncLayout(t *testing.T) {
-	for _, lt := range funcLayoutTests {
-		typ, argsize, retOffset, stack, gc, ptrs := FuncLayout(lt.t, lt.rcvr)
-		if typ.Size() != lt.size {
-			t.Errorf("funcLayout(%v, %v).size=%d, want %d", lt.t, lt.rcvr, typ.Size(), lt.size)
-		}
-		if argsize != lt.argsize {
-			t.Errorf("funcLayout(%v, %v).argsize=%d, want %d", lt.t, lt.rcvr, argsize, lt.argsize)
-		}
-		if retOffset != lt.retOffset {
-			t.Errorf("funcLayout(%v, %v).retOffset=%d, want %d", lt.t, lt.rcvr, retOffset, lt.retOffset)
-		}
-		if !bytes.Equal(stack, lt.stack) {
-			t.Errorf("funcLayout(%v, %v).stack=%v, want %v", lt.t, lt.rcvr, stack, lt.stack)
-		}
-		if !bytes.Equal(gc, lt.gc) {
-			t.Errorf("funcLayout(%v, %v).gc=%v, want %v", lt.t, lt.rcvr, gc, lt.gc)
-		}
-		if ptrs && len(stack) == 0 || !ptrs && len(stack) > 0 {
-			t.Errorf("funcLayout(%v, %v) pointers flag=%v, want %v", lt.t, lt.rcvr, ptrs, !ptrs)
-		}
+			typ, argsize, retOffset, stack, gc, inRegs, outRegs, ptrs := FuncLayout(lt.typ, lt.rcvr)
+			if typ.Size() != lt.size {
+				t.Errorf("funcLayout(%v, %v).size=%d, want %d", lt.typ, lt.rcvr, typ.Size(), lt.size)
+			}
+			if argsize != lt.argsize {
+				t.Errorf("funcLayout(%v, %v).argsize=%d, want %d", lt.typ, lt.rcvr, argsize, lt.argsize)
+			}
+			if retOffset != lt.retOffset {
+				t.Errorf("funcLayout(%v, %v).retOffset=%d, want %d", lt.typ, lt.rcvr, retOffset, lt.retOffset)
+			}
+			if !bytes.Equal(stack, lt.stack) {
+				t.Errorf("funcLayout(%v, %v).stack=%v, want %v", lt.typ, lt.rcvr, stack, lt.stack)
+			}
+			if !bytes.Equal(gc, lt.gc) {
+				t.Errorf("funcLayout(%v, %v).gc=%v, want %v", lt.typ, lt.rcvr, gc, lt.gc)
+			}
+			if !bytes.Equal(inRegs, lt.inRegs) {
+				t.Errorf("funcLayout(%v, %v).inRegs=%v, want %v", lt.typ, lt.rcvr, inRegs, lt.inRegs)
+			}
+			if !bytes.Equal(outRegs, lt.outRegs) {
+				t.Errorf("funcLayout(%v, %v).outRegs=%v, want %v", lt.typ, lt.rcvr, outRegs, lt.outRegs)
+			}
+			if ptrs && len(stack) == 0 || !ptrs && len(stack) > 0 {
+				t.Errorf("funcLayout(%v, %v) pointers flag=%v, want %v", lt.typ, lt.rcvr, ptrs, !ptrs)
+			}
+		})
 	}
 }
 
@@ -6681,7 +6806,7 @@ func TestGCBits(t *testing.T) {
 	verifyGCBits(t, TypeOf(([][10000]Xscalar)(nil)), lit(1))
 	verifyGCBits(t, SliceOf(ArrayOf(10000, Tscalar)), lit(1))
 
-	hdr := make([]byte, 8/PtrSize)
+	hdr := make([]byte, 8/goarch.PtrSize)
 
 	verifyMapBucket := func(t *testing.T, k, e Type, m interface{}, want []byte) {
 		verifyGCBits(t, MapBucketOf(k, e), want)
@@ -6697,7 +6822,7 @@ func TestGCBits(t *testing.T) {
 		join(hdr, rep(8, lit(0, 1)), rep(8, lit(1)), lit(1)))
 	verifyMapBucket(t, Tint64, Tptr,
 		map[int64]Xptr(nil),
-		join(hdr, rep(8, rep(8/PtrSize, lit(0))), rep(8, lit(1)), lit(1)))
+		join(hdr, rep(8, rep(8/goarch.PtrSize, lit(0))), rep(8, lit(1)), lit(1)))
 	verifyMapBucket(t,
 		Tscalar, Tscalar,
 		map[Xscalar]Xscalar(nil),
@@ -6707,20 +6832,20 @@ func TestGCBits(t *testing.T) {
 		map[[2]Xscalarptr][3]Xptrscalar(nil),
 		join(hdr, rep(8*2, lit(0, 1)), rep(8*3, lit(1, 0)), lit(1)))
 	verifyMapBucket(t,
-		ArrayOf(64/PtrSize, Tscalarptr), ArrayOf(64/PtrSize, Tptrscalar),
-		map[[64 / PtrSize]Xscalarptr][64 / PtrSize]Xptrscalar(nil),
-		join(hdr, rep(8*64/PtrSize, lit(0, 1)), rep(8*64/PtrSize, lit(1, 0)), lit(1)))
+		ArrayOf(64/goarch.PtrSize, Tscalarptr), ArrayOf(64/goarch.PtrSize, Tptrscalar),
+		map[[64 / goarch.PtrSize]Xscalarptr][64 / goarch.PtrSize]Xptrscalar(nil),
+		join(hdr, rep(8*64/goarch.PtrSize, lit(0, 1)), rep(8*64/goarch.PtrSize, lit(1, 0)), lit(1)))
 	verifyMapBucket(t,
-		ArrayOf(64/PtrSize+1, Tscalarptr), ArrayOf(64/PtrSize, Tptrscalar),
-		map[[64/PtrSize + 1]Xscalarptr][64 / PtrSize]Xptrscalar(nil),
-		join(hdr, rep(8, lit(1)), rep(8*64/PtrSize, lit(1, 0)), lit(1)))
+		ArrayOf(64/goarch.PtrSize+1, Tscalarptr), ArrayOf(64/goarch.PtrSize, Tptrscalar),
+		map[[64/goarch.PtrSize + 1]Xscalarptr][64 / goarch.PtrSize]Xptrscalar(nil),
+		join(hdr, rep(8, lit(1)), rep(8*64/goarch.PtrSize, lit(1, 0)), lit(1)))
 	verifyMapBucket(t,
-		ArrayOf(64/PtrSize, Tscalarptr), ArrayOf(64/PtrSize+1, Tptrscalar),
-		map[[64 / PtrSize]Xscalarptr][64/PtrSize + 1]Xptrscalar(nil),
-		join(hdr, rep(8*64/PtrSize, lit(0, 1)), rep(8, lit(1)), lit(1)))
+		ArrayOf(64/goarch.PtrSize, Tscalarptr), ArrayOf(64/goarch.PtrSize+1, Tptrscalar),
+		map[[64 / goarch.PtrSize]Xscalarptr][64/goarch.PtrSize + 1]Xptrscalar(nil),
+		join(hdr, rep(8*64/goarch.PtrSize, lit(0, 1)), rep(8, lit(1)), lit(1)))
 	verifyMapBucket(t,
-		ArrayOf(64/PtrSize+1, Tscalarptr), ArrayOf(64/PtrSize+1, Tptrscalar),
-		map[[64/PtrSize + 1]Xscalarptr][64/PtrSize + 1]Xptrscalar(nil),
+		ArrayOf(64/goarch.PtrSize+1, Tscalarptr), ArrayOf(64/goarch.PtrSize+1, Tptrscalar),
+		map[[64/goarch.PtrSize + 1]Xscalarptr][64/goarch.PtrSize + 1]Xptrscalar(nil),
 		join(hdr, rep(8, lit(1)), rep(8, lit(1)), lit(1)))
 }
 
@@ -6876,19 +7001,6 @@ func TestExported(t *testing.T) {
 	}
 }
 
-type embed struct {
-	EmbedWithUnexpMeth
-}
-
-func TestNameBytesAreAligned(t *testing.T) {
-	typ := TypeOf(embed{})
-	b := FirstMethodNameBytes(typ)
-	v := uintptr(unsafe.Pointer(b))
-	if v%unsafe.Alignof((*byte)(nil)) != 0 {
-		t.Errorf("reflect.name.bytes pointer is not aligned: %x", v)
-	}
-}
-
 func TestTypeStrings(t *testing.T) {
 	type stringTest struct {
 		typ  Type
@@ -6936,6 +7048,53 @@ func BenchmarkNew(b *testing.B) {
 			New(v)
 		}
 	})
+}
+
+func BenchmarkMap(b *testing.B) {
+	type V *int
+	value := ValueOf((V)(nil))
+	stringKeys := []string{}
+	mapOfStrings := map[string]V{}
+	uint64Keys := []uint64{}
+	mapOfUint64s := map[uint64]V{}
+	for i := 0; i < 100; i++ {
+		stringKey := fmt.Sprintf("key%d", i)
+		stringKeys = append(stringKeys, stringKey)
+		mapOfStrings[stringKey] = nil
+
+		uint64Key := uint64(i)
+		uint64Keys = append(uint64Keys, uint64Key)
+		mapOfUint64s[uint64Key] = nil
+	}
+
+	tests := []struct {
+		label          string
+		m, keys, value Value
+	}{
+		{"StringKeys", ValueOf(mapOfStrings), ValueOf(stringKeys), value},
+		{"Uint64Keys", ValueOf(mapOfUint64s), ValueOf(uint64Keys), value},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.label, func(b *testing.B) {
+			b.Run("MapIndex", func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					for j := tt.keys.Len() - 1; j >= 0; j-- {
+						tt.m.MapIndex(tt.keys.Index(j))
+					}
+				}
+			})
+			b.Run("SetMapIndex", func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					for j := tt.keys.Len() - 1; j >= 0; j-- {
+						tt.m.SetMapIndex(tt.keys.Index(j), tt.value)
+					}
+				}
+			})
+		})
+	}
 }
 
 func TestSwapper(t *testing.T) {
@@ -7120,6 +7279,72 @@ func TestMapIterNilMap(t *testing.T) {
 	}
 }
 
+func TestMapIterReset(t *testing.T) {
+	iter := new(MapIter)
+
+	// Use of zero iterator should panic.
+	func() {
+		defer func() { recover() }()
+		iter.Next()
+		t.Error("Next did not panic")
+	}()
+
+	// Reset to new Map should work.
+	m := map[string]int{"one": 1, "two": 2, "three": 3}
+	iter.Reset(ValueOf(m))
+	if got, want := iterateToString(iter), `[one: 1, three: 3, two: 2]`; got != want {
+		t.Errorf("iterator returned %s (after sorting), want %s", got, want)
+	}
+
+	// Reset to Zero value should work, but iterating over it should panic.
+	iter.Reset(Value{})
+	func() {
+		defer func() { recover() }()
+		iter.Next()
+		t.Error("Next did not panic")
+	}()
+
+	// Reset to a different Map with different types should work.
+	m2 := map[int]string{1: "one", 2: "two", 3: "three"}
+	iter.Reset(ValueOf(m2))
+	if got, want := iterateToString(iter), `[1: one, 2: two, 3: three]`; got != want {
+		t.Errorf("iterator returned %s (after sorting), want %s", got, want)
+	}
+
+	// Check that Reset, Next, and SetKey/SetValue play nicely together.
+	m3 := map[uint64]uint64{
+		1 << 0: 1 << 1,
+		1 << 1: 1 << 2,
+		1 << 2: 1 << 3,
+	}
+	kv := New(TypeOf(uint64(0))).Elem()
+	for i := 0; i < 5; i++ {
+		var seenk, seenv uint64
+		iter.Reset(ValueOf(m3))
+		for iter.Next() {
+			iter.SetKey(kv)
+			seenk ^= kv.Uint()
+			iter.SetValue(kv)
+			seenv ^= kv.Uint()
+		}
+		if seenk != 0b111 {
+			t.Errorf("iteration yielded keys %b, want %b", seenk, 0b111)
+		}
+		if seenv != 0b1110 {
+			t.Errorf("iteration yielded values %b, want %b", seenv, 0b1110)
+		}
+	}
+
+	// Reset should not allocate.
+	n := int(testing.AllocsPerRun(10, func() {
+		iter.Reset(ValueOf(m2))
+		iter.Reset(Value{})
+	}))
+	if n > 0 {
+		t.Errorf("MapIter.Reset allocated %d times", n)
+	}
+}
+
 func TestMapIterSafety(t *testing.T) {
 	// Using a zero MapIter causes a panic, but not a crash.
 	func() {
@@ -7223,4 +7448,21 @@ func iterateToString(it *MapIter) string {
 	}
 	sort.Strings(got)
 	return "[" + strings.Join(got, ", ") + "]"
+}
+
+func TestConvertibleTo(t *testing.T) {
+	t1 := ValueOf(example1.MyStruct{}).Type()
+	t2 := ValueOf(example2.MyStruct{}).Type()
+
+	// Shouldn't raise stack overflow
+	if t1.ConvertibleTo(t2) {
+		t.Fatalf("(%s).ConvertibleTo(%s) = true, want false", t1, t2)
+	}
+
+	t3 := ValueOf([]example1.MyStruct{}).Type()
+	t4 := ValueOf([]example2.MyStruct{}).Type()
+
+	if t3.ConvertibleTo(t4) {
+		t.Fatalf("(%s).ConvertibleTo(%s) = true, want false", t3, t4)
+	}
 }

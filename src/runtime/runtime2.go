@@ -5,8 +5,8 @@
 package runtime
 
 import (
+	"internal/goarch"
 	"runtime/internal/atomic"
-	"runtime/internal/sys"
 	"unsafe"
 )
 
@@ -422,15 +422,26 @@ type g struct {
 	stackguard0 uintptr // go栈指针，用于标识栈基地址，也可用来标志抢占地址 offset known to liblink
 	stackguard1 uintptr // c栈指针 offset known to liblink
 
-	_panic       *_panic        // panic 调用链 innermost panic - offset known to liblink
-	_defer       *_defer        // defer 调用链 innermost defer
-	m            *m             // 当前绑定的 m current m; offset known to arm liblink
-	sched        gobuf          // 当前 g 的栈帧信息 用于gogo
-	syscallsp    uintptr        // if status==Gsyscall, syscallsp = sched.sp to use during gc
-	syscallpc    uintptr        // if status==Gsyscall, syscallpc = sched.pc to use during gc
-	stktopsp     uintptr        // expected sp at top of stack, to check in traceback
-	param        unsafe.Pointer // passed parameter on wakeup
-	atomicstatus uint32 // g 的状态
+	_panic    *_panic // innermost panic - offset known to liblink
+	_defer    *_defer // innermost defer
+	m         *m      // current m; offset known to arm liblink
+	sched     gobuf
+	syscallsp uintptr // if status==Gsyscall, syscallsp = sched.sp to use during gc
+	syscallpc uintptr // if status==Gsyscall, syscallpc = sched.pc to use during gc
+	stktopsp  uintptr // expected sp at top of stack, to check in traceback
+	// param is a generic pointer parameter field used to pass
+	// values in particular contexts where other storage for the
+	// parameter would be difficult to find. It is currently used
+	// in three ways:
+	// 1. When a channel operation wakes up a blocked goroutine, it sets param to
+	//    point to the sudog of the completed blocking operation.
+	// 2. By gcAssistAlloc1 to signal back to its caller that the goroutine completed
+	//    the GC cycle. It is unsafe to do so in any other way, because the goroutine's
+	//    stack may have moved in the meantime.
+	// 3. By debugCallWrap to pass parameters to a new goroutine because allocating a
+	//    closure in the runtime is forbidden.
+	param        unsafe.Pointer
+	atomicstatus uint32
 	stackLock    uint32 // sigprof/scang lock; TODO: fold in to atomicstatus
 	goid         int64  // goroutine的编号
 	schedlink    guintptr
@@ -461,6 +472,10 @@ type g struct {
 
 	raceignore     int8     // ignore race detection events
 	sysblocktraced bool     // StartTrace has emitted EvGoInSyscall about this goroutine
+	tracking       bool     // whether we're tracking this G for sched latency statistics
+	trackingSeq    uint8    // used to decide whether to track this G
+	runnableStamp  int64    // timestamp of when the G last became runnable, only used when tracking
+	runnableTime   int64    // the amount of time spent runnable, cleared when running, only used when tracking
 	sysexitticks   int64    // cputicks when syscall has returned (for tracing)
 	traceseq       uint64   // trace event sequencer
 	tracelastp     puintptr // last P emitted an event for this goroutine
@@ -492,24 +507,35 @@ type g struct {
 	gcAssistBytes int64
 }
 
+// gTrackingPeriod is the number of transitions out of _Grunning between
+// latency tracking runs.
+const gTrackingPeriod = 8
+
+const (
+	// tlsSlots is the number of pointer-sized slots reserved for TLS on some platforms,
+	// like Windows.
+	tlsSlots = 6
+	tlsSize  = tlsSlots * goarch.PtrSize
+)
+
 type m struct {
 	g0      *g     // goroutine with scheduling stack
 	morebuf gobuf  // 保存着morestack的调用者相关信息// gobuf arg to morestack
 	divmod  uint32 // div/mod denominator for arm - known to liblink
 
 	// Fields not known to debuggers.
-	procid        uint64       // for debuggers, but offset not hard-coded
-	gsignal       *g           // 信号处理的g
-	goSigStack    gsignalStack // Go-allocated signal handling stack
-	sigmask       sigset       // 信号掩码
-	tls           [6]uintptr   // tls寄存器 thread-local storage (for x86 extern register)
-	mstartfn      func()       // m 启动函数 用于执行一些附加操作
-	curg          *g           // 当前绑定的 g
-	caughtsig     guintptr     // goroutine running during fatal signal
-	p             puintptr     // 绑定的 p // attached p for executing go code (nil if not executing go code)
-	nextp         puintptr     // 与 m 有关联的 p 当 m 恢复时 直接绑定该 p，m 休眠时绑定的p
-	oldp          puintptr     // 在执行系统调用前绑定的 p // the p that was attached before executing a syscall
-	id            int64        // m 的编号
+	procid        uint64            // for debuggers, but offset not hard-coded
+	gsignal       *g                // signal-handling g
+	goSigStack    gsignalStack      // Go-allocated signal handling stack
+	sigmask       sigset            // storage for saved signal mask
+	tls           [tlsSlots]uintptr // thread-local storage (for x86 extern register)
+	mstartfn      func()
+	curg          *g       // current running goroutine
+	caughtsig     guintptr // goroutine running during fatal signal
+	p             puintptr // attached p for executing go code (nil if not executing go code)
+	nextp         puintptr
+	oldp          puintptr // the p that was attached before executing a syscall
+	id            int64
 	mallocing     int32
 	throwing      int32
 	preemptoff    string // if != "", keep curg running on this m
@@ -546,11 +572,13 @@ type m struct {
 	syscalltick   uint32 // 系统调用次数
 	freelink      *m     // 指向全局空闲 m 列表 on sched.freem
 
-	// mFixup is used to synchronize OS related m state (credentials etc)
-	// use mutex to access.
-	// m 同步操作系统线程的操作
+	// mFixup is used to synchronize OS related m state
+	// (credentials etc) use mutex to access. To avoid deadlocks
+	// an atomic.Load() of used being zero in mDoFixupFn()
+	// guarantees fn is nil.
 	mFixup struct {
 		lock mutex
+		used uint32
 		fn   func(bool) bool
 	}
 
@@ -595,8 +623,8 @@ type p struct {
 	pcache      pageCache  // 页缓存
 	raceprocctx uintptr
 
-	deferpool    [5][]*_defer   // 不同大小的defer结构体可用池，pool of available defer structs of different sizes (see panic.go)
-	deferpoolbuf [5][32]*_defer // defer 结构体缓存
+	deferpool    []*_defer // pool of available defer structs (see panic.go)
+	deferpoolbuf [32]*_defer
 
 	// Cache of goroutine ids, amortizes accesses to runtime·sched.goidgen.
 	goidcache    uint64 // goroutine id 分配缓存
@@ -615,7 +643,10 @@ type p struct {
 	// unit and eliminates the (potentially large) scheduling
 	// latency that otherwise arises from adding the ready'd
 	// goroutines to the end of the run queue.
-	runnext guintptr // 优先执行的g
+	//
+	// Note that while other P's may atomically CAS this to zero,
+	// only the owner P can CAS it to a valid G.
+	runnext guintptr
 
 	// 空闲G列表 Available G's (status == Gdead)
 	gFree struct {
@@ -660,7 +691,7 @@ type p struct {
 	// timerModifiedEarlier status. Because the timer may have been
 	// modified again, there need not be any timer with this value.
 	// This is updated using atomic functions.
-	// This is 0 if the value is unknown.
+	// This is 0 if there are no timerModifiedEarlier timers.
 	timerModifiedEarliest uint64
 
 	// Per-P GC state
@@ -705,12 +736,6 @@ type p struct {
 	// Number of timers in P's heap.
 	// Modified using atomic instructions.
 	numTimers uint32
-
-	// Number of timerModifiedEarlier timers on P's heap.
-	// This should only be modified while holding timersLock,
-	// or while the timer status is in a transient state
-	// such as timerModifying.
-	adjustTimers uint32
 
 	// Number of timerDeleted timers in P's heap.
 	// Modified using atomic instructions.
@@ -781,9 +806,9 @@ type schedt struct {
 	sudoglock  mutex  // sudog 全局锁
 	sudogcache *sudog // sudog 全局缓存
 
-	// Central pool of available defer structs of different sizes.
-	deferlock mutex      // defer 全局锁
-	deferpool [5]*_defer //
+	// Central pool of available defer structs.
+	deferlock mutex
+	deferpool *_defer
 
 	// freem is the list of m's waiting to be freed when their
 	// m.exited is set. Linked through m.freelink.
@@ -815,6 +840,15 @@ type schedt struct {
 	// Acquire and hold this mutex to block sysmon from interacting
 	// with the rest of the runtime.
 	sysmonlock mutex
+
+	_ uint32 // ensure timeToRun has 8-byte alignment
+
+	// timeToRun is a distribution of scheduling latencies, defined
+	// as the sum of time a G spends in the _Grunnable state before
+	// it transitions to _Grunning.
+	//
+	// timeToRun is protected by sched.lock.
+	timeToRun timeHistogram
 }
 
 // Values for the flags field of a sigTabT.
@@ -866,7 +900,7 @@ type funcinl struct {
 // layout of Itab known to compilers
 // allocated in non-garbage-collected memory
 // Needs to be in sync with
-// ../cmd/compile/internal/gc/reflect.go:/^func.WriteTabs.
+// ../cmd/compile/internal/reflectdata/reflect.go:/^func.WriteTabs.
 type itab struct {
 	inter *interfacetype
 	_type *_type
@@ -901,7 +935,7 @@ func extendRandom(r []byte, n int) {
 			w = 16
 		}
 		h := memhash(unsafe.Pointer(&r[n-w]), uintptr(nanotime()), uintptr(w))
-		for i := 0; i < sys.PtrSize && n < len(r); i++ {
+		for i := 0; i < goarch.PtrSize && n < len(r); i++ {
 			r[n] = byte(h)
 			n++
 			h >>= 8
@@ -911,25 +945,24 @@ func extendRandom(r []byte, n int) {
 
 // A _defer holds an entry on the list of deferred calls.
 // If you add a field here, add code to clear it in freedefer and deferProcStack
-// This struct must match the code in cmd/compile/internal/gc/reflect.go:deferstruct
-// and cmd/compile/internal/gc/ssa.go:(*state).call.
+// This struct must match the code in cmd/compile/internal/ssagen/ssa.go:deferstruct
+// and cmd/compile/internal/ssagen/ssa.go:(*state).call.
 // Some defers will be allocated on the stack and some on the heap.
 // All defers are logically part of the stack, so write barriers to
 // initialize them are not required. All defers must be manually scanned,
 // and for heap defers, marked.
 type _defer struct {
-	siz     int32 // includes both arguments and results
 	started bool
 	heap    bool
 	// openDefer indicates that this _defer is for a frame with open-coded
 	// defers. We have only one defer record for the entire frame (which may
 	// currently have 0, 1, or more defers active).
 	openDefer bool
-	sp        uintptr  // sp at time of defer
-	pc        uintptr  // pc at time of defer
-	fn        *funcval // can be nil for open-coded defers
-	_panic    *_panic  // panic that is running defer
-	link      *_defer
+	sp        uintptr // sp at time of defer
+	pc        uintptr // pc at time of defer
+	fn        func()  // can be nil for open-coded defers
+	_panic    *_panic // panic that is running defer
+	link      *_defer // next defer on G; can point to either heap or stack!
 
 	// If openDefer is true, the fields below record values about the stack
 	// frame and associated function that has the open-coded defer(s). sp
@@ -1107,7 +1140,6 @@ var (
 	// Set on startup in asm_{386,amd64}.s
 	processorVersionInfo uint32
 	isIntel              bool
-	lfenceBeforeRdtsc    bool
 
 	goarm uint8 // set by cmd/link on arm systems
 )
@@ -1118,5 +1150,5 @@ var (
 	isarchive bool // -buildmode=c-archive
 )
 
-// Must agree with cmd/internal/objabi.Experiment.FramePointer.
+// Must agree with internal/buildcfg.Experiment.FramePointer.
 const framepointer_enabled = GOARCH == "amd64" || GOARCH == "arm64"

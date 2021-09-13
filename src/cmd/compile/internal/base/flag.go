@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"internal/buildcfg"
 	"io/ioutil"
 	"log"
 	"os"
@@ -82,7 +83,6 @@ type CmdFlags struct {
 	CompilingRuntime bool "flag:\"+\" help:\"compiling runtime\""
 
 	// Longer names
-	ABIWrapLimit       int          "help:\"emit at most N ABI wrappers (for debugging)\""
 	AsmHdr             string       "help:\"write assembly header to `file`\""
 	Bench              string       "help:\"append benchmark times to `file`\""
 	BlockProfile       string       "help:\"write block profile to `file`\""
@@ -140,6 +140,7 @@ type CmdFlags struct {
 
 // ParseFlags parses the command-line flags into Flag.
 func ParseFlags() {
+	Flag.G = 3
 	Flag.I = addImportDir
 
 	Flag.LowerC = 1
@@ -147,7 +148,7 @@ func ParseFlags() {
 	Flag.LowerP = &Ctxt.Pkgpath
 	Flag.LowerV = &Ctxt.Debugvlog
 
-	Flag.Dwarf = objabi.GOARCH != "wasm"
+	Flag.Dwarf = buildcfg.GOARCH != "wasm"
 	Flag.DwarfBASEntries = &Ctxt.UseBASEntries
 	Flag.DwarfLocationLists = &Ctxt.Flag_locationlists
 	*Flag.DwarfLocationLists = true
@@ -159,7 +160,13 @@ func ParseFlags() {
 	Flag.LinkShared = &Ctxt.Flag_linkshared
 	Flag.Shared = &Ctxt.Flag_shared
 	Flag.WB = true
+
 	Debug.InlFuncsWithClosures = 1
+	if buildcfg.Experiment.Unified {
+		Debug.Unified = 1
+	}
+
+	Debug.Checkptr = -1 // so we can tell whether it is set explicitly
 
 	Flag.Cfg.ImportMap = make(map[string]string)
 
@@ -167,14 +174,14 @@ func ParseFlags() {
 	registerFlags()
 	objabi.Flagparse(usage)
 
-	if Flag.MSan && !sys.MSanSupported(objabi.GOOS, objabi.GOARCH) {
-		log.Fatalf("%s/%s does not support -msan", objabi.GOOS, objabi.GOARCH)
+	if Flag.MSan && !sys.MSanSupported(buildcfg.GOOS, buildcfg.GOARCH) {
+		log.Fatalf("%s/%s does not support -msan", buildcfg.GOOS, buildcfg.GOARCH)
 	}
-	if Flag.Race && !sys.RaceDetectorSupported(objabi.GOOS, objabi.GOARCH) {
-		log.Fatalf("%s/%s does not support -race", objabi.GOOS, objabi.GOARCH)
+	if Flag.Race && !sys.RaceDetectorSupported(buildcfg.GOOS, buildcfg.GOARCH) {
+		log.Fatalf("%s/%s does not support -race", buildcfg.GOOS, buildcfg.GOARCH)
 	}
 	if (*Flag.Shared || *Flag.Dynlink || *Flag.LinkShared) && !Ctxt.Arch.InFamily(sys.AMD64, sys.ARM, sys.ARM64, sys.I386, sys.PPC64, sys.RISCV64, sys.S390X) {
-		log.Fatalf("%s/%s does not support -shared", objabi.GOOS, objabi.GOARCH)
+		log.Fatalf("%s/%s does not support -shared", buildcfg.GOOS, buildcfg.GOARCH)
 	}
 	parseSpectre(Flag.Spectre) // left as string for RecordFlags
 
@@ -216,7 +223,9 @@ func ParseFlags() {
 	}
 	if Flag.Race || Flag.MSan {
 		// -race and -msan imply -d=checkptr for now.
-		Debug.Checkptr = 1
+		if Debug.Checkptr == -1 { // if not set explicitly
+			Debug.Checkptr = 1
+		}
 	}
 
 	if Flag.CompilingRuntime && Flag.N != 0 {
@@ -235,6 +244,10 @@ func ParseFlags() {
 
 		// Fuzzing the runtime isn't interesting either.
 		Debug.Libfuzzer = 0
+	}
+
+	if Debug.Checkptr == -1 { // if not set explicitly
+		Debug.Checkptr = 0
 	}
 
 	// set via a -d flag
@@ -340,7 +353,7 @@ func concurrentBackendAllowed() bool {
 		return false
 	}
 	// TODO: Test and delete this condition.
-	if objabi.Experiment.FieldTrack {
+	if buildcfg.Experiment.FieldTrack {
 		return false
 	}
 	// TODO: fix races and enable the following flags
@@ -451,11 +464,11 @@ func parseSpectre(s string) {
 	}
 
 	if Flag.Cfg.SpectreIndex {
-		switch objabi.GOARCH {
+		switch buildcfg.GOARCH {
 		case "amd64":
 			// ok
 		default:
-			log.Fatalf("GOARCH=%s does not support -spectre=index", objabi.GOARCH)
+			log.Fatalf("GOARCH=%s does not support -spectre=index", buildcfg.GOARCH)
 		}
 	}
 }

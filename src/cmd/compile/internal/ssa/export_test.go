@@ -5,14 +5,16 @@
 package ssa
 
 import (
+	"testing"
+
 	"cmd/compile/internal/ir"
+	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/arm64"
 	"cmd/internal/obj/s390x"
 	"cmd/internal/obj/x86"
 	"cmd/internal/src"
-	"testing"
 )
 
 var CheckFunc = checkFunc
@@ -39,7 +41,7 @@ func testConfigArch(tb testing.TB, arch string) *Conf {
 		tb.Fatal("testTypes is 64-bit only")
 	}
 	c := &Conf{
-		config: NewConfig(arch, testTypes, ctxt, true),
+		config: NewConfig(arch, testTypes, ctxt, true, false),
 		tb:     tb,
 	}
 	return c
@@ -73,36 +75,6 @@ func (TestFrontend) Auto(pos src.XPos, t *types.Type) *ir.Name {
 	n.Class = ir.PAUTO
 	return n
 }
-func (d TestFrontend) SplitString(s LocalSlot) (LocalSlot, LocalSlot) {
-	return LocalSlot{N: s.N, Type: testTypes.BytePtr, Off: s.Off}, LocalSlot{N: s.N, Type: testTypes.Int, Off: s.Off + 8}
-}
-func (d TestFrontend) SplitInterface(s LocalSlot) (LocalSlot, LocalSlot) {
-	return LocalSlot{N: s.N, Type: testTypes.BytePtr, Off: s.Off}, LocalSlot{N: s.N, Type: testTypes.BytePtr, Off: s.Off + 8}
-}
-func (d TestFrontend) SplitSlice(s LocalSlot) (LocalSlot, LocalSlot, LocalSlot) {
-	return LocalSlot{N: s.N, Type: s.Type.Elem().PtrTo(), Off: s.Off},
-		LocalSlot{N: s.N, Type: testTypes.Int, Off: s.Off + 8},
-		LocalSlot{N: s.N, Type: testTypes.Int, Off: s.Off + 16}
-}
-func (d TestFrontend) SplitComplex(s LocalSlot) (LocalSlot, LocalSlot) {
-	if s.Type.Size() == 16 {
-		return LocalSlot{N: s.N, Type: testTypes.Float64, Off: s.Off}, LocalSlot{N: s.N, Type: testTypes.Float64, Off: s.Off + 8}
-	}
-	return LocalSlot{N: s.N, Type: testTypes.Float32, Off: s.Off}, LocalSlot{N: s.N, Type: testTypes.Float32, Off: s.Off + 4}
-}
-func (d TestFrontend) SplitInt64(s LocalSlot) (LocalSlot, LocalSlot) {
-	if s.Type.IsSigned() {
-		return LocalSlot{N: s.N, Type: testTypes.Int32, Off: s.Off + 4}, LocalSlot{N: s.N, Type: testTypes.UInt32, Off: s.Off}
-	}
-	return LocalSlot{N: s.N, Type: testTypes.UInt32, Off: s.Off + 4}, LocalSlot{N: s.N, Type: testTypes.UInt32, Off: s.Off}
-}
-func (d TestFrontend) SplitStruct(s LocalSlot, i int) LocalSlot {
-	return LocalSlot{N: s.N, Type: s.Type.FieldType(i), Off: s.Off + s.Type.FieldOff(i)}
-}
-func (d TestFrontend) SplitArray(s LocalSlot) LocalSlot {
-	return LocalSlot{N: s.N, Type: s.Type.Elem(), Off: s.Off}
-}
-
 func (d TestFrontend) SplitSlot(parent *LocalSlot, suffix string, offset int64, t *types.Type) LocalSlot {
 	return LocalSlot{N: parent.N, Type: t, Off: offset}
 }
@@ -134,33 +106,12 @@ func (d TestFrontend) MyImportPath() string {
 var testTypes Types
 
 func init() {
-	// Initialize just enough of the universe and the types package to make our tests function.
-	// TODO(josharian): move universe initialization to the types package,
-	// so this test setup can share it.
+	// TODO(mdempsky): Push into types.InitUniverse or typecheck.InitUniverse.
+	types.PtrSize = 8
+	types.RegSize = 8
+	types.MaxWidth = 1 << 50
 
-	for _, typ := range [...]struct {
-		width int64
-		et    types.Kind
-	}{
-		{1, types.TINT8},
-		{1, types.TUINT8},
-		{1, types.TBOOL},
-		{2, types.TINT16},
-		{2, types.TUINT16},
-		{4, types.TINT32},
-		{4, types.TUINT32},
-		{4, types.TFLOAT32},
-		{4, types.TFLOAT64},
-		{8, types.TUINT64},
-		{8, types.TINT64},
-		{8, types.TINT},
-		{8, types.TUINTPTR},
-	} {
-		t := types.New(typ.et)
-		t.Width = typ.width
-		t.Align = uint8(typ.width)
-		types.Types[typ.et] = t
-	}
+	typecheck.InitUniverse()
 	testTypes.SetTypPtrs()
 }
 

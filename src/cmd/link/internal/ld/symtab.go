@@ -37,6 +37,7 @@ import (
 	"cmd/link/internal/sym"
 	"debug/elf"
 	"fmt"
+	"internal/buildcfg"
 	"path/filepath"
 	"strings"
 )
@@ -104,39 +105,7 @@ func putelfsym(ctxt *Link, x loader.Sym, typ elf.SymType, curbind elf.SymBind) {
 	}
 
 	sname := ldr.SymExtname(x)
-
-	// For functions with ABI wrappers, we have to make sure that we
-	// don't wind up with two elf symbol table entries with the same
-	// name (since this will generated an error from the external
-	// linker). In the CgoExportStatic case, we want the ABI0 symbol
-	// to have the primary symbol table entry (since it's going to be
-	// called from C), so we rename the ABIInternal symbol. In all
-	// other cases, we rename the ABI0 symbol, since we want
-	// cross-load-module calls to target ABIInternal.
-	//
-	// TODO: generalize this for non-ELF (put the rename code in the
-	// loader, and store the rename result in SymExtname).
-	//
-	// TODO: avoid the ldr.Lookup calls below by instead using an aux
-	// sym or marker relocation to associate the wrapper with the
-	// wrapped function.
-	//
-	if objabi.Experiment.RegabiWrappers {
-		if !ldr.IsExternal(x) && ldr.SymType(x) == sym.STEXT {
-			// First case
-			if ldr.SymVersion(x) == sym.SymVerABIInternal {
-				if s2 := ldr.Lookup(sname, sym.SymVerABI0); s2 != 0 && ldr.AttrCgoExportStatic(s2) && ldr.SymType(s2) == sym.STEXT {
-					sname = sname + ".abiinternal"
-				}
-			}
-			// Second case
-			if ldr.SymVersion(x) == sym.SymVerABI0 && !ldr.AttrCgoExportStatic(x) {
-				if s2 := ldr.Lookup(sname, sym.SymVerABIInternal); s2 != 0 && ldr.SymType(s2) == sym.STEXT {
-					sname = sname + ".abi0"
-				}
-			}
-		}
-	}
+	sname = mangleABIName(ctxt, ldr, x, sname)
 
 	// One pass for each binding: elf.STB_LOCAL, elf.STB_GLOBAL,
 	// maybe one day elf.STB_WEAK.
@@ -331,6 +300,7 @@ func putplan9sym(ctxt *Link, ldr *loader.Loader, s loader.Sym, char SymbolType) 
 	ctxt.Out.Write8(uint8(t + 0x80)) /* 0x80 is variable length */
 
 	name := ldr.SymName(s)
+	name = mangleABIName(ctxt, ldr, s, name)
 	ctxt.Out.WriteString(name)
 	ctxt.Out.Write8(0)
 
@@ -616,7 +586,9 @@ func (ctxt *Link) symtab(pcln *pclntab) []sym.SymKind {
 			strings.HasPrefix(name, "gclocals."),
 			strings.HasPrefix(name, "gclocals·"),
 			ldr.SymType(s) == sym.SGOFUNC && s != symgofunc,
-			strings.HasSuffix(name, ".opendefer"):
+			strings.HasSuffix(name, ".opendefer"),
+			strings.HasSuffix(name, ".arginfo0"),
+			strings.HasSuffix(name, ".arginfo1"):
 			symGroupType[s] = sym.SGOFUNC
 			ldr.SetAttrNotInSymbolTable(s, true)
 			ldr.SetCarrierSym(s, symgofunc)
@@ -862,4 +834,40 @@ func setCarrierSize(typ sym.SymKind, sz int64) {
 
 func isStaticTmp(name string) bool {
 	return strings.Contains(name, "."+obj.StaticNamePref)
+}
+
+// Mangle function name with ABI information.
+func mangleABIName(ctxt *Link, ldr *loader.Loader, x loader.Sym, name string) string {
+	// For functions with ABI wrappers, we have to make sure that we
+	// don't wind up with two symbol table entries with the same
+	// name (since this will generated an error from the external
+	// linker). If we have wrappers, keep the ABIInternal name
+	// unmangled since we want cross-load-module calls to target
+	// ABIInternal, and rename other symbols.
+	//
+	// TODO: avoid the ldr.Lookup calls below by instead using an aux
+	// sym or marker relocation to associate the wrapper with the
+	// wrapped function.
+	if !buildcfg.Experiment.RegabiWrappers {
+		return name
+	}
+
+	if !ldr.IsExternal(x) && ldr.SymType(x) == sym.STEXT && ldr.SymVersion(x) != sym.SymVerABIInternal {
+		if s2 := ldr.Lookup(name, sym.SymVerABIInternal); s2 != 0 && ldr.SymType(s2) == sym.STEXT {
+			name = fmt.Sprintf("%s.abi%d", name, ldr.SymVersion(x))
+		}
+	}
+
+	// When loading a shared library, if a symbol has only one ABI,
+	// and the name is not mangled, we don't know what ABI it is.
+	// So we always mangle ABIInternal function name in shared linkage,
+	// except symbols that are exported to C. Type symbols are always
+	// ABIInternal so they are not mangled.
+	if ctxt.IsShared() {
+		if ldr.SymType(x) == sym.STEXT && ldr.SymVersion(x) == sym.SymVerABIInternal && !ldr.AttrCgoExport(x) && !strings.HasPrefix(name, "type.") {
+			name = fmt.Sprintf("%s.abiinternal", name)
+		}
+	}
+
+	return name
 }

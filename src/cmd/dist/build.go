@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -47,8 +48,6 @@ var (
 	exe              string
 	defaultcc        map[string]string
 	defaultcxx       map[string]string
-	defaultcflags    string
-	defaultldflags   string
 	defaultpkgconfig string
 	defaultldso      string
 
@@ -207,9 +206,6 @@ func xinit() {
 	}
 	defaultcc = compilerEnv("CC", cc)
 	defaultcxx = compilerEnv("CXX", cxx)
-
-	defaultcflags = os.Getenv("CFLAGS")
-	defaultldflags = os.Getenv("LDFLAGS")
 
 	b = os.Getenv("PKG_CONFIG")
 	if b == "" {
@@ -405,8 +401,22 @@ func findgoversion() string {
 	}
 
 	if !precise {
-		// Tag does not point at HEAD; add hash and date to version.
-		tag += chomp(run(goroot, CheckExit, "git", "log", "-n", "1", "--format=format: +%h %cd", "HEAD"))
+		// Tag does not point at HEAD; add 1.x base version, hash, and date to version.
+		//
+		// Note that we lightly parse internal/goversion/goversion.go to
+		// obtain the base version. We can't just import the package,
+		// because cmd/dist is built with a bootstrap GOROOT which could
+		// be an entirely different version of Go, like 1.4. We assume
+		// that the file contains "const Version = <Integer>".
+
+		goversionSource := readfile(pathf("%s/src/internal/goversion/goversion.go", goroot))
+		m := regexp.MustCompile(`(?m)^const Version = (\d+)`).FindStringSubmatch(goversionSource)
+		if m == nil {
+			fatalf("internal/goversion/goversion.go does not contain 'const Version = ...'")
+		}
+		tag += fmt.Sprintf(" go1.%s-", m[1])
+
+		tag += chomp(run(goroot, CheckExit, "git", "log", "-n", "1", "--format=format:%h %cd", "HEAD"))
 	}
 
 	// Cache version.
@@ -1248,13 +1258,18 @@ func cmdbootstrap() {
 	timelog("start", "dist bootstrap")
 	defer timelog("end", "dist bootstrap")
 
-	var noBanner bool
+	var noBanner, noClean bool
 	var debug bool
 	flag.BoolVar(&rebuildall, "a", rebuildall, "rebuild all")
 	flag.BoolVar(&debug, "d", debug, "enable debugging of bootstrap process")
 	flag.BoolVar(&noBanner, "no-banner", noBanner, "do not print banner")
+	flag.BoolVar(&noClean, "no-clean", noClean, "print deprecation warning")
 
 	xflagparse(0)
+
+	if noClean {
+		xprintf("warning: --no-clean is deprecated and has no effect; use 'go install std cmd' instead\n")
+	}
 
 	// Set GOPATH to an internal directory. We shouldn't actually
 	// need to store files here, since the toolchain won't
@@ -1526,7 +1541,7 @@ func checkNotStale(goBinary string, targets ...string) {
 				break
 			}
 		}
-		fatalf("unexpected stale targets reported by %s list -gcflags=\"%s\" -ldflags=\"%s\" for %v:\n%s", goBinary, gogcflags, goldflags, targets, out)
+		fatalf("unexpected stale targets reported by %s list -gcflags=\"%s\" -ldflags=\"%s\" for %v (consider rerunning with GOMAXPROCS=1 GODEBUG=gocachehash=1):\n%s", goBinary, gogcflags, goldflags, targets, out)
 	}
 }
 
@@ -1575,7 +1590,7 @@ var cgoEnabled = map[string]bool{
 	"openbsd/amd64":   true,
 	"openbsd/arm":     true,
 	"openbsd/arm64":   true,
-	"openbsd/mips64":  false,
+	"openbsd/mips64":  true,
 	"plan9/386":       false,
 	"plan9/amd64":     false,
 	"plan9/arm":       false,
@@ -1583,13 +1598,25 @@ var cgoEnabled = map[string]bool{
 	"windows/386":     true,
 	"windows/amd64":   true,
 	"windows/arm":     false,
-	"windows/arm64":   false,
+	"windows/arm64":   true,
 }
 
 // List of platforms which are supported but not complete yet. These get
 // filtered out of cgoEnabled for 'dist list'. See golang.org/issue/28944
 var incomplete = map[string]bool{
 	"linux/sparc64": true,
+}
+
+// List of platforms which are first class ports. See golang.org/issue/38874.
+var firstClass = map[string]bool{
+	"darwin/amd64":  true,
+	"darwin/arm64":  true,
+	"linux/386":     true,
+	"linux/amd64":   true,
+	"linux/arm":     true,
+	"linux/arm64":   true,
+	"windows/386":   true,
+	"windows/amd64": true,
 }
 
 func needCC() bool {
@@ -1728,6 +1755,7 @@ func cmdlist() {
 		GOOS         string
 		GOARCH       string
 		CgoSupported bool
+		FirstClass   bool
 	}
 	var results []jsonResult
 	for _, p := range plats {
@@ -1735,7 +1763,8 @@ func cmdlist() {
 		results = append(results, jsonResult{
 			GOOS:         fields[0],
 			GOARCH:       fields[1],
-			CgoSupported: cgoEnabled[p]})
+			CgoSupported: cgoEnabled[p],
+			FirstClass:   firstClass[p]})
 	}
 	out, err := json.MarshalIndent(results, "", "\t")
 	if err != nil {
@@ -1749,8 +1778,9 @@ func cmdlist() {
 // IsRuntimePackagePath examines 'pkgpath' and returns TRUE if it
 // belongs to the collection of "runtime-related" packages, including
 // "runtime" itself, "reflect", "syscall", and the
-// "runtime/internal/*" packages. See also the function of the same
-// name in cmd/internal/objabi/path.go.
+// "runtime/internal/*" packages.
+//
+// Keep in sync with cmd/internal/objabi/path.go:IsRuntimePackagePath.
 func IsRuntimePackagePath(pkgpath string) bool {
 	rval := false
 	switch pkgpath {
@@ -1760,7 +1790,7 @@ func IsRuntimePackagePath(pkgpath string) bool {
 		rval = true
 	case "syscall":
 		rval = true
-	case "crypto/x509/internal/macos": // libc function wrappers need to be ABIInternal
+	case "internal/bytealg":
 		rval = true
 	default:
 		rval = strings.HasPrefix(pkgpath, "runtime/internal")

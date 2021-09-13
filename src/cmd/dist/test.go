@@ -42,6 +42,7 @@ func cmdtest() {
 	if noRebuild {
 		t.rebuild = false
 	}
+
 	t.run()
 }
 
@@ -114,6 +115,21 @@ func (t *tester) run() {
 	if t.hasBash() {
 		if _, err := exec.LookPath("time"); err == nil {
 			t.haveTime = true
+		}
+	}
+
+	// Set GOTRACEBACK to system if the user didn't set a level explicitly.
+	// Since we're running tests for Go, we want as much detail as possible
+	// if something goes wrong.
+	//
+	// Set it before running any commands just in case something goes wrong.
+	if ok := isEnvSet("GOTRACEBACK"); !ok {
+		if err := os.Setenv("GOTRACEBACK", "system"); err != nil {
+			if t.keepGoing {
+				log.Printf("Failed to set GOTRACEBACK: %v", err)
+			} else {
+				fatalf("Failed to set GOTRACEBACK: %v", err)
+			}
 		}
 	}
 
@@ -693,14 +709,29 @@ func (t *tester) registerTests() {
 				},
 			})
 			if t.hasCxx() {
-				t.tests = append(t.tests, distTest{
-					name:    "swig_callback",
-					heading: "../misc/swig/callback",
-					fn: func(dt *distTest) error {
-						t.addCmd(dt, "misc/swig/callback", t.goTest())
-						return nil
+				t.tests = append(t.tests,
+					distTest{
+						name:    "swig_callback",
+						heading: "../misc/swig/callback",
+						fn: func(dt *distTest) error {
+							t.addCmd(dt, "misc/swig/callback", t.goTest())
+							return nil
+						},
 					},
-				})
+					distTest{
+						name:    "swig_callback_lto",
+						heading: "../misc/swig/callback",
+						fn: func(dt *distTest) error {
+							cmd := t.addCmd(dt, "misc/swig/callback", t.goTest())
+							cmd.Env = append(os.Environ(),
+								"CGO_CFLAGS=-flto -Wno-lto-type-mismatch -Wno-unknown-warning-option",
+								"CGO_CXXFLAGS=-flto -Wno-lto-type-mismatch -Wno-unknown-warning-option",
+								"CGO_LDFLAGS=-flto -Wno-lto-type-mismatch -Wno-unknown-warning-option",
+							)
+							return nil
+						},
+					},
+				)
 			}
 		}
 	}
@@ -736,8 +767,9 @@ func (t *tester) registerTests() {
 		if gohostos == "linux" && goarch == "amd64" {
 			t.registerTest("testasan", "../misc/cgo/testasan", "go", "run", ".")
 		}
-		if goos == "linux" {
-			// because syscall.SysProcAttri struct used in misc/cgo/testsanitizers is only built on linux.
+		if goos == "linux" && goarch != "ppc64le" {
+			// because syscall.SysProcAttr struct used in misc/cgo/testsanitizers is only built on linux.
+			// Some inconsistent failures happen on ppc64le so disable for now.
 			t.registerHostTest("testsanitizers", "../misc/cgo/testsanitizers", "misc/cgo/testsanitizers", ".")
 		}
 		if t.hasBash() && goos != "android" && !t.iOS() && gohostos != "windows" {
@@ -952,15 +984,13 @@ func (t *tester) internalLink() bool {
 		// linkmode=internal fails on dragonfly since errno is a TLS relocation.
 		return false
 	}
-	if gohostarch == "ppc64le" {
-		// linkmode=internal fails on ppc64le because cmd/link doesn't
-		// handle the TOC correctly (issue 15409).
-		return false
-	}
 	if goos == "android" {
 		return false
 	}
 	if goos == "ios" {
+		return false
+	}
+	if goos == "windows" && goarch == "arm64" {
 		return false
 	}
 	// Internally linking cgo is incomplete on some architectures.
@@ -1009,7 +1039,7 @@ func (t *tester) supportedBuildmode(mode string) bool {
 			"darwin-amd64", "darwin-arm64",
 			"freebsd-amd64",
 			"android-arm", "android-arm64", "android-386",
-			"windows-amd64", "windows-386":
+			"windows-amd64", "windows-386", "windows-arm64":
 			return true
 		}
 		return false
@@ -1095,8 +1125,7 @@ func (t *tester) cgoTest(dt *distTest) error {
 	cmd := t.addCmd(dt, "misc/cgo/test", t.goTest())
 	cmd.Env = append(os.Environ(), "GOFLAGS=-ldflags=-linkmode=auto")
 
-	// Skip internal linking cases on arm64 to support GCC-9.4 and above,
-	// only for linux, conservatively.
+	// Skip internal linking cases on linux/arm64 to support GCC-9.4 and above.
 	// See issue #39466.
 	skipInternalLink := goarch == "arm64" && goos == "linux"
 
@@ -1647,4 +1676,16 @@ func raceDetectorSupported(goos, goarch string) bool {
 func isUnsupportedVMASize(w *work) bool {
 	unsupportedVMA := []byte("unsupported VMA range")
 	return w.dt.name == "race" && bytes.Contains(w.out, unsupportedVMA)
+}
+
+// isEnvSet reports whether the environment variable evar is
+// set in the environment.
+func isEnvSet(evar string) bool {
+	evarEq := evar + "="
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, evarEq) {
+			return true
+		}
+	}
+	return false
 }

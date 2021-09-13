@@ -36,13 +36,13 @@ import (
 	"cmd/internal/sys"
 	"encoding/binary"
 	"fmt"
+	"internal/buildcfg"
 	"log"
 	"strings"
 )
 
 var (
 	plan9privates *obj.LSym
-	deferreturn   *obj.LSym
 )
 
 // Instruction layout.
@@ -2460,7 +2460,7 @@ func instinit(ctxt *obj.Link) {
 	}
 }
 
-var isAndroid = objabi.GOOS == "android"
+var isAndroid = buildcfg.GOOS == "android"
 
 func prefixof(ctxt *obj.Link, a *obj.Addr) int {
 	if a.Reg < REG_CS && a.Index < REG_CS { // fast path

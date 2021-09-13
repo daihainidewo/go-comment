@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/build"
+	"internal/buildcfg"
 	"internal/cfg"
 	"io"
 	"os"
@@ -19,8 +20,6 @@ import (
 	"sync"
 
 	"cmd/go/internal/fsys"
-
-	"cmd/internal/objabi"
 )
 
 // These are general "build flags" used by build and other commands.
@@ -48,8 +47,10 @@ var (
 	BuildWork              bool // -work flag
 	BuildX                 bool // -x flag
 
-	ModCacheRW bool   // -modcacherw flag
-	ModFile    string // -modfile flag
+	ModCacheRW       bool   // -modcacherw flag
+	ModFile          string // -modfile flag
+	WorkFile         string // -workfile flag
+	WorkFileExplicit bool   // whether -workfile was set explicitly
 
 	CmdName string // "build", "install", "list", "mod tidy", etc.
 
@@ -77,6 +78,14 @@ func defaultContext() build.Context {
 	// from go environment configuration file, if known.
 	ctxt.GOOS = envOr("GOOS", ctxt.GOOS)
 	ctxt.GOARCH = envOr("GOARCH", ctxt.GOARCH)
+
+	// The experiments flags are based on GOARCH, so they may
+	// need to change.  TODO: This should be cleaned up.
+	buildcfg.UpdateExperiments(ctxt.GOOS, ctxt.GOARCH, envOr("GOEXPERIMENT", buildcfg.DefaultGOEXPERIMENT))
+	ctxt.ToolTags = nil
+	for _, exp := range buildcfg.EnabledExperiments() {
+		ctxt.ToolTags = append(ctxt.ToolTags, "goexperiment."+exp)
+	}
 
 	// The go/build rule for whether cgo is enabled is:
 	//	1. If $CGO_ENABLED is set, respect it.
@@ -252,12 +261,12 @@ var (
 	GOMODCACHE   = envOr("GOMODCACHE", gopathDir("pkg/mod"))
 
 	// Used in envcmd.MkEnv and build ID computations.
-	GOARM    = envOr("GOARM", fmt.Sprint(objabi.GOARM))
-	GO386    = envOr("GO386", objabi.GO386)
-	GOMIPS   = envOr("GOMIPS", objabi.GOMIPS)
-	GOMIPS64 = envOr("GOMIPS64", objabi.GOMIPS64)
-	GOPPC64  = envOr("GOPPC64", fmt.Sprintf("%s%d", "power", objabi.GOPPC64))
-	GOWASM   = envOr("GOWASM", fmt.Sprint(objabi.GOWASM))
+	GOARM    = envOr("GOARM", fmt.Sprint(buildcfg.GOARM))
+	GO386    = envOr("GO386", buildcfg.GO386)
+	GOMIPS   = envOr("GOMIPS", buildcfg.GOMIPS)
+	GOMIPS64 = envOr("GOMIPS64", buildcfg.GOMIPS64)
+	GOPPC64  = envOr("GOPPC64", fmt.Sprintf("%s%d", "power", buildcfg.GOPPC64))
+	GOWASM   = envOr("GOWASM", fmt.Sprint(buildcfg.GOWASM))
 
 	GOPROXY    = envOr("GOPROXY", "https://proxy.golang.org,direct")
 	GOSUMDB    = envOr("GOSUMDB", "sum.golang.org")

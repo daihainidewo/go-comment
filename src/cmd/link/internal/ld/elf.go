@@ -14,7 +14,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"internal/buildcfg"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -479,10 +481,6 @@ func Elfwritedynent(arch *sys.Arch, s *loader.SymbolBuilder, tag elf.DynTag, val
 	}
 }
 
-func elfwritedynentsym(ctxt *Link, s *loader.SymbolBuilder, tag elf.DynTag, t loader.Sym) {
-	Elfwritedynentsymplus(ctxt, s, tag, t, 0)
-}
-
 func Elfwritedynentsymplus(ctxt *Link, s *loader.SymbolBuilder, tag elf.DynTag, t loader.Sym, add int64) {
 	if elf64 {
 		s.AddUint64(ctxt.Arch, uint64(tag))
@@ -584,7 +582,7 @@ func elfWriteMipsAbiFlags(ctxt *Link) int {
 	ctxt.Out.Write8(1)  // gprSize
 	ctxt.Out.Write8(1)  // cpr1Size
 	ctxt.Out.Write8(0)  // cpr2Size
-	if objabi.GOMIPS == "softfloat" {
+	if buildcfg.GOMIPS == "softfloat" {
 		ctxt.Out.Write8(MIPS_FPABI_SOFT) // fpAbi
 	} else {
 		// Go cannot make sure non odd-number-fpr is used (ie, in load a double from memory).
@@ -949,6 +947,11 @@ func elfdynhash(ctxt *Link) {
 	}
 
 	s = ldr.CreateSymForUpdate(".dynamic", 0)
+	if ctxt.BuildMode == BuildModePIE {
+		// https://github.com/bminor/glibc/blob/895ef79e04a953cac1493863bcae29ad85657ee1/elf/elf.h#L986
+		const DTFLAGS_1_PIE = 0x08000000
+		Elfwritedynent(ctxt.Arch, s, elf.DT_FLAGS_1, uint64(DTFLAGS_1_PIE))
+	}
 	elfverneed = nfile
 	if elfverneed != 0 {
 		elfWriteDynEntSym(ctxt, s, elf.DT_VERNEED, gnuVersionR.Sym())
@@ -1170,7 +1173,7 @@ func elfrelocsect(ctxt *Link, out *OutBuf, sect *sym.Section, syms []loader.Sym)
 		}
 	}
 
-	eaddr := int32(sect.Vaddr + sect.Length)
+	eaddr := sect.Vaddr + sect.Length
 	for _, s := range syms {
 		if !ldr.AttrReachable(s) {
 			continue
@@ -1466,24 +1469,24 @@ func (ctxt *Link) doelf() {
 		/*
 		 * .dynamic table
 		 */
-		elfwritedynentsym(ctxt, dynamic, elf.DT_HASH, hash.Sym())
+		elfWriteDynEntSym(ctxt, dynamic, elf.DT_HASH, hash.Sym())
 
-		elfwritedynentsym(ctxt, dynamic, elf.DT_SYMTAB, dynsym.Sym())
+		elfWriteDynEntSym(ctxt, dynamic, elf.DT_SYMTAB, dynsym.Sym())
 		if elf64 {
 			Elfwritedynent(ctxt.Arch, dynamic, elf.DT_SYMENT, ELF64SYMSIZE)
 		} else {
 			Elfwritedynent(ctxt.Arch, dynamic, elf.DT_SYMENT, ELF32SYMSIZE)
 		}
-		elfwritedynentsym(ctxt, dynamic, elf.DT_STRTAB, dynstr.Sym())
+		elfWriteDynEntSym(ctxt, dynamic, elf.DT_STRTAB, dynstr.Sym())
 		elfwritedynentsymsize(ctxt, dynamic, elf.DT_STRSZ, dynstr.Sym())
 		if elfRelType == ".rela" {
 			rela := ldr.LookupOrCreateSym(".rela", 0)
-			elfwritedynentsym(ctxt, dynamic, elf.DT_RELA, rela)
+			elfWriteDynEntSym(ctxt, dynamic, elf.DT_RELA, rela)
 			elfwritedynentsymsize(ctxt, dynamic, elf.DT_RELASZ, rela)
 			Elfwritedynent(ctxt.Arch, dynamic, elf.DT_RELAENT, ELF64RELASIZE)
 		} else {
 			rel := ldr.LookupOrCreateSym(".rel", 0)
-			elfwritedynentsym(ctxt, dynamic, elf.DT_REL, rel)
+			elfWriteDynEntSym(ctxt, dynamic, elf.DT_REL, rel)
 			elfwritedynentsymsize(ctxt, dynamic, elf.DT_RELSZ, rel)
 			Elfwritedynent(ctxt.Arch, dynamic, elf.DT_RELENT, ELF32RELSIZE)
 		}
@@ -1493,9 +1496,9 @@ func (ctxt *Link) doelf() {
 		}
 
 		if ctxt.IsPPC64() {
-			elfwritedynentsym(ctxt, dynamic, elf.DT_PLTGOT, plt.Sym())
+			elfWriteDynEntSym(ctxt, dynamic, elf.DT_PLTGOT, plt.Sym())
 		} else {
-			elfwritedynentsym(ctxt, dynamic, elf.DT_PLTGOT, gotplt.Sym())
+			elfWriteDynEntSym(ctxt, dynamic, elf.DT_PLTGOT, gotplt.Sym())
 		}
 
 		if ctxt.IsPPC64() {
@@ -1557,7 +1560,7 @@ func (ctxt *Link) doelf() {
 		gnuattributes.AddUint8(1)                 // 1:file, 2: section, 3: symbol, 1 here
 		gnuattributes.AddUint32(ctxt.Arch, 7)     // tag length, including tag, 7 here
 		gnuattributes.AddUint8(4)                 // 4 for FP, 8 for MSA
-		if objabi.GOMIPS == "softfloat" {
+		if buildcfg.GOMIPS == "softfloat" {
 			gnuattributes.AddUint8(MIPS_FPABI_SOFT)
 		} else {
 			// Note: MIPS_FPABI_ANY is bad naming: in fact it is MIPS I style FPR usage.
@@ -1743,14 +1746,14 @@ func asmbElf(ctxt *Link) {
 		sh.Flags = uint64(elf.SHF_ALLOC)
 		sh.Addralign = 1
 
-		if interpreter == "" && objabi.GO_LDSO != "" {
-			interpreter = objabi.GO_LDSO
+		if interpreter == "" && buildcfg.GOOS == runtime.GOOS && buildcfg.GOARCH == runtime.GOARCH && buildcfg.GO_LDSO != "" {
+			interpreter = buildcfg.GO_LDSO
 		}
 
 		if interpreter == "" {
 			switch ctxt.HeadType {
 			case objabi.Hlinux:
-				if objabi.GOOS == "android" {
+				if buildcfg.GOOS == "android" {
 					interpreter = thearch.Androiddynld
 					if interpreter == "" {
 						Exitf("ELF interpreter not set")
@@ -2022,6 +2025,11 @@ func asmbElf(ctxt *Link) {
 		ph := newElfPhdr()
 		ph.Type = elf.PT_SUNWSTACK
 		ph.Flags = elf.PF_W + elf.PF_R
+	} else if ctxt.HeadType == objabi.Hfreebsd {
+		ph := newElfPhdr()
+		ph.Type = elf.PT_GNU_STACK
+		ph.Flags = elf.PF_W + elf.PF_R
+		ph.Align = uint64(ctxt.Arch.RegSize)
 	}
 
 elfobj:
@@ -2193,6 +2201,12 @@ elfobj:
 
 	if a > elfreserve {
 		Errorf(nil, "ELFRESERVE too small: %d > %d with %d text sections", a, elfreserve, numtext)
+	}
+
+	// Verify the amount of space allocated for the elf header is sufficient.  The file offsets are
+	// already computed in layout, so we could spill into another section.
+	if a > int64(HEADR) {
+		Errorf(nil, "HEADR too small: %d > %d with %d text sections", a, HEADR, numtext)
 	}
 }
 

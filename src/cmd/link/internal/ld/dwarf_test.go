@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -100,8 +101,11 @@ func gobuild(t *testing.T, dir string, testfile string, gcflags string) *builtFi
 	}
 
 	cmd := exec.Command(testenv.GoToolPath(t), "build", gcflags, "-o", dst, src)
-	if b, err := cmd.CombinedOutput(); err != nil {
-		t.Logf("build: %s\n", b)
+	b, err := cmd.CombinedOutput()
+	if len(b) != 0 {
+		t.Logf("## build output:\n%s", b)
+	}
+	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
 
@@ -610,8 +614,8 @@ func TestInlinedRoutineRecords(t *testing.T) {
 	if runtime.GOOS == "plan9" {
 		t.Skip("skipping on plan9; no DWARF symbol table in executables")
 	}
-	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" || runtime.GOOS == "darwin" {
-		t.Skip("skipping on solaris, illumos, and darwin, pending resolution of issue #23168")
+	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" {
+		t.Skip("skipping on solaris, illumos, pending resolution of issue #23168")
 	}
 
 	t.Parallel()
@@ -847,8 +851,8 @@ func TestAbstractOriginSanity(t *testing.T) {
 	if runtime.GOOS == "plan9" {
 		t.Skip("skipping on plan9; no DWARF symbol table in executables")
 	}
-	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" || runtime.GOOS == "darwin" {
-		t.Skip("skipping on solaris, illumos, and darwin, pending resolution of issue #23168")
+	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" {
+		t.Skip("skipping on solaris, illumos, pending resolution of issue #23168")
 	}
 
 	if wd, err := os.Getwd(); err == nil {
@@ -865,11 +869,11 @@ func TestAbstractOriginSanityIssue25459(t *testing.T) {
 	if runtime.GOOS == "plan9" {
 		t.Skip("skipping on plan9; no DWARF symbol table in executables")
 	}
-	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" || runtime.GOOS == "darwin" {
-		t.Skip("skipping on solaris, illumos, and darwin, pending resolution of issue #23168")
+	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" {
+		t.Skip("skipping on solaris, illumos, pending resolution of issue #23168")
 	}
-	if runtime.GOARCH != "amd64" && runtime.GOARCH != "x86" {
-		t.Skip("skipping on not-amd64 not-x86; location lists not supported")
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "386" {
+		t.Skip("skipping on not-amd64 not-386; location lists not supported")
 	}
 
 	if wd, err := os.Getwd(); err == nil {
@@ -886,8 +890,8 @@ func TestAbstractOriginSanityIssue26237(t *testing.T) {
 	if runtime.GOOS == "plan9" {
 		t.Skip("skipping on plan9; no DWARF symbol table in executables")
 	}
-	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" || runtime.GOOS == "darwin" {
-		t.Skip("skipping on solaris, illumos, and darwin, pending resolution of issue #23168")
+	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" {
+		t.Skip("skipping on solaris, illumos, pending resolution of issue #23168")
 	}
 	if wd, err := os.Getwd(); err == nil {
 		gopathdir := filepath.Join(wd, "testdata", "issue26237")
@@ -1640,4 +1644,117 @@ func TestIssue42484(t *testing.T) {
 		rdr.SkipChildren()
 	}
 	f.Close()
+}
+
+func TestOutputParamAbbrevAndAttr(t *testing.T) {
+	testenv.MustHaveGoBuild(t)
+
+	if runtime.GOOS == "plan9" {
+		t.Skip("skipping on plan9; no DWARF symbol table in executables")
+	}
+	t.Parallel()
+
+	// This test verifies that the compiler is selecting the correct
+	// DWARF abbreviation for output parameters, and that the
+	// variable parameter attribute is correct for in-params and
+	// out-params.
+
+	const prog = `
+package main
+
+//go:noinline
+func ABC(c1, c2, c3 int, d1, d2, d3, d4 string, f1, f2, f3 float32, g1 [1024]int) (r1 int, r2 int, r3 [1024]int, r4 byte, r5 string, r6 float32) {
+	g1[0] = 6
+	r1, r2, r3, r4, r5, r6 = c3, c2+c1, g1, 'a', d1+d2+d3+d4, f1+f2+f3
+	return
+}
+
+func main() {
+	a := [1024]int{}
+	v1, v2, v3, v4, v5, v6 := ABC(1, 2, 3, "a", "b", "c", "d", 1.0, 2.0, 1.0, a)
+	println(v1, v2, v3[0], v4, v5, v6)
+}
+`
+	dir := t.TempDir()
+	f := gobuild(t, dir, prog, NoOpt)
+	defer f.Close()
+
+	d, err := f.DWARF()
+	if err != nil {
+		t.Fatalf("error reading DWARF: %v", err)
+	}
+
+	rdr := d.Reader()
+	ex := examiner{}
+	if err := ex.populate(rdr); err != nil {
+		t.Fatalf("error reading DWARF: %v", err)
+	}
+
+	// Locate the main.ABC DIE
+	abcs := ex.Named("main.ABC")
+	if len(abcs) == 0 {
+		t.Fatalf("unable to locate DIE for main.ABC")
+	}
+	if len(abcs) != 1 {
+		t.Fatalf("more than one main.ABC DIE")
+	}
+	abcdie := abcs[0]
+
+	// Vet the DIE
+	if abcdie.Tag != dwarf.TagSubprogram {
+		t.Fatalf("unexpected tag %v on main.ABC DIE", abcdie.Tag)
+	}
+
+	// A setting of DW_AT_variable_parameter indicates that the
+	// param in question is an output parameter; we want to see this
+	// attribute set to TRUE for all Go return params. It would be
+	// OK to have it missing for input parameters, but for the moment
+	// we verify that the attr is present but set to false.
+
+	// Values in this map are of the form <order>:<varparam>
+	// where order is the order within the child DIE list of the param,
+	// and <varparam> is an integer:
+	//
+	//  -1: varparm attr not found
+	//   1: varparm found with value false
+	//   2: varparm found with value true
+	//
+	foundParams := make(map[string]string)
+
+	// Walk ABCs's children looking for params.
+	abcIdx := ex.idxFromOffset(abcdie.Offset)
+	childDies := ex.Children(abcIdx)
+	idx := 0
+	for _, child := range childDies {
+		if child.Tag == dwarf.TagFormalParameter {
+			st := -1
+			if vp, ok := child.Val(dwarf.AttrVarParam).(bool); ok {
+				if vp {
+					st = 2
+				} else {
+					st = 1
+				}
+			}
+			if name, ok := child.Val(dwarf.AttrName).(string); ok {
+				foundParams[name] = fmt.Sprintf("%d:%d", idx, st)
+				idx++
+			}
+		}
+	}
+
+	// Digest the result.
+	found := make([]string, 0, len(foundParams))
+	for k, v := range foundParams {
+		found = append(found, fmt.Sprintf("%s:%s", k, v))
+	}
+	sort.Strings(found)
+
+	// Make sure we see all of the expected params in the proper
+	// order, that they have the varparam attr, and the varparm is set
+	// for the returns.
+	expected := "[c1:0:1 c2:1:1 c3:2:1 d1:3:1 d2:4:1 d3:5:1 d4:6:1 f1:7:1 f2:8:1 f3:9:1 g1:10:1 r1:11:2 r2:12:2 r3:13:2 r4:14:2 r5:15:2 r6:16:2]"
+	if fmt.Sprintf("%+v", found) != expected {
+		t.Errorf("param check failed, wanted %s got %s\n",
+			expected, found)
+	}
 }

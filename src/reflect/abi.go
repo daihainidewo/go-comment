@@ -6,6 +6,8 @@ package reflect
 
 import (
 	"internal/abi"
+	"internal/goarch"
+	"internal/goexperiment"
 	"unsafe"
 )
 
@@ -28,9 +30,9 @@ import (
 // commented out there should be the actual values once
 // we're ready to use the register ABI everywhere.
 var (
-	intArgRegs   = 0          // abi.IntArgRegs
-	floatArgRegs = 0          // abi.FloatArgRegs
-	floatRegSize = uintptr(0) // uintptr(abi.EffectiveFloatRegSize)
+	intArgRegs   = abi.IntArgRegs * goexperiment.RegabiArgsInt
+	floatArgRegs = abi.FloatArgRegs * goexperiment.RegabiArgsInt
+	floatRegSize = uintptr(abi.EffectiveFloatRegSize * goexperiment.RegabiArgsInt)
 )
 
 // abiStep represents an ABI "instruction." Each instruction
@@ -121,6 +123,7 @@ func (a *abiSeq) stepsForValue(i int) []abiStep {
 // If the value was stack-assigned, returns the single
 // abiStep describing that translation, and nil otherwise.
 func (a *abiSeq) addArg(t *rtype) *abiStep {
+	// We'll always be adding a new value, so do that first.
 	pStart := len(a.steps)
 	a.valueStart = append(a.valueStart, pStart)
 	if t.size == 0 {
@@ -141,8 +144,13 @@ func (a *abiSeq) addArg(t *rtype) *abiStep {
 		a.stackBytes = align(a.stackBytes, uintptr(t.align))
 		return nil
 	}
+	// Hold a copy of "a" so that we can roll back if
+	// register assignment fails.
+	aOld := *a
 	if !a.regAssign(t, 0) {
-		a.steps = a.steps[:pStart]
+		// Register assignment failed. Roll back any changes
+		// and stack-assign.
+		*a = aOld
 		a.stackAssign(t.size, uintptr(t.align))
 		return &a.steps[len(a.steps)-1]
 	}
@@ -160,7 +168,7 @@ func (a *abiSeq) addRcvr(rcvr *rtype) (*abiStep, bool) {
 	a.valueStart = append(a.valueStart, len(a.steps))
 	var ok, ptr bool
 	if ifaceIndir(rcvr) || rcvr.pointers() {
-		ok = a.assignIntN(0, ptrSize, 1, 0b1)
+		ok = a.assignIntN(0, goarch.PtrSize, 1, 0b1)
 		ptr = true
 	} else {
 		// TODO(mknyszek): Is this case even possible?
@@ -169,11 +177,11 @@ func (a *abiSeq) addRcvr(rcvr *rtype) (*abiStep, bool) {
 		// in the reflect package which only conditionally added
 		// a pointer bit to the reflect.(Value).Call stack frame's
 		// GC bitmap.
-		ok = a.assignIntN(0, ptrSize, 1, 0b0)
+		ok = a.assignIntN(0, goarch.PtrSize, 1, 0b0)
 		ptr = false
 	}
 	if !ok {
-		a.stackAssign(ptrSize, ptrSize)
+		a.stackAssign(goarch.PtrSize, goarch.PtrSize)
 		return &a.steps[len(a.steps)-1], ptr
 	}
 	return nil, ptr
@@ -195,7 +203,7 @@ func (a *abiSeq) regAssign(t *rtype, offset uintptr) bool {
 	case Bool, Int, Uint, Int8, Uint8, Int16, Uint16, Int32, Uint32, Uintptr:
 		return a.assignIntN(offset, t.size, 1, 0b0)
 	case Int64, Uint64:
-		switch ptrSize {
+		switch goarch.PtrSize {
 		case 4:
 			return a.assignIntN(offset, 4, 2, 0b0)
 		case 8:
@@ -208,11 +216,11 @@ func (a *abiSeq) regAssign(t *rtype, offset uintptr) bool {
 	case Complex128:
 		return a.assignFloatN(offset, 8, 2)
 	case String:
-		return a.assignIntN(offset, ptrSize, 2, 0b01)
+		return a.assignIntN(offset, goarch.PtrSize, 2, 0b01)
 	case Interface:
-		return a.assignIntN(offset, ptrSize, 2, 0b10)
+		return a.assignIntN(offset, goarch.PtrSize, 2, 0b10)
 	case Slice:
-		return a.assignIntN(offset, ptrSize, 3, 0b001)
+		return a.assignIntN(offset, goarch.PtrSize, 3, 0b001)
 	case Array:
 		tt := (*arrayType)(unsafe.Pointer(t))
 		switch tt.len {
@@ -227,19 +235,9 @@ func (a *abiSeq) regAssign(t *rtype, offset uintptr) bool {
 			return false
 		}
 	case Struct:
-		if t.size == 0 {
-			// There's nothing to assign, so don't modify
-			// a.steps but succeed so the caller doesn't
-			// try to stack-assign this value.
-			return true
-		}
 		st := (*structType)(unsafe.Pointer(t))
 		for i := range st.fields {
 			f := &st.fields[i]
-			if f.typ.Size() == 0 {
-				// Ignore zero-sized fields.
-				continue
-			}
 			if !a.regAssign(f.typ, offset+f.offset()) {
 				return false
 			}
@@ -265,7 +263,7 @@ func (a *abiSeq) assignIntN(offset, size uintptr, n int, ptrMap uint8) bool {
 	if n > 8 || n < 0 {
 		panic("invalid n")
 	}
-	if ptrMap != 0 && size != ptrSize {
+	if ptrMap != 0 && size != goarch.PtrSize {
 		panic("non-empty pointer map passed for non-pointer-size values")
 	}
 	if a.iregs+n > intArgRegs {
@@ -349,11 +347,15 @@ type abiDesc struct {
 	// passed to reflectcall.
 	stackPtrs *bitVector
 
-	// outRegPtrs is a bitmap whose i'th bit indicates
-	// whether the i'th integer result register contains
-	// a pointer. Used by reflectcall to make result
-	// pointers visible to the GC.
-	outRegPtrs abi.IntArgRegBitmap
+	// inRegPtrs is a bitmap whose i'th bit indicates
+	// whether the i'th integer argument register contains
+	// a pointer. Used by makeFuncStub and methodValueCall
+	// to make result pointers visible to the GC.
+	//
+	// outRegPtrs is the same, but for result values.
+	// Used by reflectcall to make result pointers visible
+	// to the GC.
+	inRegPtrs, outRegPtrs abi.IntArgRegBitmap
 }
 
 func (a *abiDesc) dump() {
@@ -365,6 +367,22 @@ func (a *abiDesc) dump() {
 	println("stackCallArgsSize", a.stackCallArgsSize)
 	println("retOffset", a.retOffset)
 	println("spill", a.spill)
+	print("inRegPtrs:")
+	dumpPtrBitMap(a.inRegPtrs)
+	println()
+	print("outRegPtrs:")
+	dumpPtrBitMap(a.outRegPtrs)
+	println()
+}
+
+func dumpPtrBitMap(b abi.IntArgRegBitmap) {
+	for i := 0; i < intArgRegs; i++ {
+		x := 0
+		if b.Get(i) {
+			x = 1
+		}
+		print(" ", x)
+	}
 }
 
 func newAbiDesc(t *funcType, rcvr *rtype) abiDesc {
@@ -381,6 +399,10 @@ func newAbiDesc(t *funcType, rcvr *rtype) abiDesc {
 	// Compute gc program & stack bitmap for stack arguments
 	stackPtrs := new(bitVector)
 
+	// Compute the stack frame pointer bitmap and register
+	// pointer bitmap for arguments.
+	inRegPtrs := abi.IntArgRegBitmap{}
+
 	// Compute abiSeq for input parameters.
 	var in abiSeq
 	if rcvr != nil {
@@ -392,24 +414,29 @@ func newAbiDesc(t *funcType, rcvr *rtype) abiDesc {
 				stackPtrs.append(0)
 			}
 		} else {
-			spill += ptrSize
+			spill += goarch.PtrSize
 		}
 	}
-	for _, arg := range t.in() {
+	for i, arg := range t.in() {
 		stkStep := in.addArg(arg)
 		if stkStep != nil {
 			addTypeBits(stackPtrs, stkStep.stkOff, arg)
 		} else {
 			spill = align(spill, uintptr(arg.align))
 			spill += arg.size
+			for _, st := range in.stepsForValue(i) {
+				if st.kind == abiStepPointer {
+					inRegPtrs.Set(st.ireg)
+				}
+			}
 		}
 	}
-	spill = align(spill, ptrSize)
+	spill = align(spill, goarch.PtrSize)
 
 	// From the input parameters alone, we now know
 	// the stackCallArgsSize and retOffset.
 	stackCallArgsSize := in.stackBytes
-	retOffset := align(in.stackBytes, ptrSize)
+	retOffset := align(in.stackBytes, goarch.PtrSize)
 
 	// Compute the stack frame pointer bitmap and register
 	// pointer bitmap for return values.
@@ -438,5 +465,47 @@ func newAbiDesc(t *funcType, rcvr *rtype) abiDesc {
 	// Undo the faking from earlier so that stackBytes
 	// is accurate.
 	out.stackBytes -= retOffset
-	return abiDesc{in, out, stackCallArgsSize, retOffset, spill, stackPtrs, outRegPtrs}
+	return abiDesc{in, out, stackCallArgsSize, retOffset, spill, stackPtrs, inRegPtrs, outRegPtrs}
+}
+
+// intFromReg loads an argSize sized integer from reg and places it at to.
+//
+// argSize must be non-zero, fit in a register, and a power-of-two.
+func intFromReg(r *abi.RegArgs, reg int, argSize uintptr, to unsafe.Pointer) {
+	memmove(to, r.IntRegArgAddr(reg, argSize), argSize)
+}
+
+// intToReg loads an argSize sized integer and stores it into reg.
+//
+// argSize must be non-zero, fit in a register, and a power-of-two.
+func intToReg(r *abi.RegArgs, reg int, argSize uintptr, from unsafe.Pointer) {
+	memmove(r.IntRegArgAddr(reg, argSize), from, argSize)
+}
+
+// floatFromReg loads a float value from its register representation in r.
+//
+// argSize must be 4 or 8.
+func floatFromReg(r *abi.RegArgs, reg int, argSize uintptr, to unsafe.Pointer) {
+	switch argSize {
+	case 4:
+		*(*float32)(to) = archFloat32FromReg(r.Floats[reg])
+	case 8:
+		*(*float64)(to) = *(*float64)(unsafe.Pointer(&r.Floats[reg]))
+	default:
+		panic("bad argSize")
+	}
+}
+
+// floatToReg stores a float value in its register representation in r.
+//
+// argSize must be either 4 or 8.
+func floatToReg(r *abi.RegArgs, reg int, argSize uintptr, from unsafe.Pointer) {
+	switch argSize {
+	case 4:
+		r.Floats[reg] = archFloat32ToReg(*(*float32)(from))
+	case 8:
+		r.Floats[reg] = *(*uint64)(from)
+	default:
+		panic("bad argSize")
+	}
 }

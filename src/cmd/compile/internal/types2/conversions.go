@@ -38,8 +38,10 @@ func (check *Checker) conversion(x *operand, T Type) {
 	}
 
 	if !ok {
-		check.errorf(x, "cannot convert %s to %s", x, T)
-		x.mode = invalid
+		if x.mode != invalid {
+			check.errorf(x, "cannot convert %s to %s", x, T)
+			x.mode = invalid
+		}
 		return
 	}
 
@@ -91,7 +93,7 @@ func (x *operand) convertibleTo(check *Checker, T Type) bool {
 	V := x.typ
 	Vu := under(V)
 	Tu := under(T)
-	if check.identicalIgnoreTags(Vu, Tu) {
+	if IdenticalIgnoreTags(Vu, Tu) {
 		return true
 	}
 
@@ -99,7 +101,7 @@ func (x *operand) convertibleTo(check *Checker, T Type) bool {
 	// have identical underlying types if tags are ignored"
 	if V, ok := V.(*Pointer); ok {
 		if T, ok := T.(*Pointer); ok {
-			if check.identicalIgnoreTags(under(V.base), under(T.base)) {
+			if IdenticalIgnoreTags(under(V.base), under(T.base)) {
 				return true
 			}
 		}
@@ -133,6 +135,27 @@ func (x *operand) convertibleTo(check *Checker, T Type) bool {
 	// "and vice versa"
 	if isUnsafePointer(V) && (isPointer(Tu) || isUintptr(Tu)) {
 		return true
+	}
+
+	// "x is a slice, T is a pointer-to-array type,
+	// and the slice and array types have identical element types."
+	if s := asSlice(V); s != nil {
+		if p := asPointer(T); p != nil {
+			if a := asArray(p.Elem()); a != nil {
+				if Identical(s.Elem(), a.Elem()) {
+					if check == nil || check.allowVersion(check.pkg, 1, 17) {
+						return true
+					}
+					// check != nil
+					if check.conf.CompilerErrorMessages {
+						check.error(x, "conversion of slices to array pointers only supported as of -lang=go1.17")
+					} else {
+						check.error(x, "conversion of slices to array pointers requires go1.17 or later")
+					}
+					x.mode = invalid // avoid follow-up error
+				}
+			}
+		}
 	}
 
 	return false

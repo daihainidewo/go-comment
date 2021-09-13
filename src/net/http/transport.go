@@ -21,6 +21,7 @@ import (
 	"log"
 	"net"
 	"net/http/httptrace"
+	"net/http/internal/ascii"
 	"net/textproto"
 	"net/url"
 	"os"
@@ -454,6 +455,7 @@ func (t *Transport) onceSetNextProtoDefaults() {
 //
 // The environment values may be either a complete URL or a
 // "host[:port]", in which case the "http" scheme is assumed.
+// The schemes "http", "https", and "socks5" are supported.
 // An error is returned if the value is a different form.
 //
 // A nil URL and nil error are returned if no proxy is defined in the
@@ -845,10 +847,12 @@ func (t *Transport) CancelRequest(req *Request) {
 // Cancel an in-flight request, recording the error value.
 // Returns whether the request was canceled.
 func (t *Transport) cancelRequest(key cancelKey, err error) bool {
+	// This function must not return until the cancel func has completed.
+	// See: https://golang.org/issue/34658
 	t.reqMu.Lock()
+	defer t.reqMu.Unlock()
 	cancel := t.reqCanceler[key]
 	delete(t.reqCanceler, key)
-	t.reqMu.Unlock()
 	if cancel != nil {
 		cancel(err)
 	}
@@ -1272,7 +1276,7 @@ type wantConn struct {
 
 	// hooks for testing to know when dials are done
 	// beforeDial is called in the getConn goroutine when the dial is queued.
-	// afterDial is called when the dial is completed or cancelled.
+	// afterDial is called when the dial is completed or canceled.
 	beforeDial func()
 	afterDial  func()
 
@@ -1547,7 +1551,7 @@ func (t *Transport) queueForDial(w *wantConn) {
 // dialConnFor 为 w 建立连接
 // dialConnFor dials on behalf of w and delivers the result to w.
 // dialConnFor has received permission to dial w.cm and is counted in t.connCount[w.cm.key()].
-// If the dial is cancelled or unsuccessful, dialConnFor decrements t.connCount[w.cm.key()].
+// If the dial is canceled or unsuccessful, dialConnFor decrements t.connCount[w.cm.key()].
 func (t *Transport) dialConnFor(w *wantConn) {
 	defer w.afterDial()
 
@@ -2330,8 +2334,8 @@ func (pc *persistConn) readLoop() {
 		}
 
 		resp.Body = body
-		// 解压body数据
-		if rc.addedGzip && strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+        // 解压body数据
+        if rc.addedGzip && ascii.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 			resp.Body = &gzipReader{body: body}
 			resp.Header.Del("Content-Encoding")
 			resp.Header.Del("Content-Length")

@@ -104,7 +104,8 @@ func TestEmptyFolderImport(t *testing.T) {
 }
 
 func TestMultiplePackageImport(t *testing.T) {
-	_, err := Import(".", "testdata/multi", 0)
+	pkg, err := Import(".", "testdata/multi", 0)
+
 	mpe, ok := err.(*MultiplePackageError)
 	if !ok {
 		t.Fatal(`Import("testdata/multi") did not return MultiplePackageError.`)
@@ -115,7 +116,20 @@ func TestMultiplePackageImport(t *testing.T) {
 		Files:    []string{"file.go", "file_appengine.go"},
 	}
 	if !reflect.DeepEqual(mpe, want) {
-		t.Errorf("got %#v; want %#v", mpe, want)
+		t.Errorf("err = %#v; want %#v", mpe, want)
+	}
+
+	// TODO(#45999): Since the name is ambiguous, pkg.Name should be left empty.
+	if wantName := "main"; pkg.Name != wantName {
+		t.Errorf("pkg.Name = %q; want %q", pkg.Name, wantName)
+	}
+
+	if wantGoFiles := []string{"file.go", "file_appengine.go"}; !reflect.DeepEqual(pkg.GoFiles, wantGoFiles) {
+		t.Errorf("pkg.GoFiles = %q; want %q", pkg.GoFiles, wantGoFiles)
+	}
+
+	if wantInvalidFiles := []string{"file_appengine.go"}; !reflect.DeepEqual(pkg.InvalidGoFiles, wantInvalidFiles) {
+		t.Errorf("pkg.InvalidGoFiles = %q; want %q", pkg.InvalidGoFiles, wantInvalidFiles)
 	}
 }
 
@@ -486,11 +500,7 @@ func TestImportDirNotExist(t *testing.T) {
 	testenv.MustHaveGoBuild(t) // really must just have source
 	ctxt := Default
 
-	emptyDir, err := os.MkdirTemp("", t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(emptyDir)
+	emptyDir := t.TempDir()
 
 	ctxt.GOPATH = emptyDir
 	ctxt.Dir = emptyDir
@@ -543,8 +553,7 @@ func TestImportDirNotExist(t *testing.T) {
 func TestImportVendor(t *testing.T) {
 	testenv.MustHaveGoBuild(t) // really must just have source
 
-	defer os.Setenv("GO111MODULE", os.Getenv("GO111MODULE"))
-	os.Setenv("GO111MODULE", "off")
+	t.Setenv("GO111MODULE", "off")
 
 	ctxt := Default
 	wd, err := os.Getwd()
@@ -565,8 +574,7 @@ func TestImportVendor(t *testing.T) {
 func TestImportVendorFailure(t *testing.T) {
 	testenv.MustHaveGoBuild(t) // really must just have source
 
-	defer os.Setenv("GO111MODULE", os.Getenv("GO111MODULE"))
-	os.Setenv("GO111MODULE", "off")
+	t.Setenv("GO111MODULE", "off")
 
 	ctxt := Default
 	wd, err := os.Getwd()
@@ -588,8 +596,7 @@ func TestImportVendorFailure(t *testing.T) {
 func TestImportVendorParentFailure(t *testing.T) {
 	testenv.MustHaveGoBuild(t) // really must just have source
 
-	defer os.Setenv("GO111MODULE", os.Getenv("GO111MODULE"))
-	os.Setenv("GO111MODULE", "off")
+	t.Setenv("GO111MODULE", "off")
 
 	ctxt := Default
 	wd, err := os.Getwd()
@@ -619,16 +626,11 @@ func TestImportPackageOutsideModule(t *testing.T) {
 
 	// Disable module fetching for this test so that 'go list' fails quickly
 	// without trying to find the latest version of a module.
-	defer os.Setenv("GOPROXY", os.Getenv("GOPROXY"))
-	os.Setenv("GOPROXY", "off")
+	t.Setenv("GOPROXY", "off")
 
 	// Create a GOPATH in a temporary directory. We don't use testdata
 	// because it's in GOROOT, which interferes with the module heuristic.
-	gopath, err := os.MkdirTemp("", "gobuild-notmodule")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(gopath)
+	gopath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(gopath, "src/example.com/p"), 0777); err != nil {
 		t.Fatal(err)
 	}
@@ -636,10 +638,8 @@ func TestImportPackageOutsideModule(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defer os.Setenv("GO111MODULE", os.Getenv("GO111MODULE"))
-	os.Setenv("GO111MODULE", "on")
-	defer os.Setenv("GOPATH", os.Getenv("GOPATH"))
-	os.Setenv("GOPATH", gopath)
+	t.Setenv("GO111MODULE", "on")
+	t.Setenv("GOPATH", gopath)
 	ctxt := Default
 	ctxt.GOPATH = gopath
 	ctxt.Dir = filepath.Join(gopath, "src/example.com/p")
@@ -688,26 +688,19 @@ func TestIssue23594(t *testing.T) {
 // Verifies golang.org/issue/34752.
 func TestMissingImportErrorRepetition(t *testing.T) {
 	testenv.MustHaveGoBuild(t) // need 'go list' internally
-	tmp, err := os.MkdirTemp("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmp)
+	tmp := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module m"), 0666); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Setenv("GO111MODULE", os.Getenv("GO111MODULE"))
-	os.Setenv("GO111MODULE", "on")
-	defer os.Setenv("GOPROXY", os.Getenv("GOPROXY"))
-	os.Setenv("GOPROXY", "off")
-	defer os.Setenv("GONOPROXY", os.Getenv("GONOPROXY"))
-	os.Setenv("GONOPROXY", "none")
+	t.Setenv("GO111MODULE", "on")
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GONOPROXY", "none")
 
 	ctxt := Default
 	ctxt.Dir = tmp
 
 	pkgPath := "example.com/hello"
-	_, err = ctxt.Import(pkgPath, tmp, FindOnly)
+	_, err := ctxt.Import(pkgPath, tmp, FindOnly)
 	if err == nil {
 		t.Fatal("unexpected success")
 	}

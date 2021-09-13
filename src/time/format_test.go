@@ -129,6 +129,31 @@ func TestFormat(t *testing.T) {
 	}
 }
 
+var goStringTests = []struct {
+	in   Time
+	want string
+}{
+	{Date(2009, February, 5, 5, 0, 57, 12345600, UTC),
+		"time.Date(2009, time.February, 5, 5, 0, 57, 12345600, time.UTC)"},
+	{Date(2009, February, 5, 5, 0, 57, 12345600, Local),
+		"time.Date(2009, time.February, 5, 5, 0, 57, 12345600, time.Local)"},
+	{Date(2009, February, 5, 5, 0, 57, 12345600, FixedZone("Europe/Berlin", 3*60*60)),
+		`time.Date(2009, time.February, 5, 5, 0, 57, 12345600, time.Location("Europe/Berlin"))`,
+	},
+	{Date(2009, February, 5, 5, 0, 57, 12345600, FixedZone("Non-ASCII character ⏰", 3*60*60)),
+		`time.Date(2009, time.February, 5, 5, 0, 57, 12345600, time.Location("Non-ASCII character \xe2\x8f\xb0"))`,
+	},
+}
+
+func TestGoString(t *testing.T) {
+	// The numeric time represents Thu Feb  4 21:00:57.012345600 PST 2009
+	for _, tt := range goStringTests {
+		if tt.in.GoString() != tt.want {
+			t.Errorf("GoString (%q): got %q want %q", tt.in, tt.in.GoString(), tt.want)
+		}
+	}
+}
+
 // issue 12440.
 func TestFormatSingleDigits(t *testing.T) {
 	time := Date(2001, 2, 3, 4, 5, 6, 700000000, UTC)
@@ -563,6 +588,10 @@ var parseErrorTests = []ParseErrorTest{
 	// invalid or mismatched day-of-year
 	{"Jan _2 002 2006", "Feb  4 034 2006", "day-of-year does not match day"},
 	{"Jan _2 002 2006", "Feb  4 004 2006", "day-of-year does not match month"},
+
+	// issue 45391.
+	{`"2006-01-02T15:04:05Z07:00"`, "0", `parsing time "0" as "\"2006-01-02T15:04:05Z07:00\"": cannot parse "0" as "\""`},
+	{RFC3339, "\"", `parsing time "\"" as "2006-01-02T15:04:05Z07:00": cannot parse "\"" as "2006"`},
 }
 
 func TestParseErrors(t *testing.T) {
@@ -779,6 +808,47 @@ func TestParseYday(t *testing.T) {
 			t.Errorf("unexpected error for %s: %v", d, err)
 		} else if tm.Year() != 2020 || tm.YearDay() != i {
 			t.Errorf("got year %d yearday %d, want %d %d", tm.Year(), tm.YearDay(), 2020, i)
+		}
+	}
+}
+
+// Issue 45391.
+func TestQuote(t *testing.T) {
+	tests := []struct {
+		s, want string
+	}{
+		{`"`, `"\""`},
+		{`abc"xyz"`, `"abc\"xyz\""`},
+		{"", `""`},
+		{"abc", `"abc"`},
+		{`☺`, `"\xe2\x98\xba"`},
+		{`☺ hello ☺ hello`, `"\xe2\x98\xba hello \xe2\x98\xba hello"`},
+		{"\x04", `"\x04"`},
+	}
+	for _, tt := range tests {
+		if q := Quote(tt.s); q != tt.want {
+			t.Errorf("Quote(%q) = got %q, want %q", tt.s, q, tt.want)
+		}
+	}
+
+}
+
+// Issue 48037
+func TestFormatFractionalSecondSeparators(t *testing.T) {
+	tests := []struct {
+		s, want string
+	}{
+		{`15:04:05.000`, `21:00:57.012`},
+		{`15:04:05.999`, `21:00:57.012`},
+		{`15:04:05,000`, `21:00:57,012`},
+		{`15:04:05,999`, `21:00:57,012`},
+	}
+
+	// The numeric time represents Thu Feb  4 21:00:57.012345600 PST 2009
+	time := Unix(0, 1233810057012345600)
+	for _, tt := range tests {
+		if q := time.Format(tt.s); q != tt.want {
+			t.Errorf("Format(%q) = got %q, want %q", tt.s, q, tt.want)
 		}
 	}
 }

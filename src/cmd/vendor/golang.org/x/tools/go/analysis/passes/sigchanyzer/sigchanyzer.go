@@ -49,17 +49,29 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				chanDecl = decl
 			}
 		case *ast.CallExpr:
+			// Only signal.Notify(make(chan os.Signal), os.Interrupt) is safe,
+			// conservatively treate others as not safe, see golang/go#45043
+			if isBuiltinMake(pass.TypesInfo, arg) {
+				return
+			}
 			chanDecl = arg
 		}
 		if chanDecl == nil || len(chanDecl.Args) != 1 {
 			return
 		}
-		chanDecl.Args = append(chanDecl.Args, &ast.BasicLit{
+
+		// Make a copy of the channel's declaration to avoid
+		// mutating the AST. See https://golang.org/issue/46129.
+		chanDeclCopy := &ast.CallExpr{}
+		*chanDeclCopy = *chanDecl
+		chanDeclCopy.Args = append([]ast.Expr(nil), chanDecl.Args...)
+		chanDeclCopy.Args = append(chanDeclCopy.Args, &ast.BasicLit{
 			Kind:  token.INT,
 			Value: "1",
 		})
+
 		var buf bytes.Buffer
-		if err := format.Node(&buf, token.NewFileSet(), chanDecl); err != nil {
+		if err := format.Node(&buf, token.NewFileSet(), chanDeclCopy); err != nil {
 			return
 		}
 		pass.Report(analysis.Diagnostic{
@@ -126,4 +138,17 @@ func findDecl(arg *ast.Ident) ast.Node {
 		}
 	}
 	return nil
+}
+
+func isBuiltinMake(info *types.Info, call *ast.CallExpr) bool {
+	typVal := info.Types[call.Fun]
+	if !typVal.IsBuiltin() {
+		return false
+	}
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return info.ObjectOf(fun).Name() == "make"
+	default:
+		return false
+	}
 }

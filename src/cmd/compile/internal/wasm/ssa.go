@@ -14,7 +14,7 @@ import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/wasm"
-	"cmd/internal/objabi"
+	"internal/buildcfg"
 )
 
 func Init(arch *ssagen.ArchInfo) {
@@ -24,7 +24,6 @@ func Init(arch *ssagen.ArchInfo) {
 
 	arch.ZeroRange = zeroRange
 	arch.Ginsnop = ginsnop
-	arch.Ginsnopdefer = ginsnop
 
 	arch.SSAMarkMoves = ssaMarkMoves
 	arch.SSAGenValue = ssaGenValue
@@ -126,7 +125,11 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 	case ssa.OpWasmLoweredStaticCall, ssa.OpWasmLoweredClosureCall, ssa.OpWasmLoweredInterCall:
 		s.PrepareCall(v)
 		if call, ok := v.Aux.(*ssa.AuxCall); ok && call.Fn == ir.Syms.Deferreturn {
-			// add a resume point before call to deferreturn so it can be called again via jmpdefer
+			// The runtime needs to inject jumps to
+			// deferreturn calls using the address in
+			// _func.deferreturn. Hence, the call to
+			// deferreturn must itself be a resumption
+			// point so it gets a target PC.
 			s.Prog(wasm.ARESUMEPOINT)
 		}
 		if v.Op == ssa.OpWasmLoweredClosureCall {
@@ -325,7 +328,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 
 	case ssa.OpWasmI64TruncSatF32S, ssa.OpWasmI64TruncSatF64S:
 		getValue64(s, v.Args[0])
-		if objabi.GOWASM.SatConv {
+		if buildcfg.GOWASM.SatConv {
 			s.Prog(v.Op.Asm())
 		} else {
 			if v.Op == ssa.OpWasmI64TruncSatF32S {
@@ -337,7 +340,7 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
 
 	case ssa.OpWasmI64TruncSatF32U, ssa.OpWasmI64TruncSatF64U:
 		getValue64(s, v.Args[0])
-		if objabi.GOWASM.SatConv {
+		if buildcfg.GOWASM.SatConv {
 			s.Prog(v.Op.Asm())
 		} else {
 			if v.Op == ssa.OpWasmI64TruncSatF32U {

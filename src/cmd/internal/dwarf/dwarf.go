@@ -9,13 +9,15 @@ package dwarf
 
 import (
 	"bytes"
-	"cmd/internal/objabi"
 	"errors"
 	"fmt"
+	"internal/buildcfg"
 	exec "internal/execabs"
 	"sort"
 	"strconv"
 	"strings"
+
+	"cmd/internal/objabi"
 )
 
 // InfoPrefix is the prefix for all the symbols containing DWARF info entries.
@@ -381,7 +383,7 @@ func expandPseudoForm(form uint8) uint8 {
 		return form
 	}
 	expandedForm := DW_FORM_udata
-	if objabi.GOOS == "darwin" || objabi.GOOS == "ios" {
+	if buildcfg.GOOS == "darwin" || buildcfg.GOOS == "ios" {
 		expandedForm = DW_FORM_data4
 	}
 	return uint8(expandedForm)
@@ -1264,7 +1266,7 @@ func PutAbstractFunc(ctxt Context, s *FnState) error {
 // its corresponding 'abstract' DIE (containing location-independent
 // attributes such as name, type, etc). Inlined subroutine DIEs can
 // have other inlined subroutine DIEs as children.
-func putInlinedFunc(ctxt Context, s *FnState, callersym Sym, callIdx int) error {
+func putInlinedFunc(ctxt Context, s *FnState, callIdx int) error {
 	ic := s.InlCalls.Calls[callIdx]
 	callee := ic.AbsFunSym
 
@@ -1275,7 +1277,7 @@ func putInlinedFunc(ctxt Context, s *FnState, callersym Sym, callIdx int) error 
 	Uleb128put(ctxt, s.Info, int64(abbrev))
 
 	if logDwarf {
-		ctxt.Logf("putInlinedFunc(caller=%v,callee=%v,abbrev=%d)\n", callersym, callee, abbrev)
+		ctxt.Logf("putInlinedFunc(callee=%v,abbrev=%d)\n", callee, abbrev)
 	}
 
 	// Abstract origin.
@@ -1310,8 +1312,7 @@ func putInlinedFunc(ctxt Context, s *FnState, callersym Sym, callIdx int) error 
 
 	// Children of this inline.
 	for _, sib := range inlChildren(callIdx, &s.InlCalls) {
-		absfn := s.InlCalls.Calls[sib].AbsFunSym
-		err := putInlinedFunc(ctxt, s, absfn, sib)
+		err := putInlinedFunc(ctxt, s, sib)
 		if err != nil {
 			return err
 		}
@@ -1352,8 +1353,7 @@ func PutConcreteFunc(ctxt Context, s *FnState) error {
 
 	// Inlined subroutines.
 	for _, sib := range inlChildren(-1, &s.InlCalls) {
-		absfn := s.InlCalls.Calls[sib].AbsFunSym
-		err := putInlinedFunc(ctxt, s, absfn, sib)
+		err := putInlinedFunc(ctxt, s, sib)
 		if err != nil {
 			return err
 		}
@@ -1400,8 +1400,7 @@ func PutDefaultFunc(ctxt Context, s *FnState) error {
 
 	// Inlined subroutines.
 	for _, sib := range inlChildren(-1, &s.InlCalls) {
-		absfn := s.InlCalls.Calls[sib].AbsFunSym
-		err := putInlinedFunc(ctxt, s, absfn, sib)
+		err := putInlinedFunc(ctxt, s, sib)
 		if err != nil {
 			return err
 		}
@@ -1618,8 +1617,10 @@ func (s byChildIndex) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 // current extld.
 // AIX ld doesn't support DWARF with -bnoobjreorder with version
 // prior to 7.2.2.
-func IsDWARFEnabledOnAIXLd(extld string) (bool, error) {
-	out, err := exec.Command(extld, "-Wl,-V").CombinedOutput()
+func IsDWARFEnabledOnAIXLd(extld []string) (bool, error) {
+	name, args := extld[0], extld[1:]
+	args = append(args, "-Wl,-V")
+	out, err := exec.Command(name, args...).CombinedOutput()
 	if err != nil {
 		// The normal output should display ld version and
 		// then fails because ".main" is not defined:

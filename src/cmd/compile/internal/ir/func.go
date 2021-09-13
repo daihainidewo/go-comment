@@ -9,6 +9,7 @@ import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/src"
+	"fmt"
 )
 
 // A Func corresponds to a single function in a Go program
@@ -39,14 +40,14 @@ import (
 // constructs a fresh node.
 //
 // A method value (t.M) is represented by ODOTMETH/ODOTINTER
-// when it is called directly and by OCALLPART otherwise.
+// when it is called directly and by OMETHVALUE otherwise.
 // These are like method expressions, except that for ODOTMETH/ODOTINTER,
 // the method name is stored in Sym instead of Right.
-// Each OCALLPART ends up being implemented as a new
+// Each OMETHVALUE ends up being implemented as a new
 // function, a bit like a closure, with its own ODCLFUNC.
-// The OCALLPART uses n.Func to record the linkage to
+// The OMETHVALUE uses n.Func to record the linkage to
 // the generated ODCLFUNC, but there is no
-// pointer from the Func back to the OCALLPART.
+// pointer from the Func back to the OMETHVALUE.
 type Func struct {
 	miniNode
 	Body Nodes
@@ -93,7 +94,7 @@ type Func struct {
 
 	FieldTrack map[*obj.LSym]struct{}
 	DebugInfo  interface{}
-	LSym       *obj.LSym
+	LSym       *obj.LSym // Linker object in this function's native ABI (Func.ABI)
 
 	Inl *Inline
 
@@ -109,7 +110,22 @@ type Func struct {
 
 	Pragma PragmaFlag // go:xxx function annotations
 
-	flags      bitset16
+	flags bitset16
+
+	// ABI is a function's "definition" ABI. This is the ABI that
+	// this function's generated code is expecting to be called by.
+	//
+	// For most functions, this will be obj.ABIInternal. It may be
+	// a different ABI for functions defined in assembly or ABI wrappers.
+	//
+	// This is included in the export data and tracked across packages.
+	ABI obj.ABI
+	// ABIRefs is the set of ABIs by which this function is referenced.
+	// For ABIs other than this function's definition ABI, the
+	// compiler generates ABI wrapper functions. This is only tracked
+	// within a package.
+	ABIRefs obj.ABISet
+
 	NumDefers  int32 // number of defer calls in the function
 	NumReturns int32 // number of explicit returns in the function
 
@@ -124,6 +140,9 @@ func NewFunc(pos src.XPos) *Func {
 	f.pos = pos
 	f.op = ODCLFUNC
 	f.Iota = -1
+	// Most functions are ABIInternal. The importer or symabis
+	// pass may override this.
+	f.ABI = obj.ABIInternal
 	return f
 }
 
@@ -142,9 +161,17 @@ func (f *Func) LinksymABI(abi obj.ABI) *obj.LSym { return f.Nname.LinksymABI(abi
 type Inline struct {
 	Cost int32 // heuristic cost of inlining this function
 
-	// Copies of Func.Dcl and Nbody for use during inlining.
+	// Copies of Func.Dcl and Func.Body for use during inlining. Copies are
+	// needed because the function's dcl/body may be changed by later compiler
+	// transformations. These fields are also populated when a function from
+	// another package is imported.
 	Dcl  []*Name
 	Body []Node
+
+	// CanDelayResults reports whether it's safe for the inliner to delay
+	// initializing the result parameters until immediately before the
+	// "return" statement.
+	CanDelayResults bool
 }
 
 // A Mark represents a scope boundary.
@@ -162,19 +189,21 @@ type ScopeID int32
 
 const (
 	funcDupok         = 1 << iota // duplicate definitions ok
-	funcWrapper                   // is method wrapper
+	funcWrapper                   // hide frame from users (elide in tracebacks, don't count as a frame for recover())
+	funcABIWrapper                // is an ABI wrapper (also set flagWrapper)
 	funcNeedctxt                  // function uses context register (has closure variables)
 	funcReflectMethod             // function calls reflect.Type.Method or MethodByName
 	// true if closure inside a function; false if a simple function or a
 	// closure in a global variable initialization
 	funcIsHiddenClosure
+	funcIsDeadcodeClosure        // true if closure is deadcode
 	funcHasDefer                 // contains a defer statement
 	funcNilCheckDisabled         // disable nil checks when compiling this function
 	funcInlinabilityChecked      // inliner has already determined whether the function is inlinable
 	funcExportInline             // include inline body in export data
 	funcInstrumentBody           // add race/msan instrumentation during SSA construction
 	funcOpenCodedDeferDisallowed // can't do open-coded defers
-	funcClosureCalled            // closure is only immediately called
+	funcClosureCalled            // closure is only immediately called; used by escape analysis
 )
 
 type SymAndPos struct {
@@ -184,9 +213,11 @@ type SymAndPos struct {
 
 func (f *Func) Dupok() bool                    { return f.flags&funcDupok != 0 }
 func (f *Func) Wrapper() bool                  { return f.flags&funcWrapper != 0 }
+func (f *Func) ABIWrapper() bool               { return f.flags&funcABIWrapper != 0 }
 func (f *Func) Needctxt() bool                 { return f.flags&funcNeedctxt != 0 }
 func (f *Func) ReflectMethod() bool            { return f.flags&funcReflectMethod != 0 }
 func (f *Func) IsHiddenClosure() bool          { return f.flags&funcIsHiddenClosure != 0 }
+func (f *Func) IsDeadcodeClosure() bool        { return f.flags&funcIsDeadcodeClosure != 0 }
 func (f *Func) HasDefer() bool                 { return f.flags&funcHasDefer != 0 }
 func (f *Func) NilCheckDisabled() bool         { return f.flags&funcNilCheckDisabled != 0 }
 func (f *Func) InlinabilityChecked() bool      { return f.flags&funcInlinabilityChecked != 0 }
@@ -197,9 +228,11 @@ func (f *Func) ClosureCalled() bool            { return f.flags&funcClosureCalle
 
 func (f *Func) SetDupok(b bool)                    { f.flags.set(funcDupok, b) }
 func (f *Func) SetWrapper(b bool)                  { f.flags.set(funcWrapper, b) }
+func (f *Func) SetABIWrapper(b bool)               { f.flags.set(funcABIWrapper, b) }
 func (f *Func) SetNeedctxt(b bool)                 { f.flags.set(funcNeedctxt, b) }
 func (f *Func) SetReflectMethod(b bool)            { f.flags.set(funcReflectMethod, b) }
 func (f *Func) SetIsHiddenClosure(b bool)          { f.flags.set(funcIsHiddenClosure, b) }
+func (f *Func) SetIsDeadcodeClosure(b bool)        { f.flags.set(funcIsDeadcodeClosure, b) }
 func (f *Func) SetHasDefer(b bool)                 { f.flags.set(funcHasDefer, b) }
 func (f *Func) SetNilCheckDisabled(b bool)         { f.flags.set(funcNilCheckDisabled, b) }
 func (f *Func) SetInlinabilityChecked(b bool)      { f.flags.set(funcInlinabilityChecked, b) }
@@ -217,7 +250,7 @@ func (f *Func) SetWBPos(pos src.XPos) {
 	}
 }
 
-// funcname returns the name (without the package) of the function n.
+// FuncName returns the name (without the package) of the function n.
 func FuncName(f *Func) string {
 	if f == nil || f.Nname == nil {
 		return "<nil>"
@@ -225,7 +258,7 @@ func FuncName(f *Func) string {
 	return f.Sym().Name
 }
 
-// pkgFuncName returns the name of the function referenced by n, with package prepended.
+// PkgFuncName returns the name of the function referenced by n, with package prepended.
 // This differs from the compiler's internal convention where local functions lack a package
 // because the ultimate consumer of this is a human looking at an IDE; package is only empty
 // if the compilation package is actually the empty string.
@@ -248,6 +281,17 @@ func PkgFuncName(f *Func) string {
 
 var CurFunc *Func
 
+// WithFunc invokes do with CurFunc and base.Pos set to curfn and
+// curfn.Pos(), respectively, and then restores their previous values
+// before returning.
+func WithFunc(curfn *Func, do func()) {
+	oldfn, oldpos := CurFunc, base.Pos
+	defer func() { CurFunc, base.Pos = oldfn, oldpos }()
+
+	CurFunc, base.Pos = curfn, curfn.Pos()
+	do()
+}
+
 func FuncSymName(s *types.Sym) string {
 	return s.Name + "·f"
 }
@@ -255,7 +299,7 @@ func FuncSymName(s *types.Sym) string {
 // MarkFunc marks a node as a function.
 func MarkFunc(n *Name) {
 	if n.Op() != ONAME || n.Class != Pxxx {
-		base.Fatalf("expected ONAME/Pxxx node, got %v", n)
+		base.FatalfAt(n.Pos(), "expected ONAME/Pxxx node, got %v (%v/%v)", n, n.Op(), n.Class)
 	}
 
 	n.Class = PFUNC
@@ -272,8 +316,8 @@ func ClosureDebugRuntimeCheck(clo *ClosureExpr) {
 			base.WarnfAt(clo.Pos(), "stack closure, captured vars = %v", clo.Func.ClosureVars)
 		}
 	}
-	if base.Flag.CompilingRuntime && clo.Esc() == EscHeap {
-		base.ErrorfAt(clo.Pos(), "heap-allocated closure, not allowed in runtime")
+	if base.Flag.CompilingRuntime && clo.Esc() == EscHeap && !clo.IsGoWrap {
+		base.ErrorfAt(clo.Pos(), "heap-allocated closure %s, not allowed in runtime", FuncName(clo.Func))
 	}
 }
 
@@ -281,4 +325,110 @@ func ClosureDebugRuntimeCheck(clo *ClosureExpr) {
 // empty list of captured vars.
 func IsTrivialClosure(clo *ClosureExpr) bool {
 	return len(clo.Func.ClosureVars) == 0
+}
+
+// globClosgen is like Func.Closgen, but for the global scope.
+var globClosgen int32
+
+// closureName generates a new unique name for a closure within outerfn.
+func closureName(outerfn *Func) *types.Sym {
+	pkg := types.LocalPkg
+	outer := "glob."
+	prefix := "func"
+	gen := &globClosgen
+
+	if outerfn != nil {
+		if outerfn.OClosure != nil {
+			prefix = ""
+		}
+
+		pkg = outerfn.Sym().Pkg
+		outer = FuncName(outerfn)
+
+		// There may be multiple functions named "_". In those
+		// cases, we can't use their individual Closgens as it
+		// would lead to name clashes.
+		if !IsBlank(outerfn.Nname) {
+			gen = &outerfn.Closgen
+		}
+	}
+
+	*gen++
+	return pkg.Lookup(fmt.Sprintf("%s.%s%d", outer, prefix, *gen))
+}
+
+// NewClosureFunc creates a new Func to represent a function literal.
+// If hidden is true, then the closure is marked hidden (i.e., as a
+// function literal contained within another function, rather than a
+// package-scope variable initialization expression).
+func NewClosureFunc(pos src.XPos, hidden bool) *Func {
+	fn := NewFunc(pos)
+	fn.SetIsHiddenClosure(hidden)
+
+	fn.Nname = NewNameAt(pos, BlankNode.Sym())
+	fn.Nname.Func = fn
+	fn.Nname.Defn = fn
+
+	fn.OClosure = NewClosureExpr(pos, fn)
+
+	return fn
+}
+
+// NameClosure generates a unique for the given function literal,
+// which must have appeared within outerfn.
+func NameClosure(clo *ClosureExpr, outerfn *Func) {
+	fn := clo.Func
+	if fn.IsHiddenClosure() != (outerfn != nil) {
+		base.FatalfAt(clo.Pos(), "closure naming inconsistency: hidden %v, but outer %v", fn.IsHiddenClosure(), outerfn)
+	}
+
+	name := fn.Nname
+	if !IsBlank(name) {
+		base.FatalfAt(clo.Pos(), "closure already named: %v", name)
+	}
+
+	name.SetSym(closureName(outerfn))
+	MarkFunc(name)
+}
+
+// UseClosure checks that the ginen function literal has been setup
+// correctly, and then returns it as an expression.
+// It must be called after clo.Func.ClosureVars has been set.
+func UseClosure(clo *ClosureExpr, pkg *Package) Node {
+	fn := clo.Func
+	name := fn.Nname
+
+	if IsBlank(name) {
+		base.FatalfAt(fn.Pos(), "unnamed closure func: %v", fn)
+	}
+	// Caution: clo.Typecheck() is still 0 when UseClosure is called by
+	// tcClosure.
+	if fn.Typecheck() != 1 || name.Typecheck() != 1 {
+		base.FatalfAt(fn.Pos(), "missed typecheck: %v", fn)
+	}
+	if clo.Type() == nil || name.Type() == nil {
+		base.FatalfAt(fn.Pos(), "missing types: %v", fn)
+	}
+	if !types.Identical(clo.Type(), name.Type()) {
+		base.FatalfAt(fn.Pos(), "mismatched types: %v", fn)
+	}
+
+	if base.Flag.W > 1 {
+		s := fmt.Sprintf("new closure func: %v", fn)
+		Dump(s, fn)
+	}
+
+	if pkg != nil {
+		pkg.Decls = append(pkg.Decls, fn)
+	}
+
+	if false && IsTrivialClosure(clo) {
+		// TODO(mdempsky): Investigate if we can/should optimize this
+		// case. walkClosure already handles it later, but it could be
+		// useful to recognize earlier (e.g., it might allow multiple
+		// inlined calls to a function to share a common trivial closure
+		// func, rather than cloning it for each inlined call).
+	}
+
+	return clo
 }

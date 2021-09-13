@@ -142,6 +142,11 @@ TEXT runtime·rt0_go(SB),NOSPLIT|NOFRAME|TOPFRAME,$0
 
 	BL	runtime·emptyfunc(SB)	// fault if stack check is wrong
 
+#ifdef GOOS_openbsd
+	// Save g to TLS so that it is available from signal trampoline.
+	BL	runtime·save_g(SB)
+#endif
+
 	BL	runtime·_initcgo(SB)	// will clobber R0-R3
 
 	// update stackguard after _cgo_init
@@ -163,14 +168,13 @@ TEXT runtime·rt0_go(SB),NOSPLIT|NOFRAME|TOPFRAME,$0
 	BL	runtime·schedinit(SB)
 
 	// create a new goroutine to start program
+	SUB	$8, R13
 	MOVW	$runtime·mainPC(SB), R0
-	MOVW.W	R0, -4(R13)
-	MOVW	$8, R0
-	MOVW.W	R0, -4(R13)
+	MOVW	R0, 4(R13)	// arg 1: fn
 	MOVW	$0, R0
-	MOVW.W	R0, -4(R13)	// push $0 as guard
+	MOVW	R0, 0(R13)	// dummy LR
 	BL	runtime·newproc(SB)
-	MOVW	$12(R13), R13	// pop args and LR
+	ADD	$8, R13	// pop args and LR
 
 	// start this M
 	BL	runtime·mstart(SB)
@@ -252,9 +256,6 @@ TEXT runtime·mcall(SB),NOSPLIT|NOFRAME,$0-4
 	CMP	g, R1
 	B.NE	2(PC)
 	B	runtime·badmcall(SB)
-	MOVB	runtime·iscgo(SB), R11
-	CMP	$0, R11
-	BL.NE	runtime·save_g(SB)
 	MOVW	fn+0(FP), R0
 	MOVW	(g_sched+gobuf_sp)(g), R13
 	SUB	$8, R13
@@ -505,20 +506,6 @@ CALLFN(·call268435456, 268435456)
 CALLFN(·call536870912, 536870912)
 CALLFN(·call1073741824, 1073741824)
 
-// void jmpdefer(fn, sp);
-// called from deferreturn.
-// 1. grab stored LR for caller
-// 2. sub 4 bytes to get back to BL deferreturn
-// 3. B to fn
-TEXT runtime·jmpdefer(SB),NOSPLIT,$0-8
-	MOVW	0(R13), LR
-	MOVW	$-4(LR), LR	// BL deferreturn
-	MOVW	fv+0(FP), R7
-	MOVW	argp+4(FP), R13
-	MOVW	$-4(R13), R13	// SP is 4 below argp, due to saved LR
-	MOVW	0(R7), R1
-	B	(R1)
-
 // Save state of caller into g->sched,
 // but using fake PC from systemstack_switch.
 // Must only be called from functions with no locals ($0)
@@ -569,7 +556,8 @@ TEXT ·asmcgocall(SB),NOSPLIT,$0-12
 
 	// Figure out if we need to switch to m->g0 stack.
 	// We get called to create new OS threads too, and those
-	// come in on the m->g0 stack already.
+	// come in on the m->g0 stack already. Or we might already
+	// be on the m->gsignal stack.
 	MOVW	g_m(g), R8
 	MOVW	m_gsignal(R8), R3
 	CMP	R3, g
@@ -636,9 +624,13 @@ TEXT	·cgocallback(SB),NOSPLIT,$12-12
 	NO_LOCAL_POINTERS
 
 	// Load m and g from thread-local storage.
+#ifdef GOOS_openbsd
+	BL	runtime·load_g(SB)
+#else
 	MOVB	runtime·iscgo(SB), R0
 	CMP	$0, R0
 	BL.NE	runtime·load_g(SB)
+#endif
 
 	// If g is nil, Go did not create the current thread.
 	// Call needm to obtain one for temporary use.
@@ -748,6 +740,9 @@ TEXT setg<>(SB),NOSPLIT|NOFRAME,$0-0
 #ifdef GOOS_windows
 	B	runtime·save_g(SB)
 #else
+#ifdef GOOS_openbsd
+	B	runtime·save_g(SB)
+#else
 	MOVB	runtime·iscgo(SB), R0
 	CMP	$0, R0
 	B.EQ	2(PC)
@@ -755,6 +750,7 @@ TEXT setg<>(SB),NOSPLIT|NOFRAME,$0-0
 
 	MOVW	g, R0
 	RET
+#endif
 #endif
 
 TEXT runtime·emptyfunc(SB),0,$0-0
@@ -992,6 +988,10 @@ TEXT runtime·panicSlice3CU(SB),NOSPLIT,$0-8
 	MOVW	R0, x+0(FP)
 	MOVW	R1, y+4(FP)
 	JMP	runtime·goPanicSlice3CU(SB)
+TEXT runtime·panicSliceConvert(SB),NOSPLIT,$0-8
+	MOVW	R2, x+0(FP)
+	MOVW	R3, y+4(FP)
+	JMP	runtime·goPanicSliceConvert(SB)
 
 // Extended versions for 64-bit indexes.
 TEXT runtime·panicExtendIndex(SB),NOSPLIT,$0-12

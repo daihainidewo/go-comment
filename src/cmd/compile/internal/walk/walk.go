@@ -113,8 +113,7 @@ func vmkcall(fn ir.Node, t *types.Type, init *ir.Nodes, va []ir.Node) *ir.CallEx
 		base.Fatalf("vmkcall %v needs %v args got %v", fn, n, len(va))
 	}
 
-	call := ir.NewCallExpr(base.Pos, ir.OCALL, fn, va)
-	typecheck.Call(call)
+	call := typecheck.Call(base.Pos, fn, va, false).(*ir.CallExpr)
 	call.SetType(t)
 	return walkExpr(call, init).(*ir.CallExpr)
 }
@@ -157,12 +156,16 @@ func chanfn(name string, n int, t *types.Type) ir.Node {
 	return fn
 }
 
-func mapfn(name string, t *types.Type) ir.Node {
+func mapfn(name string, t *types.Type, isfat bool) ir.Node {
 	if !t.IsMap() {
 		base.Fatalf("mapfn %v", t)
 	}
 	fn := typecheck.LookupRuntime(name)
-	fn = typecheck.SubstArgTypes(fn, t.Key(), t.Elem(), t.Key(), t.Elem())
+	if mapfast(t) == mapslow || isfat {
+		fn = typecheck.SubstArgTypes(fn, t.Key(), t.Elem(), t.Key(), t.Elem())
+	} else {
+		fn = typecheck.SubstArgTypes(fn, t.Key(), t.Elem(), t.Elem())
+	}
 	return fn
 }
 
@@ -171,7 +174,11 @@ func mapfndel(name string, t *types.Type) ir.Node {
 		base.Fatalf("mapfn %v", t)
 	}
 	fn := typecheck.LookupRuntime(name)
-	fn = typecheck.SubstArgTypes(fn, t.Key(), t.Elem(), t.Key())
+	if mapfast(t) == mapslow {
+		fn = typecheck.SubstArgTypes(fn, t.Key(), t.Elem(), t.Key())
+	} else {
+		fn = typecheck.SubstArgTypes(fn, t.Key(), t.Elem())
+	}
 	return fn
 }
 
@@ -198,7 +205,7 @@ var mapdelete = mkmapnames("mapdelete", "")
 
 func mapfast(t *types.Type) int {
 	// Check runtime/map.go:maxElemSize before changing.
-	if t.Elem().Width > 128 {
+	if t.Elem().Size() > 128 {
 		return mapslow
 	}
 	switch reflectdata.AlgType(t.Key()) {
@@ -300,11 +307,12 @@ func mayCall(n ir.Node) bool {
 		default:
 			base.FatalfAt(n.Pos(), "mayCall %+v", n)
 
-		case ir.OCALLFUNC, ir.OCALLMETH, ir.OCALLINTER:
+		case ir.OCALLFUNC, ir.OCALLINTER,
+			ir.OUNSAFEADD, ir.OUNSAFESLICE:
 			return true
 
 		case ir.OINDEX, ir.OSLICE, ir.OSLICEARR, ir.OSLICE3, ir.OSLICE3ARR, ir.OSLICESTR,
-			ir.ODEREF, ir.ODOTPTR, ir.ODOTTYPE, ir.ODIV, ir.OMOD:
+			ir.ODEREF, ir.ODOTPTR, ir.ODOTTYPE, ir.ODYNAMICDOTTYPE, ir.ODIV, ir.OMOD, ir.OSLICE2ARRPTR:
 			// These ops might panic, make sure they are done
 			// before we start marshaling args for a call. See issue 16760.
 			return true
@@ -334,7 +342,7 @@ func mayCall(n ir.Node) bool {
 			ir.OCAP, ir.OIMAG, ir.OLEN, ir.OREAL,
 			ir.OCONVNOP, ir.ODOT,
 			ir.OCFUNC, ir.OIDATA, ir.OITAB, ir.OSPTR,
-			ir.OBYTES2STRTMP, ir.OGETG, ir.OSLICEHEADER:
+			ir.OBYTES2STRTMP, ir.OGETG, ir.OGETCALLERPC, ir.OGETCALLERSP, ir.OSLICEHEADER:
 			// ok: operations that don't require function calls.
 			// Expand as needed.
 		}

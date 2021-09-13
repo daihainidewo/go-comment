@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,7 +24,7 @@ import (
 	"cmd/go/internal/imports"
 	"cmd/go/internal/load"
 	"cmd/go/internal/modload"
-	"cmd/go/internal/str"
+	"cmd/internal/str"
 
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
@@ -73,7 +74,7 @@ func runVendor(ctx context.Context, cmd *base.Command, args []string) {
 	}
 	_, pkgs := modload.LoadPackages(ctx, loadOpts, "all")
 
-	vdir := filepath.Join(modload.ModRoot(), "vendor")
+	vdir := filepath.Join(modload.VendorDir())
 	if err := os.RemoveAll(vdir); err != nil {
 		base.Fatalf("go mod vendor: %v", err)
 	}
@@ -81,22 +82,30 @@ func runVendor(ctx context.Context, cmd *base.Command, args []string) {
 	modpkgs := make(map[module.Version][]string)
 	for _, pkg := range pkgs {
 		m := modload.PackageModule(pkg)
-		if m.Path == "" || m == modload.Target {
+		if m.Path == "" || m.Version == "" && modload.MainModules.Contains(m.Path) {
 			continue
 		}
 		modpkgs[m] = append(modpkgs[m], pkg)
 	}
 
 	includeAllReplacements := false
+	includeGoVersions := false
 	isExplicit := map[module.Version]bool{}
-	if gv := modload.ModFile().Go; gv != nil && semver.Compare("v"+gv.Version, "v1.14") >= 0 {
-		// If the Go version is at least 1.14, annotate all explicit 'require' and
-		// 'replace' targets found in the go.mod file so that we can perform a
-		// stronger consistency check when -mod=vendor is set.
-		for _, r := range modload.ModFile().Require {
-			isExplicit[r.Mod] = true
+	if gv := modload.ModFile().Go; gv != nil {
+		if semver.Compare("v"+gv.Version, "v1.14") >= 0 {
+			// If the Go version is at least 1.14, annotate all explicit 'require' and
+			// 'replace' targets found in the go.mod file so that we can perform a
+			// stronger consistency check when -mod=vendor is set.
+			for _, r := range modload.ModFile().Require {
+				isExplicit[r.Mod] = true
+			}
+			includeAllReplacements = true
 		}
-		includeAllReplacements = true
+		if semver.Compare("v"+gv.Version, "v1.17") >= 0 {
+			// If the Go version is at least 1.17, annotate all modules with their
+			// 'go' version directives.
+			includeGoVersions = true
+		}
 	}
 
 	var vendorMods []module.Version
@@ -110,26 +119,36 @@ func runVendor(ctx context.Context, cmd *base.Command, args []string) {
 	}
 	module.Sort(vendorMods)
 
-	var buf bytes.Buffer
+	var (
+		buf bytes.Buffer
+		w   io.Writer = &buf
+	)
+	if cfg.BuildV {
+		w = io.MultiWriter(&buf, os.Stderr)
+	}
+
 	for _, m := range vendorMods {
-		line := moduleLine(m, modload.Replacement(m))
-		buf.WriteString(line)
-		if cfg.BuildV {
-			os.Stderr.WriteString(line)
+		replacement, _ := modload.Replacement(m)
+		line := moduleLine(m, replacement)
+		io.WriteString(w, line)
+
+		goVersion := ""
+		if includeGoVersions {
+			goVersion = modload.ModuleInfo(ctx, m.Path).GoVersion
 		}
-		if isExplicit[m] {
-			buf.WriteString("## explicit\n")
-			if cfg.BuildV {
-				os.Stderr.WriteString("## explicit\n")
-			}
+		switch {
+		case isExplicit[m] && goVersion != "":
+			fmt.Fprintf(w, "## explicit; go %s\n", goVersion)
+		case isExplicit[m]:
+			io.WriteString(w, "## explicit\n")
+		case goVersion != "":
+			fmt.Fprintf(w, "## go %s\n", goVersion)
 		}
+
 		pkgs := modpkgs[m]
 		sort.Strings(pkgs)
 		for _, pkg := range pkgs {
-			fmt.Fprintf(&buf, "%s\n", pkg)
-			if cfg.BuildV {
-				fmt.Fprintf(os.Stderr, "%s\n", pkg)
-			}
+			fmt.Fprintf(w, "%s\n", pkg)
 			vendorPkg(vdir, pkg)
 		}
 	}
@@ -224,7 +243,7 @@ func vendorPkg(vdir, pkg string) {
 	if err != nil {
 		if errors.As(err, &noGoError) {
 			return // No source files in this package are built. Skip embeds in ignored files.
-		} else if !errors.As(err, &multiplePackageError) { // multiplePackgeErrors are okay, but others are not.
+		} else if !errors.As(err, &multiplePackageError) { // multiplePackageErrors are OK, but others are not.
 			base.Fatalf("internal error: failed to find embedded files of %s: %v\n", pkg, err)
 		}
 	}
@@ -282,7 +301,7 @@ func copyMetadata(modPath, pkg, dst, src string, copiedFiles map[string]bool) {
 		if modPath == pkg {
 			break
 		}
-		pkg = filepath.Dir(pkg)
+		pkg = path.Dir(pkg)
 		dst = filepath.Dir(dst)
 		src = filepath.Dir(src)
 	}
@@ -322,6 +341,15 @@ func matchMetadata(dir string, info fs.DirEntry) bool {
 func matchPotentialSourceFile(dir string, info fs.DirEntry) bool {
 	if strings.HasSuffix(info.Name(), "_test.go") {
 		return false
+	}
+	if info.Name() == "go.mod" || info.Name() == "go.sum" {
+		if gv := modload.ModFile().Go; gv != nil && semver.Compare("v"+gv.Version, "v1.17") >= 0 {
+			// As of Go 1.17, we strip go.mod and go.sum files from dependency modules.
+			// Otherwise, 'go' commands invoked within the vendor subtree may misidentify
+			// an arbitrary directory within the vendor tree as a module root.
+			// (See https://golang.org/issue/42970.)
+			return false
+		}
 	}
 	if strings.HasSuffix(info.Name(), ".go") {
 		f, err := fsys.Open(filepath.Join(dir, info.Name()))

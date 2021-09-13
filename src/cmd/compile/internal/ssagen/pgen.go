@@ -5,6 +5,7 @@
 package ssagen
 
 import (
+	"internal/buildcfg"
 	"internal/race"
 	"math/rand"
 	"sort"
@@ -32,11 +33,11 @@ import (
 // the top of the stack and increasing in size.
 // Non-autos sort on offset.
 func cmpstackvarlt(a, b *ir.Name) bool {
-	if (a.Class == ir.PAUTO) != (b.Class == ir.PAUTO) {
-		return b.Class == ir.PAUTO
+	if needAlloc(a) != needAlloc(b) {
+		return needAlloc(b)
 	}
 
-	if a.Class != ir.PAUTO {
+	if !needAlloc(a) {
 		return a.FrameOffset() < b.FrameOffset()
 	}
 
@@ -56,8 +57,8 @@ func cmpstackvarlt(a, b *ir.Name) bool {
 		return ap
 	}
 
-	if a.Type().Width != b.Type().Width {
-		return a.Type().Width > b.Type().Width
+	if a.Type().Size() != b.Type().Size() {
+		return a.Type().Size() > b.Type().Size()
 	}
 
 	return a.Sym().Name < b.Sym().Name
@@ -70,6 +71,28 @@ func (s byStackVar) Len() int           { return len(s) }
 func (s byStackVar) Less(i, j int) bool { return cmpstackvarlt(s[i], s[j]) }
 func (s byStackVar) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
+// needAlloc reports whether n is within the current frame, for which we need to
+// allocate space. In particular, it excludes arguments and results, which are in
+// the callers frame.
+func needAlloc(n *ir.Name) bool {
+	if n.Op() != ir.ONAME {
+		base.FatalfAt(n.Pos(), "%v has unexpected Op %v", n, n.Op())
+	}
+
+	switch n.Class {
+	case ir.PAUTO:
+		return true
+	case ir.PPARAM:
+		return false
+	case ir.PPARAMOUT:
+		return n.IsOutputParamInRegisters()
+
+	default:
+		base.FatalfAt(n.Pos(), "%v has unexpected Class %v", n, n.Class)
+		return false
+	}
+}
+
 func (s *ssafn) AllocFrame(f *ssa.Func) {
 	s.stksize = 0
 	s.stkptrsize = 0
@@ -77,7 +100,7 @@ func (s *ssafn) AllocFrame(f *ssa.Func) {
 
 	// Mark the PAUTO's unused.
 	for _, ln := range fn.Dcl {
-		if ln.Class == ir.PAUTO {
+		if needAlloc(ln) {
 			ln.SetUsed(false)
 		}
 	}
@@ -92,21 +115,30 @@ func (s *ssafn) AllocFrame(f *ssa.Func) {
 		for _, v := range b.Values {
 			if n, ok := v.Aux.(*ir.Name); ok {
 				switch n.Class {
-				case ir.PPARAM, ir.PPARAMOUT, ir.PAUTO:
+				case ir.PPARAMOUT:
+					if n.IsOutputParamInRegisters() && v.Op == ssa.OpVarDef {
+						// ignore VarDef, look for "real" uses.
+						// TODO: maybe do this for PAUTO as well?
+						continue
+					}
+					fallthrough
+				case ir.PPARAM, ir.PAUTO:
 					n.SetUsed(true)
 				}
 			}
 		}
 	}
 
-	sort.Sort(byStackVar(fn.Dcl))
+	// Use sort.Stable instead of sort.Sort so stack layout (and thus
+	// compiler output) is less sensitive to frontend changes that
+	// introduce or remove unused variables.
+	sort.Stable(byStackVar(fn.Dcl))
 
 	// Reassign stack offsets of the locals that are used.
 	lastHasPtr := false
 	for i, n := range fn.Dcl {
 		if n.Op() != ir.ONAME || n.Class != ir.PAUTO && !(n.Class == ir.PPARAMOUT && n.IsOutputParamInRegisters()) {
 			// i.e., stack assign if AUTO, or if PARAMOUT in registers (which has no predefined spill locations)
-			// TODO figure out when we don't need to spill output params.
 			continue
 		}
 		if !n.Used() {
@@ -115,7 +147,7 @@ func (s *ssafn) AllocFrame(f *ssa.Func) {
 		}
 
 		types.CalcSize(n.Type())
-		w := n.Type().Width
+		w := n.Type().Size()
 		if w >= types.MaxWidth || w < 0 {
 			base.Fatalf("bad width")
 		}
@@ -127,7 +159,7 @@ func (s *ssafn) AllocFrame(f *ssa.Func) {
 			w = 1
 		}
 		s.stksize += w
-		s.stksize = types.Rnd(s.stksize, int64(n.Type().Align))
+		s.stksize = types.Rnd(s.stksize, n.Type().Alignment())
 		if n.Type().HasPointers() {
 			s.stkptrsize = s.stksize
 			lastHasPtr = true
@@ -202,7 +234,7 @@ func StackOffset(slot ssa.LocalSlot) int32 {
 		if base.Ctxt.FixedFrameSize() == 0 {
 			off -= int64(types.PtrSize)
 		}
-		if objabi.FramePointerEnabled {
+		if buildcfg.FramePointerEnabled {
 			off -= int64(types.PtrSize)
 		}
 	}
@@ -215,7 +247,7 @@ func fieldtrack(fnsym *obj.LSym, tracked map[*obj.LSym]struct{}) {
 	if fnsym == nil {
 		return
 	}
-	if !objabi.Experiment.FieldTrack || len(tracked) == 0 {
+	if !buildcfg.Experiment.FieldTrack || len(tracked) == 0 {
 		return
 	}
 

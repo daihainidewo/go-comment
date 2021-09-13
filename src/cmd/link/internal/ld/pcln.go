@@ -11,6 +11,7 @@ import (
 	"cmd/link/internal/loader"
 	"cmd/link/internal/sym"
 	"fmt"
+	"internal/buildcfg"
 	"os"
 	"path/filepath"
 )
@@ -128,11 +129,10 @@ func computeDeferReturn(ctxt *Link, deferReturnSym, s loader.Sym) uint32 {
 	for ri := 0; ri < relocs.Count(); ri++ {
 		r := relocs.At(ri)
 		if target.IsWasm() && r.Type() == objabi.R_ADDR {
-			// Wasm does not have a live variable set at the deferreturn
-			// call itself. Instead it has one identified by the
-			// resumption point immediately preceding the deferreturn.
-			// The wasm code has a R_ADDR relocation which is used to
-			// set the resumption point to PC_B.
+			// wasm/ssa.go generates an ARESUMEPOINT just
+			// before the deferreturn call. The "PC" of
+			// the deferreturn call is stored in the
+			// R_ADDR relocation on the ARESUMEPOINT.
 			lastWasmAddr = uint32(r.Add())
 		}
 		if r.Type().IsDirectCall() && (r.Sym() == deferReturnSym || ldr.IsDeferReturnTramp(r.Sym())) {
@@ -589,6 +589,7 @@ func (state *pclntab) generateFunctab(ctxt *Link, funcs []loader.Sym, inlSyms ma
 	if !useSymValue {
 		// Generate relocations for funcdata when externally linking.
 		state.writeFuncData(ctxt, sb, funcs, inlSyms, startLocations, setAddr, setUintNOP)
+		sb.SortRelocs()
 	}
 }
 
@@ -879,7 +880,7 @@ func (ctxt *Link) pclntab(container loader.Bitmap) *pclntab {
 }
 
 func gorootFinal() string {
-	root := objabi.GOROOT
+	root := buildcfg.GOROOT
 	if final := os.Getenv("GOROOT_FINAL"); final != "" {
 		root = final
 	}

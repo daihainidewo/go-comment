@@ -27,7 +27,8 @@ const (
 	// This data contains no pointers.
 	NOPTR = 16
 
-	// This is a wrapper function and should not count as disabling 'recover'.
+	// This is a wrapper function and should not count as
+	// disabling 'recover' or appear in tracebacks by default.
 	WRAPPER = 32
 
 	// This function uses its incoming context register.
@@ -48,8 +49,8 @@ const (
 	// Function can call reflect.Type.Method or reflect.Type.MethodByName.
 	REFLECTMETHOD = 1024
 
-	// Function is the top of the call stack. Call stack unwinders should stop
-	// at this function.
+	// Function is the outermost frame of the call stack. Call stack unwinders
+	// should stop at this function.
 	TOPFRAME = 2048
 
 	// Function is an ABI wrapper.

@@ -42,13 +42,10 @@ func TestIntendedInlining(t *testing.T) {
 			"bucketMask",
 			"bucketShift",
 			"chanbuf",
-			"deferArgs",
-			"deferclass",
 			"evacuated",
 			"fastlog2",
 			"fastrand",
 			"float64bits",
-			"funcPC",
 			"getArgInfoFast",
 			"getm",
 			"getMCache",
@@ -65,7 +62,6 @@ func TestIntendedInlining(t *testing.T) {
 			"subtract1",
 			"subtractb",
 			"tophash",
-			"totaldefersize",
 			"(*bmap).keys",
 			"(*bmap).overflow",
 			"(*waitq).enqueue",
@@ -126,6 +122,7 @@ func TestIntendedInlining(t *testing.T) {
 			"FullRune",
 			"FullRuneInString",
 			"RuneLen",
+			"AppendRune",
 			"ValidRune",
 		},
 		"reflect": {
@@ -175,8 +172,8 @@ func TestIntendedInlining(t *testing.T) {
 		want["runtime/internal/sys"] = append(want["runtime/internal/sys"], "Bswap32")
 	}
 	if bits.UintSize == 64 {
-		// rotl_31 is only defined on 64-bit architectures
-		want["runtime"] = append(want["runtime"], "rotl_31")
+		// mix is only defined on 64-bit architectures
+		want["runtime"] = append(want["runtime"], "mix")
 	}
 
 	switch runtime.GOARCH {

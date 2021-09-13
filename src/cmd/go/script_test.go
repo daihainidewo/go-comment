@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"go/build"
 	"internal/testenv"
@@ -30,11 +31,13 @@ import (
 	"cmd/go/internal/imports"
 	"cmd/go/internal/par"
 	"cmd/go/internal/robustio"
-	"cmd/go/internal/txtar"
 	"cmd/go/internal/work"
-	"cmd/internal/objabi"
 	"cmd/internal/sys"
+
+	"golang.org/x/tools/txtar"
 )
+
+var testSum = flag.String("testsum", "", `may be tidy, listm, or listall. If set, TestScript generates a go.sum file at the beginning of each test and updates test files if they pass.`)
 
 // TestScript runs the tests in testdata/script/*.txt.
 func TestScript(t *testing.T) {
@@ -165,13 +168,13 @@ func (ts *testScript) setup() {
 		"GOCACHE=" + testGOCACHE,
 		"GODEBUG=" + os.Getenv("GODEBUG"),
 		"GOEXE=" + cfg.ExeSuffix,
-		"GOEXPSTRING=" + objabi.Expstring()[2:],
 		"GOOS=" + runtime.GOOS,
 		"GOPATH=" + filepath.Join(ts.workdir, "gopath"),
 		"GOPROXY=" + proxyURL,
 		"GOPRIVATE=",
 		"GOROOT=" + testGOROOT,
 		"GOROOT_FINAL=" + os.Getenv("GOROOT_FINAL"), // causes spurious rebuilds and breaks the "stale" built-in if not propagated
+		"GOTRACEBACK=system",
 		"TESTGO_GOROOT=" + testGOROOT,
 		"GOSUMDB=" + testSumDBVerifierKey,
 		"GONOPROXY=",
@@ -182,6 +185,7 @@ func (ts *testScript) setup() {
 		"devnull=" + os.DevNull,
 		"goversion=" + goVersion(ts),
 		":=" + string(os.PathListSeparator),
+		"/=" + string(os.PathSeparator),
 	}
 	if !testenv.HasExternalNetwork() {
 		ts.env = append(ts.env, "TESTGONETWORK=panic", "TESTGOVCS=panic")
@@ -268,6 +272,22 @@ func (ts *testScript) run() {
 		ts.cmdEnv(success, nil)
 		fmt.Fprintf(&ts.log, "\n")
 		ts.mark = ts.log.Len()
+	}
+
+	// With -testsum, if a go.mod file is present in the test's initial
+	// working directory, run 'go mod tidy'.
+	if *testSum != "" {
+		if ts.updateSum(a) {
+			defer func() {
+				if ts.t.Failed() {
+					return
+				}
+				data := txtar.Format(a)
+				if err := os.WriteFile(ts.file, data, 0666); err != nil {
+					ts.t.Errorf("rewriting test file: %v", err)
+				}
+			}()
+		}
 	}
 
 	// Run script.
@@ -518,7 +538,7 @@ func (ts *testScript) cmdCd(want simpleStatus, args []string) {
 		ts.fatalf("usage: cd dir")
 	}
 
-	dir := args[0]
+	dir := filepath.FromSlash(args[0])
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(ts.cd, dir)
 	}
@@ -1120,22 +1140,10 @@ func (ts *testScript) startBackground(want simpleStatus, command string, args ..
 	}
 
 	go func() {
-		bg.err = waitOrStop(ts.ctx, cmd, stopSignal(), ts.gracePeriod)
+		bg.err = waitOrStop(ts.ctx, cmd, quitSignal(), ts.gracePeriod)
 		close(done)
 	}()
 	return bg, nil
-}
-
-// stopSignal returns the appropriate signal to use to request that a process
-// stop execution.
-func stopSignal() os.Signal {
-	if runtime.GOOS == "windows" {
-		// Per https://golang.org/pkg/os/#Signal, “Interrupt is not implemented on
-		// Windows; using it with os.Process.Signal will return an error.”
-		// Fall back to Kill instead.
-		return os.Kill
-	}
-	return os.Interrupt
 }
 
 // waitOrStop waits for the already-started command cmd by calling its Wait method.
@@ -1352,6 +1360,68 @@ func (ts *testScript) parse(line string) command {
 		}
 	}
 	return cmd
+}
+
+// updateSum runs 'go mod tidy', 'go list -mod=mod -m all', or
+// 'go list -mod=mod all' in the test's current directory if a file named
+// "go.mod" is present after the archive has been extracted. updateSum modifies
+// archive and returns true if go.mod or go.sum were changed.
+func (ts *testScript) updateSum(archive *txtar.Archive) (rewrite bool) {
+	gomodIdx, gosumIdx := -1, -1
+	for i := range archive.Files {
+		switch archive.Files[i].Name {
+		case "go.mod":
+			gomodIdx = i
+		case "go.sum":
+			gosumIdx = i
+		}
+	}
+	if gomodIdx < 0 {
+		return false
+	}
+
+	switch *testSum {
+	case "tidy":
+		ts.cmdGo(success, []string{"mod", "tidy"})
+	case "listm":
+		ts.cmdGo(success, []string{"list", "-m", "-mod=mod", "all"})
+	case "listall":
+		ts.cmdGo(success, []string{"list", "-mod=mod", "all"})
+	default:
+		ts.t.Fatalf(`unknown value for -testsum %q; may be "tidy", "listm", or "listall"`, *testSum)
+	}
+
+	newGomodData, err := os.ReadFile(filepath.Join(ts.cd, "go.mod"))
+	if err != nil {
+		ts.t.Fatalf("reading go.mod after -testsum: %v", err)
+	}
+	if !bytes.Equal(newGomodData, archive.Files[gomodIdx].Data) {
+		archive.Files[gomodIdx].Data = newGomodData
+		rewrite = true
+	}
+
+	newGosumData, err := os.ReadFile(filepath.Join(ts.cd, "go.sum"))
+	if err != nil && !os.IsNotExist(err) {
+		ts.t.Fatalf("reading go.sum after -testsum: %v", err)
+	}
+	switch {
+	case os.IsNotExist(err) && gosumIdx >= 0:
+		// go.sum was deleted.
+		rewrite = true
+		archive.Files = append(archive.Files[:gosumIdx], archive.Files[gosumIdx+1:]...)
+	case err == nil && gosumIdx < 0:
+		// go.sum was created.
+		rewrite = true
+		gosumIdx = gomodIdx + 1
+		archive.Files = append(archive.Files, txtar.File{})
+		copy(archive.Files[gosumIdx+1:], archive.Files[gosumIdx:])
+		archive.Files[gosumIdx] = txtar.File{Name: "go.sum", Data: newGosumData}
+	case err == nil && gosumIdx >= 0 && !bytes.Equal(newGosumData, archive.Files[gosumIdx].Data):
+		// go.sum was changed.
+		rewrite = true
+		archive.Files[gosumIdx].Data = newGosumData
+	}
+	return rewrite
 }
 
 // diff returns a formatted diff of the two texts,

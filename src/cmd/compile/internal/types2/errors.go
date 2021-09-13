@@ -1,4 +1,3 @@
-// UNREVIEWED
 // Copyright 2012 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
@@ -89,7 +88,7 @@ func sprintf(qf Qualifier, format string, args ...interface{}) string {
 		case nil:
 			arg = "<nil>"
 		case operand:
-			panic("internal error: should always pass *operand")
+			panic("got operand instead of *operand")
 		case *operand:
 			arg = operandString(a, qf)
 		case syntax.Pos:
@@ -109,13 +108,38 @@ func sprintf(qf Qualifier, format string, args ...interface{}) string {
 func (check *Checker) qualifier(pkg *Package) string {
 	// Qualify the package unless it's the package being type-checked.
 	if pkg != check.pkg {
+		if check.pkgPathMap == nil {
+			check.pkgPathMap = make(map[string]map[string]bool)
+			check.seenPkgMap = make(map[*Package]bool)
+			check.markImports(check.pkg)
+		}
 		// If the same package name was used by multiple packages, display the full path.
-		if check.pkgCnt[pkg.name] > 1 {
+		if len(check.pkgPathMap[pkg.name]) > 1 {
 			return strconv.Quote(pkg.path)
 		}
 		return pkg.name
 	}
 	return ""
+}
+
+// markImports recursively walks pkg and its imports, to record unique import
+// paths in pkgPathMap.
+func (check *Checker) markImports(pkg *Package) {
+	if check.seenPkgMap[pkg] {
+		return
+	}
+	check.seenPkgMap[pkg] = true
+
+	forName, ok := check.pkgPathMap[pkg.name]
+	if !ok {
+		forName = make(map[string]bool)
+		check.pkgPathMap[pkg.name] = forName
+	}
+	forName[pkg.path] = true
+
+	for _, imp := range pkg.imports {
+		check.markImports(imp)
+	}
 }
 
 func (check *Checker) sprintf(format string, args ...interface{}) string {
@@ -124,7 +148,7 @@ func (check *Checker) sprintf(format string, args ...interface{}) string {
 
 func (check *Checker) report(err *error_) {
 	if err.empty() {
-		panic("internal error: reporting no error")
+		panic("no error to report")
 	}
 	check.err(err.pos(), err.msg(check.qualifier), err.soft)
 }
@@ -208,10 +232,10 @@ func posFor(at poser) syntax.Pos {
 	switch x := at.(type) {
 	case *operand:
 		if x.expr != nil {
-			return startPos(x.expr)
+			return syntax.StartPos(x.expr)
 		}
 	case syntax.Node:
-		return startPos(x)
+		return syntax.StartPos(x)
 	}
 	return at.Pos()
 }

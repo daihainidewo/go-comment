@@ -17,6 +17,7 @@ func (check *Checker) conversion(x *operand, T Type) {
 	constArg := x.mode == constant_
 
 	var ok bool
+	var reason string
 	switch {
 	case constArg && isConstType(T):
 		// constant conversion
@@ -31,14 +32,18 @@ func (check *Checker) conversion(x *operand, T Type) {
 			x.val = constant.MakeString(string(codepoint))
 			ok = true
 		}
-	case x.convertibleTo(check, T):
+	case x.convertibleTo(check, T, &reason):
 		// non-constant conversion
 		x.mode = value
 		ok = true
 	}
 
 	if !ok {
-		check.errorf(x, _InvalidConversion, "cannot convert %s to %s", x, T)
+		if reason != "" {
+			check.errorf(x, _InvalidConversion, "cannot convert %s to %s (%s)", x, T, reason)
+		} else {
+			check.errorf(x, _InvalidConversion, "cannot convert %s to %s", x, T)
+		}
 		x.mode = invalid
 		return
 	}
@@ -79,7 +84,7 @@ func (check *Checker) conversion(x *operand, T Type) {
 // convertibleTo reports whether T(x) is valid.
 // The check parameter may be nil if convertibleTo is invoked through an
 // exported API call, i.e., when all methods have been type-checked.
-func (x *operand) convertibleTo(check *Checker, T Type) bool {
+func (x *operand) convertibleTo(check *Checker, T Type, reason *string) bool {
 	// "x is assignable to T"
 	if ok, _ := x.assignableTo(check, T, nil); ok {
 		return true
@@ -89,7 +94,7 @@ func (x *operand) convertibleTo(check *Checker, T Type) bool {
 	V := x.typ
 	Vu := under(V)
 	Tu := under(T)
-	if check.identicalIgnoreTags(Vu, Tu) {
+	if IdenticalIgnoreTags(Vu, Tu) {
 		return true
 	}
 
@@ -97,7 +102,7 @@ func (x *operand) convertibleTo(check *Checker, T Type) bool {
 	// have identical underlying types if tags are ignored"
 	if V, ok := V.(*Pointer); ok {
 		if T, ok := T.(*Pointer); ok {
-			if check.identicalIgnoreTags(under(V.base), under(T.base)) {
+			if IdenticalIgnoreTags(under(V.base), under(T.base)) {
 				return true
 			}
 		}
@@ -131,6 +136,23 @@ func (x *operand) convertibleTo(check *Checker, T Type) bool {
 	// "and vice versa"
 	if isUnsafePointer(V) && (isPointer(Tu) || isUintptr(Tu)) {
 		return true
+	}
+
+	// "x is a slice, T is a pointer-to-array type,
+	// and the slice and array types have identical element types."
+	if s := asSlice(V); s != nil {
+		if p := asPointer(T); p != nil {
+			if a := asArray(p.Elem()); a != nil {
+				if Identical(s.Elem(), a.Elem()) {
+					if check == nil || check.allowVersion(check.pkg, 1, 17) {
+						return true
+					}
+					if reason != nil {
+						*reason = "conversion of slices to array pointers requires go1.17 or later"
+					}
+				}
+			}
+		}
 	}
 
 	return false

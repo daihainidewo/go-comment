@@ -25,69 +25,71 @@ import (
 // Op
 
 var OpNames = []string{
-	OADDR:     "&",
-	OADD:      "+",
-	OADDSTR:   "+",
-	OALIGNOF:  "unsafe.Alignof",
-	OANDAND:   "&&",
-	OANDNOT:   "&^",
-	OAND:      "&",
-	OAPPEND:   "append",
-	OAS:       "=",
-	OAS2:      "=",
-	OBREAK:    "break",
-	OCALL:     "function call", // not actual syntax
-	OCAP:      "cap",
-	OCASE:     "case",
-	OCLOSE:    "close",
-	OCOMPLEX:  "complex",
-	OBITNOT:   "^",
-	OCONTINUE: "continue",
-	OCOPY:     "copy",
-	ODELETE:   "delete",
-	ODEFER:    "defer",
-	ODIV:      "/",
-	OEQ:       "==",
-	OFALL:     "fallthrough",
-	OFOR:      "for",
-	OFORUNTIL: "foruntil", // not actual syntax; used to avoid off-end pointer live on backedge.892
-	OGE:       ">=",
-	OGOTO:     "goto",
-	OGT:       ">",
-	OIF:       "if",
-	OIMAG:     "imag",
-	OINLMARK:  "inlmark",
-	ODEREF:    "*",
-	OLEN:      "len",
-	OLE:       "<=",
-	OLSH:      "<<",
-	OLT:       "<",
-	OMAKE:     "make",
-	ONEG:      "-",
-	OMOD:      "%",
-	OMUL:      "*",
-	ONEW:      "new",
-	ONE:       "!=",
-	ONOT:      "!",
-	OOFFSETOF: "unsafe.Offsetof",
-	OOROR:     "||",
-	OOR:       "|",
-	OPANIC:    "panic",
-	OPLUS:     "+",
-	OPRINTN:   "println",
-	OPRINT:    "print",
-	ORANGE:    "range",
-	OREAL:     "real",
-	ORECV:     "<-",
-	ORECOVER:  "recover",
-	ORETURN:   "return",
-	ORSH:      ">>",
-	OSELECT:   "select",
-	OSEND:     "<-",
-	OSIZEOF:   "unsafe.Sizeof",
-	OSUB:      "-",
-	OSWITCH:   "switch",
-	OXOR:      "^",
+	OADDR:        "&",
+	OADD:         "+",
+	OADDSTR:      "+",
+	OALIGNOF:     "unsafe.Alignof",
+	OANDAND:      "&&",
+	OANDNOT:      "&^",
+	OAND:         "&",
+	OAPPEND:      "append",
+	OAS:          "=",
+	OAS2:         "=",
+	OBREAK:       "break",
+	OCALL:        "function call", // not actual syntax
+	OCAP:         "cap",
+	OCASE:        "case",
+	OCLOSE:       "close",
+	OCOMPLEX:     "complex",
+	OBITNOT:      "^",
+	OCONTINUE:    "continue",
+	OCOPY:        "copy",
+	ODELETE:      "delete",
+	ODEFER:       "defer",
+	ODIV:         "/",
+	OEQ:          "==",
+	OFALL:        "fallthrough",
+	OFOR:         "for",
+	OFORUNTIL:    "foruntil", // not actual syntax; used to avoid off-end pointer live on backedge.892
+	OGE:          ">=",
+	OGOTO:        "goto",
+	OGT:          ">",
+	OIF:          "if",
+	OIMAG:        "imag",
+	OINLMARK:     "inlmark",
+	ODEREF:       "*",
+	OLEN:         "len",
+	OLE:          "<=",
+	OLSH:         "<<",
+	OLT:          "<",
+	OMAKE:        "make",
+	ONEG:         "-",
+	OMOD:         "%",
+	OMUL:         "*",
+	ONEW:         "new",
+	ONE:          "!=",
+	ONOT:         "!",
+	OOFFSETOF:    "unsafe.Offsetof",
+	OOROR:        "||",
+	OOR:          "|",
+	OPANIC:       "panic",
+	OPLUS:        "+",
+	OPRINTN:      "println",
+	OPRINT:       "print",
+	ORANGE:       "range",
+	OREAL:        "real",
+	ORECV:        "<-",
+	ORECOVER:     "recover",
+	ORETURN:      "return",
+	ORSH:         ">>",
+	OSELECT:      "select",
+	OSEND:        "<-",
+	OSIZEOF:      "unsafe.Sizeof",
+	OSUB:         "-",
+	OSWITCH:      "switch",
+	OUNSAFEADD:   "unsafe.Add",
+	OUNSAFESLICE: "unsafe.Slice",
+	OXOR:         "^",
 }
 
 // GoString returns the Go syntax for the Op, or else its name.
@@ -183,6 +185,7 @@ var OpPrec = []int{
 	OCLOSE:         8,
 	OCOMPLIT:       8,
 	OCONVIFACE:     8,
+	OCONVIDATA:     8,
 	OCONVNOP:       8,
 	OCONV:          8,
 	OCOPY:          8,
@@ -206,6 +209,7 @@ var OpPrec = []int{
 	OPRINT:         8,
 	ORUNESTR:       8,
 	OSIZEOF:        8,
+	OSLICE2ARRPTR:  8,
 	OSTR2BYTES:     8,
 	OSTR2RUNES:     8,
 	OSTRUCTLIT:     8,
@@ -217,6 +221,8 @@ var OpPrec = []int{
 	OTMAP:          8,
 	OTSTRUCT:       8,
 	OTYPE:          8,
+	OUNSAFEADD:     8,
+	OUNSAFESLICE:   8,
 	OINDEXMAP:      8,
 	OINDEX:         8,
 	OSLICE:         8,
@@ -232,7 +238,7 @@ var OpPrec = []int{
 	ODOTTYPE:       8,
 	ODOT:           8,
 	OXDOT:          8,
-	OCALLPART:      8,
+	OMETHVALUE:     8,
 	OMETHEXPR:      8,
 	OPLUS:          7,
 	ONOT:           7,
@@ -541,7 +547,7 @@ func exprFmt(n Node, s fmt.State, prec int) {
 				n = nn.X
 				continue
 			}
-		case OCONV, OCONVNOP, OCONVIFACE:
+		case OCONV, OCONVNOP, OCONVIFACE, OCONVIDATA:
 			nn := nn.(*ConvExpr)
 			if nn.Implicit() {
 				n = nn.X
@@ -553,12 +559,17 @@ func exprFmt(n Node, s fmt.State, prec int) {
 	}
 
 	nprec := OpPrec[n.Op()]
-	if n.Op() == OTYPE && n.Type().IsPtr() {
+	if n.Op() == OTYPE && n.Type() != nil && n.Type().IsPtr() {
 		nprec = OpPrec[ODEREF]
 	}
 
 	if prec > nprec {
 		fmt.Fprintf(s, "(%v)", n)
+		return
+	}
+
+	if n, ok := n.(*RawOrigExpr); ok {
+		fmt.Fprint(s, n.Raw)
 		return
 	}
 
@@ -704,6 +715,10 @@ func exprFmt(n Node, s fmt.State, prec int) {
 				fmt.Fprintf(s, "... argument")
 				return
 			}
+			if typ := n.Type(); typ != nil {
+				fmt.Fprintf(s, "%v{%s}", typ, ellipsisIf(len(n.List) != 0))
+				return
+			}
 			if n.Ntype != nil {
 				fmt.Fprintf(s, "%v{%s}", n.Ntype, ellipsisIf(len(n.List) != 0))
 				return
@@ -747,7 +762,7 @@ func exprFmt(n Node, s fmt.State, prec int) {
 		n := n.(*StructKeyExpr)
 		fmt.Fprintf(s, "%v:%v", n.Field, n.Value)
 
-	case OXDOT, ODOT, ODOTPTR, ODOTINTER, ODOTMETH, OCALLPART, OMETHEXPR:
+	case OXDOT, ODOT, ODOTPTR, ODOTINTER, ODOTMETH, OMETHVALUE, OMETHEXPR:
 		n := n.(*SelectorExpr)
 		exprFmt(n.X, s, nprec)
 		if n.Sel == nil {
@@ -793,18 +808,20 @@ func exprFmt(n Node, s fmt.State, prec int) {
 		n := n.(*SliceHeaderExpr)
 		fmt.Fprintf(s, "sliceheader{%v,%v,%v}", n.Ptr, n.Len, n.Cap)
 
-	case OCOMPLEX, OCOPY:
+	case OCOMPLEX, OCOPY, OUNSAFEADD, OUNSAFESLICE:
 		n := n.(*BinaryExpr)
 		fmt.Fprintf(s, "%v(%v, %v)", n.Op(), n.X, n.Y)
 
 	case OCONV,
 		OCONVIFACE,
+		OCONVIDATA,
 		OCONVNOP,
 		OBYTES2STR,
 		ORUNES2STR,
 		OSTR2BYTES,
 		OSTR2RUNES,
-		ORUNESTR:
+		ORUNESTR,
+		OSLICE2ARRPTR:
 		n := n.(*ConvExpr)
 		if n.Type() == nil || n.Type().Sym() == nil {
 			fmt.Fprintf(s, "(%v)", n.Type())
@@ -847,6 +864,15 @@ func exprFmt(n Node, s fmt.State, prec int) {
 			return
 		}
 		fmt.Fprintf(s, "(%.v)", n.Args)
+
+	case OINLCALL:
+		n := n.(*InlinedCallExpr)
+		// TODO(mdempsky): Print Init and/or Body?
+		if len(n.ReturnVars) == 1 {
+			fmt.Fprintf(s, "%v", n.ReturnVars[0])
+			return
+		}
+		fmt.Fprintf(s, "(.%v)", n.ReturnVars)
 
 	case OMAKEMAP, OMAKECHAN, OMAKESLICE:
 		n := n.(*MakeExpr)
@@ -980,7 +1006,7 @@ func (l Nodes) Format(s fmt.State, verb rune) {
 
 // Dump prints the message s followed by a debug dump of n.
 func Dump(s string, n Node) {
-	fmt.Printf("%s [%p]%+v\n", s, n, n)
+	fmt.Printf("%s%+v\n", s, n)
 }
 
 // DumpList prints the message s followed by a debug dump of each node in the list.
@@ -1108,16 +1134,22 @@ func dumpNodeHeader(w io.Writer, n Node) {
 	}
 
 	if n.Pos().IsKnown() {
-		pfx := ""
+		fmt.Fprint(w, " # ")
 		switch n.Pos().IsStmt() {
 		case src.PosNotStmt:
-			pfx = "_" // "-" would be confusing
+			fmt.Fprint(w, "_") // "-" would be confusing
 		case src.PosIsStmt:
-			pfx = "+"
+			fmt.Fprint(w, "+")
 		}
-		pos := base.Ctxt.PosTable.Pos(n.Pos())
-		file := filepath.Base(pos.Filename())
-		fmt.Fprintf(w, " # %s%s:%d", pfx, file, pos.Line())
+		for i, pos := range base.Ctxt.AllPos(n.Pos(), nil) {
+			if i > 0 {
+				fmt.Fprint(w, ",")
+			}
+			// TODO(mdempsky): Print line pragma details too.
+			file := filepath.Base(pos.Filename())
+			// Note: this output will be parsed by ssa/html.go:(*HTMLWriter).WriteAST. Keep in sync.
+			fmt.Fprintf(w, "%s:%d:%d", file, pos.Line(), pos.Col())
+		}
 	}
 }
 

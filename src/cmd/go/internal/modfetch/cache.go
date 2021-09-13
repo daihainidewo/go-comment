@@ -152,7 +152,7 @@ func lockVersion(mod module.Version) (unlock func(), err error) {
 // If err is nil, the caller MUST eventually call the unlock function.
 func SideLock() (unlock func(), err error) {
 	if err := checkCacheDir(); err != nil {
-		base.Fatalf("go: %v", err)
+		return nil, err
 	}
 
 	path := filepath.Join(cfg.GOMODCACHE, "cache", "lock")
@@ -347,6 +347,9 @@ func GoMod(path, rev string) ([]byte, error) {
 		if _, info, err := readDiskStat(path, rev); err == nil {
 			rev = info.Version
 		} else {
+			if errors.Is(err, statCacheErr) {
+				return nil, err
+			}
 			err := TryProxies(func(proxy string) error {
 				info, err := Lookup(proxy, path).Stat(rev)
 				if err == nil {
@@ -497,7 +500,7 @@ func readDiskStatByHash(path, rev string) (file string, info *RevInfo, err error
 	for _, name := range names {
 		if strings.HasSuffix(name, suffix) {
 			v := strings.TrimSuffix(name, ".info")
-			if IsPseudoVersion(v) && semver.Compare(v, maxVersion) > 0 {
+			if module.IsPseudoVersion(v) && semver.Compare(v, maxVersion) > 0 {
 				maxVersion = v
 				file, info, err = readDiskStat(path, strings.TrimSuffix(name, ".info"))
 			}
@@ -674,7 +677,7 @@ func rewriteVersionList(dir string) (err error) {
 			}
 		}
 	}
-	SortVersions(list)
+	semver.Sort(list)
 
 	var buf bytes.Buffer
 	for _, v := range list {
@@ -706,15 +709,42 @@ func rewriteVersionList(dir string) (err error) {
 	return nil
 }
 
+var (
+	statCacheOnce sync.Once
+	statCacheErr  error
+)
+
+// checkCacheDir checks if the directory specified by GOMODCACHE exists. An
+// error is returned if it does not.
 func checkCacheDir() error {
 	if cfg.GOMODCACHE == "" {
 		// modload.Init exits if GOPATH[0] is empty, and cfg.GOMODCACHE
 		// is set to GOPATH[0]/pkg/mod if GOMODCACHE is empty, so this should never happen.
 		return fmt.Errorf("internal error: cfg.GOMODCACHE not set")
 	}
-
 	if !filepath.IsAbs(cfg.GOMODCACHE) {
 		return fmt.Errorf("GOMODCACHE entry is relative; must be absolute path: %q.\n", cfg.GOMODCACHE)
 	}
-	return nil
+
+	// os.Stat is slow on Windows, so we only call it once to prevent unnecessary
+	// I/O every time this function is called.
+	statCacheOnce.Do(func() {
+		fi, err := os.Stat(cfg.GOMODCACHE)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				statCacheErr = fmt.Errorf("could not create module cache: %w", err)
+				return
+			}
+			if err := os.MkdirAll(cfg.GOMODCACHE, 0777); err != nil {
+				statCacheErr = fmt.Errorf("could not create module cache: %w", err)
+				return
+			}
+			return
+		}
+		if !fi.IsDir() {
+			statCacheErr = fmt.Errorf("could not create module cache: %q is not a directory", cfg.GOMODCACHE)
+			return
+		}
+	})
+	return statCacheErr
 }

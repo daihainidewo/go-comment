@@ -84,6 +84,30 @@ func NegAddFromConstNeg(a int) int {
 	return c
 }
 
+func SubSubNegSimplify(a, b int) int {
+	// amd64:"NEGQ"
+	r := (a - b) - a
+	return r
+}
+
+func SubAddSimplify(a, b int) int {
+	// amd64:-"SUBQ",-"ADDQ"
+	r := a + (b - a)
+	return r
+}
+
+func SubAddNegSimplify(a, b int) int {
+	// amd64:"NEGQ",-"ADDQ",-"SUBQ"
+	r := a - (b + a)
+	return r
+}
+
+func AddAddSubSimplify(a, b, c int) int {
+	// amd64:-"SUBQ"
+	r := a + (b + (c - a))
+	return r
+}
+
 // -------------------- //
 //    Multiplication    //
 // -------------------- //
@@ -139,7 +163,7 @@ func MergeMuls1(n int) int {
 }
 
 func MergeMuls2(n int) int {
-	// amd64:"IMUL3Q\t[$]23","ADDQ\t[$]29"
+	// amd64:"IMUL3Q\t[$]23","(ADDQ\t[$]29)|(LEAQ\t29)"
 	// 386:"IMUL3L\t[$]23","ADDL\t[$]29"
 	return 5*n + 7*(n+1) + 11*(n+2) // 23n + 29
 }
@@ -202,7 +226,7 @@ func ConstDivs(n1 uint, n2 int) (uint, int) {
 
 	// amd64:"MOVQ\t[$]-1085102592571150095","IMULQ",-"IDIVQ"
 	// 386:"MOVL\t[$]-252645135","IMULL",-"IDIVL"
-	// arm64:`MOVD`,`SMULH`,-`DIV`
+	// arm64:`SMULH`,-`DIV`
 	// arm:`MOVW`,`MUL`,-`.*udiv`
 	b := n2 / 17 // signed
 
@@ -266,7 +290,7 @@ func ConstMods(n1 uint, n2 int) (uint, int) {
 
 	// amd64:"MOVQ\t[$]-1085102592571150095","IMULQ",-"IDIVQ"
 	// 386:"MOVL\t[$]-252645135","IMULL",-"IDIVL"
-	// arm64:`MOVD`,`SMULH`,-`DIV`
+	// arm64:`SMULH`,-`DIV`
 	// arm:`MOVW`,`MUL`,-`.*udiv`
 	b := n2 % 17 // signed
 

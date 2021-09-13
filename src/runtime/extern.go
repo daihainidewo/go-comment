@@ -186,7 +186,10 @@ of the run-time system.
 */
 package runtime
 
-import "runtime/internal/sys"
+import (
+	"internal/goarch"
+	"internal/goos"
+)
 
 // Caller reports file and line number information about function invocations on
 // the calling goroutine's stack. The argument skip is the number of stack frames
@@ -240,18 +243,28 @@ func GOROOT() string {
 	return defaultGOROOT
 }
 
+// buildVersion is the Go tree's version string at build time.
+//
+// If any GOEXPERIMENTs are set to non-default values, it will include
+// "X:<GOEXPERIMENT>".
+//
+// This is set by the linker.
+//
+// This is accessed by "go version <binary>".
+var buildVersion string
+
 // Version returns the Go tree's version string.
 // It is either the commit hash and date at the time of the build or,
 // when possible, a release tag like "go1.3".
 func Version() string {
-	return sys.TheVersion
+	return buildVersion
 }
 
 // GOOS is the running program's operating system target:
 // one of darwin, freebsd, linux, and so on.
 // To view possible combinations of GOOS and GOARCH, run "go tool dist list".
-const GOOS string = sys.GOOS
+const GOOS string = goos.GOOS
 
 // GOARCH is the running program's architecture target:
 // one of 386, amd64, arm, s390x, and so on.
-const GOARCH string = sys.GOARCH
+const GOARCH string = goarch.GOARCH

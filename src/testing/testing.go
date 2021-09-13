@@ -190,7 +190,7 @@
 //         }
 //     }
 //
-// The race detector kills the program if it exceeds 8192 concurrent goroutines,
+// The race detector kills the program if it exceeds 8128 concurrent goroutines,
 // so use care when running parallel tests with the -race flag set.
 //
 // Run does not return until parallel subtests have completed, providing a way
@@ -208,14 +208,14 @@
 //
 // Main
 //
-// It is sometimes necessary for a test program to do extra setup or teardown
-// before or after testing. It is also sometimes necessary for a test to control
+// It is sometimes necessary for a test or benchmark program to do extra setup or teardown
+// before or after it executes. It is also sometimes necessary to control
 // which code runs on the main thread. To support these and other cases,
 // if a test file contains a function:
 //
 //	func TestMain(m *testing.M)
 //
-// then the generated test will call TestMain(m) instead of running the tests
+// then the generated test will call TestMain(m) instead of running the tests or benchmarks
 // directly. TestMain runs in the main goroutine and can do whatever setup
 // and teardown is necessary around a call to m.Run. m.Run will return an exit
 // code that may be passed to os.Exit. If TestMain returns, the test wrapper
@@ -233,6 +233,8 @@
 //		os.Exit(m.Run())
 //	}
 //
+// TestMain is a low-level primitive and should not be necessary for casual
+// testing needs, where ordinary test functions suffice.
 package testing
 
 import (
@@ -242,6 +244,7 @@ import (
 	"fmt"
 	"internal/race"
 	"io"
+	"math/rand"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -251,6 +254,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 var initRan bool
@@ -299,6 +304,7 @@ func Init() {
 	cpuListStr = flag.String("test.cpu", "", "comma-separated `list` of cpu counts to run each test with")
 	parallel = flag.Int("test.parallel", runtime.GOMAXPROCS(0), "run at most `n` tests in parallel")
 	testlog = flag.String("test.testlogfile", "", "write test action log to `file` (for use only by cmd/go)")
+	shuffle = flag.String("test.shuffle", "off", "randomize the execution order of tests and benchmarks")
 
 	initBenchmarkFlags()
 }
@@ -325,6 +331,7 @@ var (
 	timeout              *time.Duration
 	cpuListStr           *string
 	parallel             *int
+	shuffle              *string
 	testlog              *string
 
 	haveExamples bool // are there examples?
@@ -395,10 +402,10 @@ type common struct {
 	cleanups    []func()             // optional functions to be called at the end of the test
 	cleanupName string               // Name of the cleanup function.
 	cleanupPc   []uintptr            // The stack trace at the point where Cleanup was called.
+	finished    bool                 // Test function has completed.
 
 	chatty     *chattyPrinter // A copy of chattyPrinter, if the chatty flag is set.
 	bench      bool           // Whether the current test is a benchmark.
-	finished   bool           // Test function has completed.
 	hasSub     int32          // Written atomically.
 	raceErrors int            // Number of races detected during test.
 	runner     string         // Function name of tRunner running the test.
@@ -639,6 +646,7 @@ type TB interface {
 	Log(args ...interface{})
 	Logf(format string, args ...interface{})
 	Name() string
+	Setenv(key, value string)
 	Skip(args ...interface{})
 	SkipNow()
 	Skipf(format string, args ...interface{})
@@ -672,7 +680,11 @@ type T struct {
 
 func (c *common) private() {}
 
-// Name returns the name of the running test or benchmark.
+// Name returns the name of the running (sub-) test or benchmark.
+//
+// The name will include the name of the test along with the names of
+// any nested sub-tests. If two sibling sub-tests have the same name,
+// Name will append a suffix to guarantee the returned name is unique.
 func (c *common) Name() string {
 	return c.name
 }
@@ -738,7 +750,9 @@ func (c *common) FailNow() {
 	// it would run on a test failure. Because we send on c.signal during
 	// a top-of-stack deferred function now, we know that the send
 	// only happens after any other stacked defers have completed.
+	c.mu.Lock()
 	c.finished = true
+	c.mu.Unlock()
 	runtime.Goexit()
 }
 
@@ -837,15 +851,11 @@ func (c *common) Skipf(format string, args ...interface{}) {
 // other goroutines created during the test. Calling SkipNow does not stop
 // those other goroutines.
 func (c *common) SkipNow() {
-	c.skip()
-	c.finished = true
-	runtime.Goexit()
-}
-
-func (c *common) skip() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.skipped = true
+	c.finished = true
+	c.mu.Unlock()
+	runtime.Goexit()
 }
 
 // Skipped reports whether the test was skipped.
@@ -876,7 +886,7 @@ func (c *common) Helper() {
 	}
 }
 
-// Cleanup registers a function to be called when the test and all its
+// Cleanup registers a function to be called when the test (or subtest) and all its
 // subtests complete. Cleanup functions will be called in last added,
 // first called order.
 func (c *common) Cleanup(f func()) {
@@ -907,11 +917,6 @@ func (c *common) Cleanup(f func()) {
 	c.cleanups = append(c.cleanups, fn)
 }
 
-var tempDirReplacer struct {
-	sync.Once
-	r *strings.Replacer
-}
-
 // TempDir returns a temporary directory for the test to use.
 // The directory is automatically removed by Cleanup when the test and
 // all its subtests complete.
@@ -935,13 +940,26 @@ func (c *common) TempDir() string {
 	if nonExistent {
 		c.Helper()
 
-		// os.MkdirTemp doesn't like path separators in its pattern,
-		// so mangle the name to accommodate subtests.
-		tempDirReplacer.Do(func() {
-			tempDirReplacer.r = strings.NewReplacer("/", "_", "\\", "_", ":", "_")
-		})
-		pattern := tempDirReplacer.r.Replace(c.Name())
-
+		// Drop unusual characters (such as path separators or
+		// characters interacting with globs) from the directory name to
+		// avoid surprising os.MkdirTemp behavior.
+		mapper := func(r rune) rune {
+			if r < utf8.RuneSelf {
+				const allowed = "!#$%&()+,-.=@^_{}~ "
+				if '0' <= r && r <= '9' ||
+					'a' <= r && r <= 'z' ||
+					'A' <= r && r <= 'Z' {
+					return r
+				}
+				if strings.ContainsRune(allowed, r) {
+					return r
+				}
+			} else if unicode.IsLetter(r) || unicode.IsNumber(r) {
+				return r
+			}
+			return -1
+		}
+		pattern := strings.Map(mapper, c.Name())
 		c.tempDir, c.tempDirErr = os.MkdirTemp("", pattern)
 		if c.tempDirErr == nil {
 			c.Cleanup(func() {
@@ -1138,10 +1156,16 @@ func tRunner(t *T, fn func(t *T)) {
 		err := recover()
 		signal := true
 
-		if !t.finished && err == nil {
+		t.mu.RLock()
+		finished := t.finished
+		t.mu.RUnlock()
+		if !finished && err == nil {
 			err = errNilPanicOrGoexit
 			for p := t.parent; p != nil; p = p.parent {
-				if p.finished {
+				p.mu.RLock()
+				finished = p.finished
+				p.mu.RUnlock()
+				if finished {
 					t.Errorf("%v: subtest may have called FailNow on a parent test", err)
 					err = nil
 					signal = false
@@ -1235,7 +1259,9 @@ func tRunner(t *T, fn func(t *T)) {
 	fn(t)
 
 	// code beyond here will not be executed when FailNow is invoked
+	t.mu.Lock()
 	t.finished = true
+	t.mu.Unlock()
 }
 
 // Run runs f as a subtest of t called name. It runs f in a separate goroutine
@@ -1448,6 +1474,25 @@ func (m *M) Run() (code int) {
 		listTests(m.deps.MatchString, m.tests, m.benchmarks, m.examples)
 		m.exitCode = 0
 		return
+	}
+
+	if *shuffle != "off" {
+		var n int64
+		var err error
+		if *shuffle == "on" {
+			n = time.Now().UnixNano()
+		} else {
+			n, err = strconv.ParseInt(*shuffle, 10, 64)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, `testing: -shuffle should be "off", "on", or a valid integer:`, err)
+				m.exitCode = 2
+				return
+			}
+		}
+		fmt.Println("-test.shuffle", n)
+		rng := rand.New(rand.NewSource(n))
+		rng.Shuffle(len(m.tests), func(i, j int) { m.tests[i], m.tests[j] = m.tests[j], m.tests[i] })
+		rng.Shuffle(len(m.benchmarks), func(i, j int) { m.benchmarks[i], m.benchmarks[j] = m.benchmarks[j], m.benchmarks[i] })
 	}
 
 	parseCpuList()
