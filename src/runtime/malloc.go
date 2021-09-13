@@ -2,6 +2,53 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+/* 内存分配器
+小于等于32k的内存会被分为大约70个类（目前68个类），每个都有自己固定大小内存的集合。
+
+分配器数据结构：
+    fixalloc：用于固定大小的堆外对象的自由列表分配器，用于管理分配器使用的存储。
+    mheap：malloc堆栈，以页大小（8192字节）为粒度管理
+    mspan：内存管理分配单元
+    mcentral：所有span的集合
+    mcache：P中的空闲mspan缓存
+    mstats：分配信息统计
+
+小对象缓存方案：
+    1. 将大小四舍五入为较小的类之一，然后在此P的mcache中查看相应的mspan。
+        扫描mspan的可用位图以找到可用插槽。如果有空闲插槽，请分配它。
+        无需获取锁即可完成所有操作。
+    2. 如果mspan没有可用插槽，请从mcentral具有可用空间的所需大小类的mspan列表中获取一个新的mspan。
+        获取mspan会锁定mcentral。
+    3. 如果mcentral的mspan列表为空，从mheap获取当做mspan的页面。
+    4. 如果mheap为空或没有足够大的页面运行，请从操作系统中分配一组新的页面（至少1MB）。
+        分配大量页面将分摊与操作系统进行通信的成本。
+
+扫描mspan并释放对象操作：
+    1. 如果响应响应分配而扫描了mspan，则将其返回到mcache以满足分配。
+    2. 否则，如果mspan仍在其中分配了对象，则将其放在mspan的size类的中心空闲列表中。
+    3. 否则，如果mspan中的所有对象都空闲，则mspan的页面将返回到mheap，并且mspan现在已失效。
+
+分配大对象直接调用mheap，跳过mcache和mcentral。
+
+如果mspan.needzero为false，则mspan中的可用对象插槽已被清零。
+否则，如果needzero为true，则在分配对象时将其清零。
+通过这种方式延迟归零有很多好处：
+    1. 堆栈帧分配可以完全避免归零。
+    2. 由于程序可能即将写入内存，因此它具有更好的时间局部性。
+    3. 我们不会将永远不会被重用的页面归零。
+
+虚拟内存分布：
+    堆栈由一些区块构成，64位机器大小为64M，32位机器大小为4M。每个区块首地址字节对齐。
+    每个区块都有一个关联的 heapArena 对象。
+    该对象存储该区块的元数据：区块中所有位置的bitmap和区块中所有页面的span map。
+    它们本身是堆外分配的。
+    由于区块是内存对齐的，因此可以将地址空间视为一系列区块帧。
+    区块映射（mheap_.arenas）从区块帧号映射到heapArena，对于不由Go堆支持的部分地址空间，则映射为nil。
+    区块映射的结构为两维数组，由一个L1区块映射和许多L2区块映射组成；
+    但是，由于区块很大，因此在许多体系结构上，区块映射都由单个大型L2地图组成。
+    区块映射覆盖了整个可能的地址空间，从而允许Go堆使用地址空间的任何部分。
+    分配器尝试使区块保持连续，以便大跨度（大对象）可以越过竞技场。
+*/
 // Memory allocator.
 //
 // This was originally based on tcmalloc, but has diverged quite a bit.
@@ -110,9 +157,9 @@ import (
 const (
 	debugMalloc = false
 
-	maxTinySize   = _TinySize
-	tinySizeClass = _TinySizeClass
-	maxSmallSize  = _MaxSmallSize
+	maxTinySize   = _TinySize       // 16
+	tinySizeClass = _TinySizeClass  // 2
+	maxSmallSize  = _MaxSmallSize   // 32768
 
 	pageShift = _PageShift // 13
 	pageSize  = _PageSize  // 8192
@@ -121,7 +168,7 @@ const (
 	// have the most objects per span.
 	maxObjsPerSpan = pageSize / 8 // 1024
 
-	concurrentSweep = _ConcurrentSweep
+	concurrentSweep = _ConcurrentSweep // true
 
 	_PageSize = 1 << _PageShift // 8192
 	_PageMask = _PageSize - 1   // 8191
@@ -1408,7 +1455,7 @@ func inPersistentAlloc(p uintptr) bool {
 	return false
 }
 
-// linearAlloc 是一个简单的线性分配器
+// linearAlloc 是一个简单的线性内存分配器 由调用方锁保护
 // linearAlloc is a simple linear allocator that pre-reserves a region
 // of memory and then optionally maps that region into the Ready state
 // as needed.
@@ -1418,7 +1465,7 @@ type linearAlloc struct {
 	next   uintptr // 下一个空闲字节 // next free byte
 	mapped uintptr // 映射空间的最后一个字节 // one byte past end of mapped space
 	end    uintptr // 保留空间的最后一个字节 // end of reserved space
-    mapMemory bool // transition memory from Reserved to Ready if true
+    mapMemory bool // 如果为true 表示内存从保留状态转到准备状态 // transition memory from Reserved to Ready if true
 }
 
 func (l *linearAlloc) init(base, size uintptr, mapMemory bool) {
@@ -1434,9 +1481,11 @@ func (l *linearAlloc) init(base, size uintptr, mapMemory bool) {
 	l.mapMemory = mapMemory
 }
 
+// alloc
 func (l *linearAlloc) alloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
 	p := alignUp(l.next, align)// 字节对齐
-	if p+size > l.end {// 超限 返回
+	if p+size > l.end {
+	    // 超限 返回空
 		return nil
 	}
 	l.next = p + size

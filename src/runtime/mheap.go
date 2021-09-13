@@ -1336,14 +1336,15 @@ func (h *mheap) grow(npage uintptr) bool {
 	// round up to pallocChunkPages which is on the order
 	// of MiB (generally >= to the huge page size) we
 	// won't be calling it too much.
-	ask := alignUp(npage, pallocChunkPages) * pageSize // 需要的内存量
+	ask := alignUp(npage, pallocChunkPages) * pageSize // 向上取整需要的内存量
 
 	totalGrowth := uintptr(0)
 	// This may overflow because ask could be very large
 	// and is otherwise unrelated to h.curArena.base.
-	end := h.curArena.base + ask // end 可能溢出
-	nBase := alignUp(end, physPageSize)
+	end := h.curArena.base + ask // 当前基址加上需要的得到 end 可能溢出
+	nBase := alignUp(end, physPageSize) // 向上取整物理页大小
 	if nBase > h.curArena.end || /* overflow */ end < h.curArena.base {
+	    // 检测溢出后
 		// Not enough room in the current arena. Allocate more
 		// arena space. This may not be contiguous with the
 		// current arena, so we have to request the full ask.
