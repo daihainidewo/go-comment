@@ -1534,17 +1534,21 @@ func gcResetMarkState() {
 
 var poolcleanup func()
 
+// sync.Pool 的GC时清理函数的hook
 //go:linkname sync_runtime_registerPoolCleanup sync.runtime_registerPoolCleanup
 func sync_runtime_registerPoolCleanup(f func()) {
 	poolcleanup = f
 }
 
+// clearpools 清理 sync.Pool sched.sudog sched.deferpool，等待GC
 func clearpools() {
+    // 调用 sync.Pool 的清理函数
 	// clear sync.Pools
 	if poolcleanup != nil {
 		poolcleanup()
 	}
 
+    // 清理全局的sudog cache，将链表断开使之没有对象关联
 	// Clear central sudog cache.
 	// Leave per-P caches alone, they have strictly bounded size.
 	// Disconnect cached list before dropping it on the floor,
@@ -1558,6 +1562,7 @@ func clearpools() {
 	sched.sudogcache = nil
 	unlock(&sched.sudoglock)
 
+    // 清理全局defer pool，将链表断开使之没有对象关联
 	// Clear central defer pool.
 	// Leave per-P pools alone, they have strictly bounded size.
 	lock(&sched.deferlock)

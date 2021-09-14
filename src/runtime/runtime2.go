@@ -539,7 +539,7 @@ type m struct {
 	mallocing     int32
 	throwing      int32
 	preemptoff    string // if != "", keep curg running on this m
-	locks         int32 // 禁用抢占
+	locks         int32 // 引用计数，非零表示禁止抢占当前g
 	dying         int32
 	profilehz     int32
 	spinning      bool // 是否自旋 等待 g 去执行

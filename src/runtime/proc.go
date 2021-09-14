@@ -6570,6 +6570,7 @@ func setMaxThreads(in int) (out int) {
 	return
 }
 
+// procPin 因sync.Pool标记当前g不可抢占，并返回p的id
 //go:nosplit
 func procPin() int {
 	_g_ := getg()
@@ -6579,6 +6580,7 @@ func procPin() int {
 	return int(mp.p.ptr().id)
 }
 
+// procUnpin 因sync.Pool解除当前g的抢占标记
 //go:nosplit
 func procUnpin() {
 	_g_ := getg()
