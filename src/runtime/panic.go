@@ -225,6 +225,7 @@ func panicmemAddr(addr uintptr) {
 	panic(errorAddressString{msg: "invalid memory address or nil pointer dereference", addr: addr})
 }
 
+// 创建新的defer函数fn，这是由编译器将defer关键字转换成这个函数调用的
 // Create a new deferred function fn, which has no arguments and results.
 // The compiler turns a defer statement into a call to this.
 func deferproc(fn func()) {
@@ -238,8 +239,10 @@ func deferproc(fn func()) {
 	if d._panic != nil {
 		throw("deferproc: d.panic != nil after newdefer")
 	}
+    // 加入当前g的defer链表
 	d.link = gp._defer
 	gp._defer = d
+    // 设置参数
 	d.fn = fn
 	d.pc = getcallerpc()
 	// We must not be preempted between calling getcallersp and
@@ -247,6 +250,7 @@ func deferproc(fn func()) {
 	// uintptr stack pointer.
 	d.sp = getcallersp()
 
+    // 编译器生成的代码总会检测函数返回值，如果不为0直接跳转到函数末尾
 	// deferproc returns 0 normally.
 	// a deferred func that stops a panic
 	// makes the deferproc return 1.
@@ -258,6 +262,7 @@ func deferproc(fn func()) {
 	// been set and must not be clobbered.
 }
 
+// 将d标志为栈上的对象
 // deferprocStack queues a new deferred function with a defer record on the stack.
 // The defer record must have its fn field initialized.
 // All other fields can contain junk.
@@ -270,6 +275,7 @@ func deferprocStack(d *_defer) {
 		// go code on the system stack can't defer
 		throw("defer on system stack")
 	}
+    // 初始化字段，fn已经被设置了
 	// fn is already set.
 	// The other fields are junk on entry to deferprocStack and
 	// are initialized here.
@@ -301,8 +307,12 @@ func deferprocStack(d *_defer) {
 	// been set and must not be clobbered.
 }
 
+// 每个P都有一个defer结构体的对象池
 // Each P holds a pool for defers.
 
+// 申请一个defer结构，通常是由P本地的对象池提供
+// 每个defer必须由 freedefer 释放
+// defer结构尚未添加进任何defer链中
 // Allocate a Defer, usually using per-P pool.
 // Each defer must be released with freedefer.  The defer is not
 // added to any defer chain yet.
@@ -311,6 +321,7 @@ func newdefer() *_defer {
 	mp := acquirem()
 	pp := mp.p.ptr()
 	if len(pp.deferpool) == 0 && sched.deferpool != nil {
+        // 如果当前p池中没有defer结构，则从sched的池中拿取当前p池容量的一半
 		lock(&sched.deferlock)
 		for len(pp.deferpool) < cap(pp.deferpool)/2 && sched.deferpool != nil {
 			d := sched.deferpool
@@ -320,6 +331,7 @@ func newdefer() *_defer {
 		}
 		unlock(&sched.deferlock)
 	}
+    // 弹出队尾的defer结构
 	if n := len(pp.deferpool); n > 0 {
 		d = pp.deferpool[n-1]
 		pp.deferpool[n-1] = nil
@@ -332,10 +344,12 @@ func newdefer() *_defer {
 		// Allocate new defer.
 		d = new(_defer)
 	}
+    // 标记defer是由堆内存申请的
 	d.heap = true
 	return d
 }
 
+// 解绑当前d上相关信息，将d存放到defer对象池中
 // Free the given defer.
 // The defer cannot be used after this call.
 //
@@ -356,12 +370,14 @@ func freedefer(d *_defer) {
 		freedeferfn()
 	}
 	if !d.heap {
+        // 如果是栈申请的 直接返回
 		return
 	}
 
 	mp := acquirem()
 	pp := mp.p.ptr()
 	if len(pp.deferpool) == cap(pp.deferpool) {
+        // 如果当前P的defer对象池满了 就将一半的的对象放到sched的defer对象池中
 		// Transfer half of local cache to the central cache.
 		var first, last *_defer
 		for len(pp.deferpool) > cap(pp.deferpool)/2 {
@@ -382,6 +398,7 @@ func freedefer(d *_defer) {
 		unlock(&sched.deferlock)
 	}
 
+    // 新建空变量
 	*d = _defer{}
 
 	pp.deferpool = append(pp.deferpool, d)
@@ -417,11 +434,14 @@ func deferreturn() {
 			return
 		}
 		if d.openDefer {
+            // 如果是开放代码的defer
 			done := runOpenDeferFrame(gp, d)
 			if !done {
 				throw("unfinished open-coded defers in deferreturn")
 			}
+            // 向后偏移
 			gp._defer = d.link
+            // 将d返回对象池中
 			freedefer(d)
 			// If this frame uses open defers, then this
 			// must be the only defer record for the
@@ -429,6 +449,7 @@ func deferreturn() {
 			return
 		}
 
+        // 不是开放代码的defer，直接归还d，后执行fn
 		fn := d.fn
 		d.fn = nil
 		gp._defer = d.link
@@ -451,6 +472,7 @@ func Goexit() {
 	// for detailed comments.
 	gp := getg()
 
+    // 创建新的panic，绕过recover()
 	// Create a panic object for Goexit, so we can recognize when it might be
 	// bypassed by a recover().
 	var p _panic
@@ -495,6 +517,7 @@ func Goexit() {
 				addOneOpenDeferFrame(gp, 0, nil)
 			}
 		} else {
+            // 不是开放代码，就直接执行函数
 			// Save the pc/sp in deferCallSave(), so we can "recover" back to this
 			// loop if necessary.
 			deferCallSave(&p, d.fn)
@@ -512,6 +535,7 @@ func Goexit() {
 		if gp._defer != d {
 			throw("bad defer entry in Goexit")
 		}
+        // 归还defer结构
 		d._panic = nil
 		d.fn = nil
 		gp._defer = d.link
@@ -540,6 +564,7 @@ func preprintpanics(p *_panic) {
 	}
 }
 
+// 打印当前的panic信息，只能在 preprintpanics 之后调用
 // Print all currently active panics. Used when crashing.
 // Should only be called after preprintpanics.
 func printpanics(p *_panic) {
@@ -577,6 +602,7 @@ func printpanics(p *_panic) {
 func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 	var prevDefer *_defer
 	if sp == nil {
+        // 如果sp为空，则将当前gp的第一个defer结构的pc和sp赋值过来
 		prevDefer = gp._defer
 		pc = prevDefer.framepc
 		sp = unsafe.Pointer(prevDefer.sp)
@@ -617,6 +643,7 @@ func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 					throw("missing deferreturn")
 				}
 
+                // 填充新的defer，并标记为开放代码的defer
 				d1 := newdefer()
 				d1.openDefer = true
 				d1._panic = nil
@@ -646,6 +673,7 @@ func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 	})
 }
 
+// readvarintUnsafe 对一个不安全的指针解析一个varint数值和该值后面的指针
 // readvarintUnsafe reads the uint32 in varint format starting at fd, and returns the
 // uint32 and a pointer to the byte following the varint.
 //
@@ -670,6 +698,7 @@ func readvarintUnsafe(fd unsafe.Pointer) (uint32, unsafe.Pointer) {
 	}
 }
 
+// 运行开放代码的延迟处理
 // runOpenDeferFrame runs the active open-coded defers in the frame specified by
 // d. It normally processes all active defers in the frame, but stops immediately
 // if a defer does a successful recover. It returns true if there are no
@@ -680,7 +709,7 @@ func runOpenDeferFrame(gp *g, d *_defer) bool {
 
 	deferBitsOffset, fd := readvarintUnsafe(fd)
 	nDefers, fd := readvarintUnsafe(fd)
-	deferBits := *(*uint8)(unsafe.Pointer(d.varp - uintptr(deferBitsOffset)))
+	deferBits := *(*uint8)(unsafe.Pointer(d.varp - uintptr(deferBitsOffset))) // 获取延迟记录
 
 	for i := int(nDefers) - 1; i >= 0; i-- {
 		// read the funcdata info for this defer
@@ -719,12 +748,15 @@ func runOpenDeferFrame(gp *g, d *_defer) bool {
 // tracebacks.
 func deferCallSave(p *_panic, fn func()) {
 	if p != nil {
+        // 填充panic的相关参数
 		p.argp = unsafe.Pointer(getargp())
 		p.pc = getcallerpc()
 		p.sp = unsafe.Pointer(getcallersp())
 	}
+    // 执行defer函数
 	fn()
 	if p != nil {
+        // 依旧是panic
 		p.pc = 0
 		p.sp = unsafe.Pointer(nil)
 	}
@@ -915,6 +947,7 @@ func gopanic(e interface{}) {
 	*(*int)(nil) = 0      // not reached
 }
 
+// 返回调用者写入参数的地址
 // getargp returns the location where the caller
 // writes outgoing function call arguments.
 //go:nosplit

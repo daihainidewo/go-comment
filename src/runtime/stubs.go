@@ -11,6 +11,7 @@ import (
 	"unsafe"
 )
 
+// 地址p偏移x
 // Should be a built-in for unsafe.Pointer?
 //go:nosplit
 func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {

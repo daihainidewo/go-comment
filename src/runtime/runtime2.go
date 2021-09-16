@@ -423,7 +423,7 @@ type g struct {
 	stackguard1 uintptr // c栈指针 offset known to liblink
 
 	_panic    *_panic // innermost panic - offset known to liblink
-	_defer    *_defer // innermost defer
+	_defer    *_defer // innermost defer 最新的defer
 	m         *m      // current m; offset known to arm liblink
 	sched     gobuf
 	syscallsp uintptr // if status==Gsyscall, syscallsp = sched.sp to use during gc
@@ -623,6 +623,7 @@ type p struct {
 	pcache      pageCache  // 页缓存
 	raceprocctx uintptr
 
+    // 本地的defer对象池
 	deferpool    []*_defer // pool of available defer structs (see panic.go)
 	deferpoolbuf [32]*_defer
 
@@ -807,8 +808,8 @@ type schedt struct {
 	sudogcache *sudog // sudog 全局缓存
 
 	// Central pool of available defer structs.
-	deferlock mutex
-	deferpool *_defer
+	deferlock mutex  // defer对象池锁
+	deferpool *_defer // 全局defer对象池
 
 	// freem is the list of m's waiting to be freed when their
 	// m.exited is set. Linked through m.freelink.
@@ -954,6 +955,7 @@ func extendRandom(r []byte, n int) {
 type _defer struct {
 	started bool
 	heap    bool
+    // 标识当前defer是open-coded的defer
 	// openDefer indicates that this _defer is for a frame with open-coded
 	// defers. We have only one defer record for the entire frame (which may
 	// currently have 0, 1, or more defers active).
@@ -961,7 +963,7 @@ type _defer struct {
 	sp        uintptr // sp at time of defer
 	pc        uintptr // pc at time of defer
 	fn        func()  // can be nil for open-coded defers
-	_panic    *_panic // panic that is running defer
+	_panic    *_panic // panic that is running defer 正在运行的panic
 	link      *_defer // next defer on G; can point to either heap or stack!
 
 	// If openDefer is true, the fields below record values about the stack
