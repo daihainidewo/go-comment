@@ -509,11 +509,13 @@ TEXT runtime·futex(SB),NOSPLIT,$0
 
 // int32 clone(int32 flags, void *stk, M *mp, G *gp, void (*fn)(void));
 TEXT runtime·clone(SB),NOSPLIT,$0
+    // 参数保存到寄存器中
 	MOVL	flags+0(FP), DI
 	MOVQ	stk+8(FP), SI
 	MOVQ	$0, DX
 	MOVQ	$0, R10
 	MOVQ    $0, R8
+	// linux系统调用会修改CX和R11
 	// Copy mp, gp, fn off parent stack for use by child.
 	// Careful: Linux system call clobbers CX and R11.
 	MOVQ	mp+16(FP), R13
@@ -535,26 +537,34 @@ nog1:
 	MOVL	$SYS_clone, AX
 	SYSCALL
 
+    // 返回0表示父进程，将AX置为返回值
 	// In parent, return.
 	CMPQ	AX, $0
 	JEQ	3(PC)
 	MOVL	AX, ret+40(FP)
 	RET
 
+    // 子进程流程
+
+    // 将新开辟的栈赋给子进程SP
 	// In child, on new stack.
 	MOVQ	SI, SP
 
+    // 判断 mp 和 gp 为空
 	// If g or m are nil, skip Go-related setup.
 	CMPQ	R13, $0    // m
 	JEQ	nog2
 	CMPQ	R9, $0    // g
 	JEQ	nog2
 
+    // 如果不为空 则调用系统调用获取tid
 	// Initialize m->procid to Linux tid
 	MOVL	$SYS_gettid, AX
 	SYSCALL
+	// 将AX的值赋给mp.procid
 	MOVQ	AX, m_procid(R13)
 
+    // 获取当前的g，并绑定m
 	// In child, set up new stack
 	get_tls(CX)
 	MOVQ	R13, g_m(R9)

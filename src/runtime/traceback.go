@@ -22,6 +22,7 @@ import (
 
 const usesLR = sys.MinFrameSize > 0
 
+// gentraceback 生成整个调用链的traceback
 // Generic traceback. Handles runtime stack prints (pcbuf == nil),
 // the runtime.Callers function (pcbuf != nil), as well as the garbage
 // collector (callback != nil).  A little clunky to merge these, but avoids
@@ -859,6 +860,7 @@ func callers(skip int, pcbuf []uintptr) int {
 	return n
 }
 
+// gcallers 生成调用trace，存于pcbuf中，返回个数
 func gcallers(gp *g, skip int, pcbuf []uintptr) int {
 	return gentraceback(^uintptr(0), ^uintptr(0), 0, gp, skip, &pcbuf[0], len(pcbuf), nil, nil, 0)
 }
@@ -1054,6 +1056,8 @@ func tracebackHexdump(stk stack, frame *stkframe, bad uintptr) {
 	})
 }
 
+// isSystemGoroutine 返回是否是系统goroutine，用于忽略dump栈和死锁检测
+// 如果fixed为true，表示任何可以在用户和系统之间变化的goroutine（即终结器goroutine）都认为是用户goroutine
 // isSystemGoroutine reports whether the goroutine g must be omitted
 // in stack dumps and deadlock detector. This is any goroutine that
 // starts at a runtime.* entry point, except for runtime.main,

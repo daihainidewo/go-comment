@@ -27,6 +27,7 @@ const (
 	tflagRegularMemory tflag = 1 << 3 // equal and hash can treat values of this type as a single region of t.size bytes
 )
 
+// _type 核心类型结构
 // Needs to be in sync with ../cmd/link/internal/ld/decodesym.go:/^func.commonsize,
 // ../cmd/compile/internal/reflectdata/reflect.go:/^func.dcommontype and
 // ../reflect/type.go:/^type.rtype.

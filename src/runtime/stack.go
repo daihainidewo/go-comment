@@ -1125,6 +1125,7 @@ func nilfunc() {
 	*(*uint8)(nil) = 0
 }
 
+// gostartcallfn 调整gobuf，使pc指向fv.fn
 // adjust Gobuf as if it executed a call to fn
 // and then stopped before the first instruction in fn.
 func gostartcallfn(gobuf *gobuf, fv *funcval) {

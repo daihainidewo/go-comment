@@ -119,6 +119,8 @@ func freemcache(c *mcache) {
 	})
 }
 
+// getMCache 尝试获取 mcache，返回空表示完成引导且没有p，没完成引导会返回全局 mcache0
+// 调用者的P不能改变，所以只能在不可抢占期间调用
 // getMCache is a convenience function which tries to obtain an mcache.
 //
 // Returns nil if we're not bootstrapping or we don't have a P. The caller's

@@ -1499,6 +1499,8 @@ func gcDumpObject(label string, obj, off uintptr) {
 	}
 }
 
+// gcmarknewobject 将新申请的对象标记为黑，对象不能包含任何非空指针
+// 不用抢占就能操作 gcWork
 // gcmarknewobject marks a newly allocated object black. obj must
 // not contain any non-nil pointers.
 //

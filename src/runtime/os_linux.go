@@ -124,6 +124,8 @@ const (
 	// In non-QEMU environments CLONE_SYSVSEM is inconsequential as we do not
 	// use System V semaphores.
 
+    // 新建线程标志：共享虚拟内存，共享文件映射表，共享信号处理，共享systemV的信号量撤消列表，添加进线程组
+    // https://man7.org/linux/man-pages/man2/clone.2.html
 	cloneFlags = _CLONE_VM | /* share memory */
 		_CLONE_FS | /* share cwd, etc */
 		_CLONE_FILES | /* share fd table */

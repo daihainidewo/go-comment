@@ -531,6 +531,7 @@ func (h heapBits) isPointer() bool {
 	return h.bits()&bitPointer != 0
 }
 
+// bulkBarrierPreWrite 为[src, src+size)每个指针插槽执行写屏障
 // bulkBarrierPreWrite executes a write barrier
 // for every pointer slot in the memory range [src, src+size),
 // using pointer/scalar information from [dst, dst+size).
@@ -560,6 +561,7 @@ func (h heapBits) isPointer() bool {
 //go:nosplit
 func bulkBarrierPreWrite(dst, src, size uintptr) {
 	if (dst|src|size)&(goarch.PtrSize-1) != 0 {
+        // 检测传入地址是否对指针大小内存对齐
 		throw("bulkBarrierPreWrite: unaligned arguments")
 	}
 	if !writeBarrier.needed {

@@ -15,6 +15,7 @@ const StackGuardMultiplier = StackGuardMultiplierDefault*(1-goos.IsAix) + 2*goos
 // DefaultPhysPageSize is the default physical page size.
 const DefaultPhysPageSize = goarch.DefaultPhysPageSize
 
+// PCQuantum 程序计数器的最小单位
 // PCQuantum is the minimal unit for a program counter (1 on x86, 4 on most other systems).
 // The various PC tables record PC deltas pre-divided by PCQuantum.
 const PCQuantum = goarch.PCQuantum

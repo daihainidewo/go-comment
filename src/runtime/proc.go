@@ -113,7 +113,7 @@ var modinfo string
 var (
 	m0           m
 	g0           g
-	mcache0      *mcache
+	mcache0      *mcache         // 由mallocinit初始化设置，到procresize清除
 	raceprocctx0 uintptr
 )
 
@@ -384,6 +384,7 @@ func goready(gp *g, traceskip int) {
 	})
 }
 
+// acquireSudog 获取sudog
 //go:nosplit
 func acquireSudog() *sudog {
 	// Delicate dance: the semaphore implementation calls
@@ -397,7 +398,9 @@ func acquireSudog() *sudog {
 	mp := acquirem()
 	pp := mp.p.ptr()
 	if len(pp.sudogcache) == 0 {
+        // 本地P没有缓存，则从全局的获取
 		lock(&sched.sudoglock)
+        // 从全局获取当前P容量一半的 sudog 到本地P缓存中
 		// First, try to grab a batch from central cache.
 		for len(pp.sudogcache) < cap(pp.sudogcache)/2 && sched.sudogcache != nil {
 			s := sched.sudogcache
@@ -406,11 +409,13 @@ func acquireSudog() *sudog {
 			pp.sudogcache = append(pp.sudogcache, s)
 		}
 		unlock(&sched.sudoglock)
+        // 如果依旧为空就新建一个 sudog
 		// If the central cache is empty, allocate a new one.
 		if len(pp.sudogcache) == 0 {
 			pp.sudogcache = append(pp.sudogcache, new(sudog))
 		}
 	}
+    // 取最后一个元素返回
 	n := len(pp.sudogcache)
 	s := pp.sudogcache[n-1]
 	pp.sudogcache[n-1] = nil
@@ -422,8 +427,10 @@ func acquireSudog() *sudog {
 	return s
 }
 
+// releaseSudog 释放/归还sudog
 //go:nosplit
 func releaseSudog(s *sudog) {
+    // s 必须是无关联的
 	if s.elem != nil {
 		throw("runtime: sudog with non-nil elem")
 	}
@@ -449,6 +456,7 @@ func releaseSudog(s *sudog) {
 	mp := acquirem() // avoid rescheduling to another P
 	pp := mp.p.ptr()
 	if len(pp.sudogcache) == cap(pp.sudogcache) {
+        // 本地队列满了就将本地P的一半放到全局队列中
 		// Transfer half of local cache to the central cache.
 		var first, last *sudog
 		for len(pp.sudogcache) > cap(pp.sudogcache)/2 {
@@ -464,10 +472,12 @@ func releaseSudog(s *sudog) {
 			last = p
 		}
 		lock(&sched.sudoglock)
+        // 放到全局链表头部
 		last.next = sched.sudogcache
 		sched.sudogcache = first
 		unlock(&sched.sudoglock)
 	}
+    // 将s存放到P本地的缓冲中
 	pp.sudogcache = append(pp.sudogcache, s)
 	releasem(mp)
 }
@@ -4477,26 +4487,31 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
 	newg.sched.sp = sp
 	newg.stktopsp = sp
+    // newg开始执行位置为goexit函数的下一语句
 	newg.sched.pc = abi.FuncPCABI0(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
 	newg.sched.g = guintptr(unsafe.Pointer(newg))
-	gostartcallfn(&newg.sched, fn)
-	newg.gopc = callerpc
-	newg.ancestors = saveAncestors(callergp)
-	newg.startpc = fn.fn
+	gostartcallfn(&newg.sched, fn) // 设置newg的pc指向fn
+	newg.gopc = callerpc // 记录调用者pc
+	newg.ancestors = saveAncestors(callergp) // 记录祖先信息
+	newg.startpc = fn.fn // 标记函数入口pc
 	if _g_.m.curg != nil {
-		newg.labels = _g_.m.curg.labels
+		newg.labels = _g_.m.curg.labels // 拷贝父goroutine的labels
 	}
 	if isSystemGoroutine(newg, false) {
+        // 如果是系统goroutine就标记加1
 		atomic.Xadd(&sched.ngsys, +1)
 	}
 	// Track initial transition?
+    // 随机开始跟踪延迟统计
 	newg.trackingSeq = uint8(fastrand())
 	if newg.trackingSeq%gTrackingPeriod == 0 {
 		newg.tracking = true
 	}
+    // 转换g的状态
 	casgstatus(newg, _Gdead, _Grunnable)
 
 	if _p_.goidcache == _p_.goidcacheend {
+        // 如果本地的P的goid缓存用完，则从全局goid生成器获取
 		// Sched.goidgen is the last allocated id,
 		// this batch must be [sched.goidgen+1, sched.goidgen+GoidCacheBatch].
 		// At startup sched.goidgen=0, so main goroutine receives goid=1.
@@ -4504,6 +4519,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 		_p_.goidcache -= _GoidCacheBatch - 1
 		_p_.goidcacheend = _p_.goidcache + _GoidCacheBatch
 	}
+    // 设置goid
 	newg.goid = int64(_p_.goidcache)
 	_p_.goidcache++
 	if raceenabled {
@@ -4512,6 +4528,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 	if trace.enabled {
 		traceGoCreate(newg, newg.startpc)
 	}
+    // 解除抢占m
 	releasem(_g_.m)
 
 	return newg
@@ -4531,6 +4548,7 @@ func saveAncestors(callergp *g) *[]ancestorInfo {
 	if callergp.ancestors != nil {
 		callerAncestors = *callergp.ancestors
 	}
+    // 深拷贝调用者的祖先
 	n := int32(len(callerAncestors)) + 1
 	if n > debug.tracebackancestors {
 		n = debug.tracebackancestors
@@ -4538,10 +4556,12 @@ func saveAncestors(callergp *g) *[]ancestorInfo {
 	ancestors := make([]ancestorInfo, n)
 	copy(ancestors[1:], callerAncestors)
 
+    // 获取调用trace
 	var pcs [_TracebackMaxFrames]uintptr
 	npcs := gcallers(callergp, 0, pcs[:])
 	ipcs := make([]uintptr, npcs)
 	copy(ipcs, pcs[:])
+    // 填充数据
 	ancestors[0] = ancestorInfo{
 		pcs:  ipcs,
 		goid: callergp.goid,
@@ -6193,9 +6213,11 @@ func runqput(_p_ *p, gp *g, next bool) {
 		// 再将原有的放到可执行队列中
 		oldnext := _p_.runnext
 		if !_p_.runnext.cas(oldnext, guintptr(unsafe.Pointer(gp))) {
+            // 直到成功为止
 			goto retryNext
 		}
 		if oldnext == 0 {
+            // 如果原来没有，直接返回
 			return
 		}
 		// Kick the old runnext out to the regular run queue.
@@ -6203,16 +6225,20 @@ func runqput(_p_ *p, gp *g, next bool) {
 	}
 
 retry:
+    // 队列head有可能被偷取
 	h := atomic.LoadAcq(&_p_.runqhead) // load-acquire, synchronize with consumers
 	t := _p_.runqtail
-	if t-h < uint32(len(_p_.runq)) { // 存至本地可执行队列
+	if t-h < uint32(len(_p_.runq)) {
+        // 本地有空闲
 		_p_.runq[t%uint32(len(_p_.runq))].set(gp)
 		atomic.StoreRel(&_p_.runqtail, t+1) // store-release, makes the item available for consumption
 		return
 	}
-	if runqputslow(_p_, gp, h, t) { // 存至全局可执行队列
+	if runqputslow(_p_, gp, h, t) {
+        // 存至全局可执行队列，成功就返回
 		return
 	}
+    // 失败说明本地队列没满，重新尝试上面操作
 	// the queue is not full, now the put above must succeed
 	goto retry
 }
@@ -6233,6 +6259,7 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 		batch[i] = _p_.runq[(h+i)%uint32(len(_p_.runq))].ptr()
 	}
 	if !atomic.CasRel(&_p_.runqhead, h, h+n) { // cas-release, commits consume
+        // head变更，返回
 		return false
 	}
 	batch[n] = gp
@@ -6244,10 +6271,12 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 		}
 	}
 
+    // 将数组链化
 	// Link the goroutines.
 	for i := uint32(0); i < n; i++ {
 		batch[i].schedlink.set(batch[i+1])
 	}
+    // 将链表加入全局待执行列表
 	var q gQueue
 	q.head.set(batch[0])
 	q.tail.set(batch[n])

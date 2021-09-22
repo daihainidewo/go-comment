@@ -12,10 +12,12 @@ import (
 	"unsafe"
 )
 
+// 调整gobuf，使pc指向fn
 // adjust Gobuf as if it executed a call to fn with context ctxt
 // and then stopped before the first instruction in fn.
 func gostartcall(buf *gobuf, fn, ctxt unsafe.Pointer) {
 	sp := buf.sp
+    // 将当前的pc压栈
 	sp -= goarch.PtrSize
 	*(*uintptr)(unsafe.Pointer(sp)) = buf.pc
 	buf.sp = sp

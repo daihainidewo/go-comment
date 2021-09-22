@@ -26,6 +26,7 @@ import (
 
 const (
 	maxAlign  = 8
+    // hchanSize 将hchan的大小向上对齐
 	hchanSize = unsafe.Sizeof(hchan{}) + uintptr(-int(unsafe.Sizeof(hchan{}))&(maxAlign-1))
 	debugChan = false
 )
@@ -42,6 +43,8 @@ type hchan struct {
 	recvq    waitq  // list of recv waiters
 	sendq    waitq  // list of send waiters
 
+    // lock 保护 hchan 所有字段，以及几个在 sudog 作用于这个channel的字段
+    // 在持有 lock 时，不要修改另一个G的状态，通常是调用 ready，这会在栈缩容时导致死锁
 	// lock protects all fields in hchan, as well as several
 	// fields in sudogs blocked on this channel.
 	//
@@ -85,6 +88,7 @@ func makechan(t *chantype, size int) *hchan {
 		panic(plainError("makechan: size out of range"))
 	}
 
+    // 申请内存，根据大小，有无指针分别创建不同的对象
 	// Hchan does not contain pointers interesting for GC when elements stored in buf do not contain pointers.
 	// buf points into the same allocation, elemtype is persistent.
 	// SudoG's are referenced from their owning thread so they can't be collected.
@@ -92,16 +96,19 @@ func makechan(t *chantype, size int) *hchan {
 	var c *hchan
 	switch {
 	case mem == 0:
+        // 无缓冲的chan
 		// Queue or element size is zero.
 		c = (*hchan)(mallocgc(hchanSize, nil, true))
 		// Race detector uses this location for synchronization.
 		c.buf = c.raceaddr()
 	case elem.ptrdata == 0:
+        // 缓冲对象没有指针
 		// Elements do not contain pointers.
 		// Allocate hchan and buf in one call.
 		c = (*hchan)(mallocgc(hchanSize+mem, nil, true))
 		c.buf = add(unsafe.Pointer(c), hchanSize)
 	default:
+        // 缓冲对象包含指针
 		// Elements contain pointers.
 		c = new(hchan)
 		c.buf = mallocgc(mem, elem, true)
@@ -118,26 +125,32 @@ func makechan(t *chantype, size int) *hchan {
 	return c
 }
 
+// chanbuf 计算第i个插槽的地址
 // chanbuf(c, i) is pointer to the i'th slot in the buffer.
 func chanbuf(c *hchan, i uint) unsafe.Pointer {
 	return add(c.buf, uintptr(i)*uintptr(c.elemsize))
 }
 
+// full 返回是否发送会被阻塞
 // full reports whether a send on c would block (that is, the channel is full).
 // It uses a single word-sized read of mutable state, so although
 // the answer is instantaneously true, the correct answer may have changed
 // by the time the calling function receives the return value.
 func full(c *hchan) bool {
+    // c.dataqsiz 创建后就不可变了，任何时候读取都是安全的
 	// c.dataqsiz is immutable (never written after the channel is created)
 	// so it is safe to read at any time during channel operation.
 	if c.dataqsiz == 0 {
+        // 如果是无缓冲hchan，返回是否有等待的接收者，如果有则表示向hchan发送时不会阻塞
 		// Assumes that a pointer read is relaxed-atomic.
 		return c.recvq.first == nil
 	}
+    // 有缓冲的则返回队列大小和缓冲大小
 	// Assumes that a uint read is relaxed-atomic.
 	return c.qcount == c.dataqsiz
 }
 
+// chansend1 向chan发送数据的具体实现
 // entry point for c <- x from compiled code
 //go:nosplit
 func chansend1(c *hchan, elem unsafe.Pointer) {
@@ -202,10 +215,12 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 
 	if c.closed != 0 {
 		unlock(&c.lock)
+        // 向关闭的chan写入数据 panic
 		panic(plainError("send on closed channel"))
 	}
 
 	if sg := c.recvq.dequeue(); sg != nil {
+        // 如果有正在等待的g则直接发送给sudog，绕过缓冲区
 		// Found a waiting receiver. We pass the value we want to send
 		// directly to the receiver, bypassing the channel buffer (if any).
 		send(c, sg, ep, func() { unlock(&c.lock) }, 3)
@@ -218,9 +233,11 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		if raceenabled {
 			racenotify(c, c.sendx, nil)
 		}
+        // 利用memmove复制数据进入队列中
 		typedmemmove(c.elemtype, qp, ep)
 		c.sendx++
 		if c.sendx == c.dataqsiz {
+            // 防止数据索引溢出
 			c.sendx = 0
 		}
 		c.qcount++
@@ -230,9 +247,11 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 
 	if !block {
 		unlock(&c.lock)
+        // 如果不需要阻塞等待就直接返回
 		return false
 	}
 
+    // 需要阻塞等待
 	// Block on the channel. Some receiver will complete our operation for us.
 	gp := getg()
 	mysg := acquireSudog()
@@ -249,12 +268,15 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	mysg.c = c
 	gp.waiting = mysg
 	gp.param = nil
+    // 将sudog存进等待发送的队列中
 	c.sendq.enqueue(mysg)
+    // 标记当前g不能栈缩容
 	// Signal to anyone trying to shrink our stack that we're about
 	// to park on a channel. The window between when this G's status
 	// changes and when we set gp.activeStackChans is not safe for
 	// stack shrinking.
 	atomic.Store8(&gp.parkingOnChan, 1)
+    // 阻塞
 	gopark(chanparkcommit, unsafe.Pointer(&c.lock), waitReasonChanSend, traceEvGoBlockSend, 2)
 	// Ensure the value being sent is kept alive until the
 	// receiver copies it out. The sudog has a pointer to the
@@ -284,6 +306,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	return true
 }
 
+// send 将数据发给sudog
 // send processes a send operation on an empty channel c.
 // The value ep sent by the sender is copied to the receiver sg.
 // The receiver is then woken up to go on its merry way.
@@ -318,6 +341,7 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if sg.releasetime != 0 {
 		sg.releasetime = cputicks()
 	}
+    // 将gp标记为可执行
 	goready(gp, skip+1)
 }
 
@@ -374,6 +398,7 @@ func closechan(c *hchan) {
 
 	var glist gList
 
+    // 处理所有接收者
 	// release all readers
 	for {
 		sg := c.recvq.dequeue()
@@ -396,6 +421,7 @@ func closechan(c *hchan) {
 		glist.push(gp)
 	}
 
+    // 处理所有发送者
 	// release all writers (they will panic)
 	for {
 		sg := c.sendq.dequeue()
@@ -416,6 +442,7 @@ func closechan(c *hchan) {
 	}
 	unlock(&c.lock)
 
+    // 所有的等待g全部变成可执行状态
 	// Ready all Gs now that we've dropped the channel lock.
 	for !glist.empty() {
 		gp := glist.pop()
@@ -424,6 +451,7 @@ func closechan(c *hchan) {
 	}
 }
 
+// empty 返回hchan读取是否会阻塞
 // empty reports whether a read from c would block (that is, the channel is
 // empty).  It uses a single atomic read of mutable state.
 func empty(c *hchan) bool {
@@ -520,6 +548,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	}
 
 	if sg := c.sendq.dequeue(); sg != nil {
+        // 优先从发送者队列中获取直接返回
 		// Found a waiting sender. If buffer is size 0, receive value
 		// directly from sender. Otherwise, receive from head of queue
 		// and add sender's value to the tail of the queue (both map to
@@ -534,6 +563,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 		if raceenabled {
 			racenotify(c, c.recvx, nil)
 		}
+        // 将qp内容移动到ep上
 		if ep != nil {
 			typedmemmove(c.elemtype, ep, qp)
 		}
@@ -607,6 +637,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 // A non-nil ep must point to the heap or the caller's stack.
 func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if c.dataqsiz == 0 {
+        // 无缓冲
 		if raceenabled {
 			racesync(c, sg)
 		}
@@ -615,6 +646,7 @@ func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 			recvDirect(c.elemtype, sg, ep)
 		}
 	} else {
+        // 带缓冲队列
 		// Queue is full. Take the item at the
 		// head of the queue. Make the sender enqueue
 		// its item at the tail of the queue. Since the
@@ -647,6 +679,7 @@ func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	goready(gp, skip+1)
 }
 
+// chanparkcommit 解除park后的解锁操作
 func chanparkcommit(gp *g, chanLock unsafe.Pointer) bool {
 	// There are unlocked sudogs that point into gp's stack. Stack
 	// copying must lock the channels of those sudogs.
@@ -670,6 +703,7 @@ func chanparkcommit(gp *g, chanLock unsafe.Pointer) bool {
 	return true
 }
 
+// 编译器转换select，单返回值
 // compiler implements
 //
 //	select {
@@ -691,6 +725,7 @@ func selectnbsend(c *hchan, elem unsafe.Pointer) (selected bool) {
 	return chansend(c, elem, false, getcallerpc())
 }
 
+// select 双返回值
 // compiler implements
 //
 //	select {
@@ -751,20 +786,24 @@ func reflect_chanclose(c *hchan) {
 	closechan(c)
 }
 
+// enqueue 将sgp追加进waitq中
 func (q *waitq) enqueue(sgp *sudog) {
 	sgp.next = nil
 	x := q.last
 	if x == nil {
+        // 没有元素则成为第一个元素
 		sgp.prev = nil
 		q.first = sgp
 		q.last = sgp
 		return
 	}
+    // 追加队尾
 	sgp.prev = x
 	x.next = sgp
 	q.last = sgp
 }
 
+// dequeue 出队
 func (q *waitq) dequeue() *sudog {
 	for {
 		sgp := q.first

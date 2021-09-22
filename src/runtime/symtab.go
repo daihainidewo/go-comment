@@ -715,7 +715,7 @@ func (f funcInfo) _Func() *Func {
 	return (*Func)(unsafe.Pointer(f._func))
 }
 
-// findfunc 返回函数指针执行的函数信息
+// findfunc 通过函数入口指针返回函数信息
 // findfunc looks up function metadata for a PC.
 //
 // It is nosplit because it's part of the isgoexception

@@ -68,6 +68,9 @@ func badsystemstack() {
 	write(2, sp.str, int32(sp.len))
 }
 
+// memclrNoHeapPointers 清理从ptr开始的n个字节
+// 不能包含指向堆的指针：ptr是无指针的初始化内存；ptr是没有初始化的内存（里面包含的是历史脏数据）
+// 具体实现基于CPU架构
 // memclrNoHeapPointers clears n bytes starting at ptr.
 //
 // Usually you should use typedmemclr. memclrNoHeapPointers should be
@@ -122,6 +125,7 @@ func reflect_memmove(to, from unsafe.Pointer, n uintptr) {
 // exported value for testing
 const hashLoad = float32(loadFactorNum) / float32(loadFactorDen)
 
+// 计算随机数
 //go:nosplit
 func fastrand() uint32 {
 	mp := getg().m

@@ -91,6 +91,7 @@ func (b *IntArgRegBitmap) Get(i int) bool {
 // results of this function in any == expression. It is only safe to
 // use the result as an address at which to start executing code.
 
+// FuncPCABI0 返回f的PC，f必须定义是ABI0，否则编译时报错
 // FuncPCABI0 returns the entry PC of the function f, which must be a
 // direct reference of a function defined as ABI0. Otherwise it is a
 // compile-time error.

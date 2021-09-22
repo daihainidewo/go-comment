@@ -959,6 +959,8 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 	return
 }
 
+// mallocgc 申请size大小的空间，小对象会从P本地的free list获取，大对象（大于32kB）直接从堆申请
+// 申请后还会有一些GC的操作
 // Allocate an object of size bytes.
 // Small objects are allocated from the per-P cache's free lists.
 // Large objects (> 32 kB) are allocated straight from the heap.
@@ -1001,6 +1003,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		}
 	}
 
+    // 检查g的负债，如果没有开始GC则为nil
 	// assistG is the G to charge for this allocation, or nil if
 	// GC is not currently active.
 	var assistG *g
@@ -1034,18 +1037,22 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 
 	shouldhelpgc := false
 	dataSize := size
+    // 获取mcache
 	c := getMCache()
 	if c == nil {
 		throw("mallocgc called without a P or outside bootstrapping")
 	}
 	var span *mspan
 	var x unsafe.Pointer
+    // 指向类型是否带有指针
 	noscan := typ == nil || typ.ptrdata == 0
 	// In some cases block zeroing can profitably (for latency reduction purposes)
 	// be delayed till preemption is possible; isZeroed tracks that state.
 	isZeroed := true
 	if size <= maxSmallSize {
+        // 小块内存
 		if noscan && size < maxTinySize {
+            // 无指针且小于细小内存则使用tiny分配器
 			// Tiny allocator.
 			//
 			// Tiny allocator combines several tiny allocation requests
@@ -1119,6 +1126,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			}
 			size = maxTinySize
 		} else {
+            // 其他小块内存分配
 			var sizeclass uint8
 			if size <= smallSizeMax-8 {
 				sizeclass = size_to_class8[divRoundUp(size, smallSizeDiv)]
@@ -1138,6 +1146,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			}
 		}
 	} else {
+        // 大块内存分配
 		shouldhelpgc = true
 		// For large allocations, keep track of zeroed state so that
 		// bulk zeroing can be happen later in a preemptible context.
@@ -1150,6 +1159,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 
 	var scanSize uintptr
 	if !noscan {
+        // 有指针的块，标记内存与类型
 		heapBitsSetType(uintptr(x), size, dataSize, typ)
 		if dataSize > typ.size {
 			// Array allocation. If there are any
@@ -1172,6 +1182,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// but see uninitialized memory or stale heap bits.
 	publicationBarrier()
 
+    // 如果在GC期间就将当前对象标记为黑
 	// Allocate black during GC.
 	// All slots hold nil so no scanning is needed.
 	// This may be racing with GC so do it atomically if there can be

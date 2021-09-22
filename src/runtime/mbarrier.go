@@ -147,6 +147,7 @@ import (
 // remove the deletion barrier, we'll have to work out a new way to
 // handle the profile logging.
 
+// typedmemmove 类型内存拷贝
 // typedmemmove copies a value of type t to dst from src.
 // Must be nosplit, see #16026.
 //
@@ -159,6 +160,7 @@ func typedmemmove(typ *_type, dst, src unsafe.Pointer) {
 		return
 	}
 	if writeBarrier.needed && typ.ptrdata != 0 {
+        // 开启写屏障并类型中有指针数据，为内存空间批量添加写屏障
 		bulkBarrierPreWrite(uintptr(dst), uintptr(src), typ.ptrdata)
 	}
 	// There's a race here: if some other goroutine can write to
