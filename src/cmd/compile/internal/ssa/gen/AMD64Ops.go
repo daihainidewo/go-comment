@@ -765,6 +765,7 @@ func init() {
 
 		// With a register ABI, the actual register info for these instructions (i.e., what is used in regalloc) is augmented with per-call-site bindings of additional arguments to specific in and out registers.
 		{name: "CALLstatic", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true},                                              // call static function aux.(*obj.LSym).  last arg=mem, auxint=argsize, returns mem
+		{name: "CALLtail", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true},                                                // tail call static function aux.(*obj.LSym).  last arg=mem, auxint=argsize, returns mem
 		{name: "CALLclosure", argLength: -1, reg: regInfo{inputs: []regMask{gpsp, buildReg("DX"), 0}, clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true}, // call function via closure.  arg0=codeptr, arg1=closure, last arg=mem, auxint=argsize, returns mem
 		{name: "CALLinter", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true},                        // call fn by pointer.  arg0=codeptr, last arg=mem, auxint=argsize, returns mem
 
@@ -907,6 +908,16 @@ func init() {
 		// Do prefetch arg0 address. arg0=addr, arg1=memory. Instruction variant selects locality hint
 		{name: "PrefetchT0", argLength: 2, reg: prefreg, asm: "PREFETCHT0", hasSideEffects: true},
 		{name: "PrefetchNTA", argLength: 2, reg: prefreg, asm: "PREFETCHNTA", hasSideEffects: true},
+
+		// CPUID feature: BMI1.
+		{name: "ANDNQ", argLength: 2, reg: gp21, asm: "ANDNQ", clobberFlags: true},     // arg0 &^ arg1
+		{name: "ANDNL", argLength: 2, reg: gp21, asm: "ANDNL", clobberFlags: true},     // arg0 &^ arg1
+		{name: "BLSIQ", argLength: 1, reg: gp11, asm: "BLSIQ", clobberFlags: true},     // arg0 & -arg0
+		{name: "BLSIL", argLength: 1, reg: gp11, asm: "BLSIL", clobberFlags: true},     // arg0 & -arg0
+		{name: "BLSMSKQ", argLength: 1, reg: gp11, asm: "BLSMSKQ", clobberFlags: true}, // arg0 ^ (arg0 - 1)
+		{name: "BLSMSKL", argLength: 1, reg: gp11, asm: "BLSMSKL", clobberFlags: true}, // arg0 ^ (arg0 - 1)
+		{name: "BLSRQ", argLength: 1, reg: gp11, asm: "BLSRQ", clobberFlags: true},     // arg0 & (arg0 - 1)
+		{name: "BLSRL", argLength: 1, reg: gp11, asm: "BLSRL", clobberFlags: true},     // arg0 & (arg0 - 1)
 	}
 
 	var AMD64blocks = []blockData{

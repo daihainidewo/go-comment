@@ -6,6 +6,7 @@ package types_test
 
 import (
 	. "go/types"
+	"strings"
 	"testing"
 )
 
@@ -85,7 +86,7 @@ var X T[int]
 	}{
 		{"func (r T[P]) m() P", "func (T[int]).m() int"},
 		{"func (r T[P]) m(P)", "func (T[int]).m(int)"},
-		{"func (r T[P]) m() func() P", "func (T[int]).m() func() int"},
+		{"func (r *T[P]) m(P)", "func (*T[int]).m(int)"},
 		{"func (r T[P]) m() T[P]", "func (T[int]).m() T[int]"},
 		{"func (r T[P]) m(T[P])", "func (T[int]).m(T[int])"},
 		{"func (r T[P]) m(T[P], P, string)", "func (T[int]).m(T[int], int, string)"},
@@ -98,7 +99,7 @@ var X T[int]
 		if err != nil {
 			t.Fatal(err)
 		}
-		typ := pkg.Scope().Lookup("X").Type().(*Named)
+		typ := NewPointer(pkg.Scope().Lookup("X").Type())
 		obj, _, _ := LookupFieldOrMethod(typ, false, pkg, "m")
 		m, _ := obj.(*Func)
 		if m == nil {
@@ -108,4 +109,46 @@ var X T[int]
 			t.Errorf("instantiated %q, want %q", got, test.want)
 		}
 	}
+}
+
+func TestImmutableSignatures(t *testing.T) {
+	const src = genericPkg + `p
+
+type T[P any] struct{}
+
+func (T[P]) m() {}
+
+var _ T[int]
+`
+	pkg, err := pkgFor(".", src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typ := pkg.Scope().Lookup("T").Type().(*Named)
+	obj, _, _ := LookupFieldOrMethod(typ, false, pkg, "m")
+	if obj == nil {
+		t.Fatalf(`LookupFieldOrMethod(%s, "m") = %v, want func m`, typ, obj)
+	}
+
+	// Verify that the original method is not mutated by instantiating T (this
+	// bug manifested when subst did not return a new signature).
+	want := "func (T[P]).m()"
+	if got := stripAnnotations(ObjectString(obj, RelativeTo(pkg))); got != want {
+		t.Errorf("instantiated %q, want %q", got, want)
+	}
+}
+
+// Copied from errors.go.
+func stripAnnotations(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		// strip #'s and subscript digits
+		if r < '₀' || '₀'+10 <= r { // '₀' == U+2080
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() < len(s) {
+		return b.String()
+	}
+	return s
 }

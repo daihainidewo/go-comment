@@ -60,6 +60,7 @@ var (
 
 func defaultContext() build.Context {
 	ctxt := build.Default
+
 	ctxt.JoinPath = filepath.Join // back door to say "do not use go command"
 
 	ctxt.GOROOT = findGOROOT()
@@ -263,6 +264,7 @@ var (
 	// Used in envcmd.MkEnv and build ID computations.
 	GOARM    = envOr("GOARM", fmt.Sprint(buildcfg.GOARM))
 	GO386    = envOr("GO386", buildcfg.GO386)
+	GOAMD64  = envOr("GOAMD64", fmt.Sprintf("%s%d", "v", buildcfg.GOAMD64))
 	GOMIPS   = envOr("GOMIPS", buildcfg.GOMIPS)
 	GOMIPS64 = envOr("GOMIPS64", buildcfg.GOMIPS64)
 	GOPPC64  = envOr("GOPPC64", fmt.Sprintf("%s%d", "power", buildcfg.GOPPC64))
@@ -289,6 +291,8 @@ func GetArchEnv() (key, val string) {
 		return "GOARM", GOARM
 	case "386":
 		return "GO386", GO386
+	case "amd64":
+		return "GOAMD64", GOAMD64
 	case "mips", "mipsle":
 		return "GOMIPS", GOMIPS
 	case "mips64", "mips64le":

@@ -2630,10 +2630,20 @@ func (e *mainPackageError) ImportPath() string {
 
 func setToolFlags(pkgs ...*Package) {
 	for _, p := range PackageList(pkgs) {
-		p.Internal.Asmflags = BuildAsmflags.For(p)
-		p.Internal.Gcflags = BuildGcflags.For(p)
-		p.Internal.Ldflags = BuildLdflags.For(p)
-		p.Internal.Gccgoflags = BuildGccgoflags.For(p)
+		appendFlags(p, &p.Internal.Asmflags, &BuildAsmflags)
+		appendFlags(p, &p.Internal.Gcflags, &BuildGcflags)
+		appendFlags(p, &p.Internal.Ldflags, &BuildLdflags)
+		appendFlags(p, &p.Internal.Gccgoflags, &BuildGccgoflags)
+	}
+}
+
+func appendFlags(p *Package, flags *[]string, packageFlag *PerPackageFlag) {
+	if !packageFlag.seenPackages[p] {
+		if packageFlag.seenPackages == nil {
+			packageFlag.seenPackages = make(map[*Package]bool)
+		}
+		packageFlag.seenPackages[p] = true
+		*flags = append(*flags, packageFlag.For(p)...)
 	}
 }
 
@@ -2674,10 +2684,7 @@ func GoFilesPackage(ctx context.Context, opts PackageOpts, gofiles []string) *Pa
 		if fi.IsDir() {
 			base.Fatalf("%s is a directory, should be a Go file", file)
 		}
-		dir1, _ := filepath.Split(file)
-		if dir1 == "" {
-			dir1 = "./"
-		}
+		dir1 := filepath.Dir(file)
 		if dir == "" {
 			dir = dir1
 		} else if dir != dir1 {
