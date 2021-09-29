@@ -26,6 +26,7 @@ package runtime
 
 type lockRank int
 
+// 运行时中与体系无关的锁的等级常量，低等级的锁必须在高等级锁之前拿走
 // Constants representing the lock rank of the architecture-independent locks in
 // the runtime. Locks with lower rank must be taken before locks with higher
 // rank.
@@ -104,6 +105,7 @@ const (
 	lockRankDebug
 )
 
+// lockRankLeafRank 没有声明锁等级的锁的等级
 // lockRankLeafRank is the rank of lock that does not have a declared rank, and hence is
 // a leaf lock.
 const lockRankLeafRank lockRank = 1000

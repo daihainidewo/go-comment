@@ -25,6 +25,7 @@ func closeonexec(fd int32)
 var (
 	epfd int32 = -1 // epoll descriptor
 
+    // 读写管道，用于控制 netpoll
 	netpollBreakRd, netpollBreakWr uintptr // for netpollBreak
 
 	netpollWakeSig uint32 // used to avoid duplicate calls of netpollBreak
@@ -81,6 +82,7 @@ func netpollarm(pd *pollDesc, mode int) {
 	throw("runtime: unused")
 }
 
+// netpollBreak 中断epollwait
 // netpollBreak interrupts an epollwait.
 func netpollBreak() {
 	if atomic.Cas(&netpollWakeSig, 0, 1) {

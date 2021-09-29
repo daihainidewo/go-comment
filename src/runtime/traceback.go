@@ -849,6 +849,7 @@ func printAncestorTracebackFuncInfo(f funcInfo, pc uintptr) {
 	print("\n")
 }
 
+// callers 返回调用链层级数，层级数据存在pcbuf中
 func callers(skip int, pcbuf []uintptr) int {
 	sp := getcallersp()
 	pc := getcallerpc()

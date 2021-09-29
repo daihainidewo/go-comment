@@ -12,6 +12,7 @@ import (
 	"unsafe"
 )
 
+// worldIsStopped 原子的跟踪STW
 // worldIsStopped is accessed atomically to track world-stops. 1 == world
 // stopped.
 var worldIsStopped uint32
@@ -226,6 +227,8 @@ func lockWithRankMayAcquire(l *mutex, rank lockRank) {
 	})
 }
 
+// checkLockHeld 返回g绑定的m是否持有锁l
+// nosplit 确保更多的上下文可以被调用
 // nosplit to ensure it can be called in as many contexts as possible.
 //go:nosplit
 func checkLockHeld(gp *g, l *mutex) bool {
@@ -237,6 +240,7 @@ func checkLockHeld(gp *g, l *mutex) bool {
 	return false
 }
 
+// assertLockHeld 如果调用者没有持有锁l则抛出异常
 // assertLockHeld throws if l is not held by the caller.
 //
 // nosplit to ensure it can be called in as many contexts as possible.
@@ -329,6 +333,7 @@ func checkWorldStopped() bool {
 	return stopped == 1
 }
 
+// assertWorldStopped 断言是否STW
 // assertWorldStopped throws if the world is not stopped. It does not check
 // which M stopped the world.
 //

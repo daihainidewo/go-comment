@@ -81,6 +81,7 @@ type stackfreelist struct {
 // dummy mspan that contains no free objects.
 var emptymspan mspan // 标记空mspan
 
+// allocmcache 初始化 mcache
 func allocmcache() *mcache {
 	var c *mcache
 	systemstack(func() {

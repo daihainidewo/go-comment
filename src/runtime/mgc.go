@@ -181,6 +181,7 @@ func gcenable() {
 	memstats.enablegc = true // now that runtime is initialized, GC is okay
 }
 
+// 表示GC阶段，只是要执行写屏障和同步任务
 // Garbage collector phase.
 // Indicates to write barrier and synchronization task to perform.
 var gcphase uint32
@@ -202,6 +203,7 @@ var writeBarrier struct {
 // gcphase == _GCmark.
 var gcBlackenEnabled uint32
 
+// GC 阶段
 const (
 	_GCoff             = iota // GC not running; sweeping in background, write barrier disabled
 	_GCmark                   // GC marking roots and workbufs: allocate black, write barrier ENABLED

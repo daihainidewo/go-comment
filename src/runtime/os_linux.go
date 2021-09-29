@@ -69,6 +69,7 @@ func futexwakeup(addr *uint32, cnt uint32) {
 	*(*int32)(unsafe.Pointer(uintptr(0x1006))) = 0x1006
 }
 
+// getproccount 获取CPU核心数
 func getproccount() int32 {
 	// This buffer is huge (8 kB) but we are on the system stack
 	// and there should be plenty of space (64 kB).
@@ -277,6 +278,7 @@ func sysauxv(auxv []uintptr) int {
 
 var sysTHPSizePath = []byte("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\x00")
 
+// getHugePageSize 获取操作系统大页大小
 func getHugePageSize() uintptr {
 	var numbuf [20]byte
 	fd := open(&sysTHPSizePath[0], 0 /* O_RDONLY */, 0)
@@ -352,6 +354,7 @@ func libpreinit() {
 	initsig(true)
 }
 
+// mpreinit 为mp新建处理信号的g，相互绑定m和g
 // Called to initialize a new m (including the bootstrap m).
 // Called on the parent thread (main thread in case of bootstrap), can allocate memory.
 func mpreinit(mp *m) {
@@ -359,13 +362,17 @@ func mpreinit(mp *m) {
 	mp.gsignal.m = mp
 }
 
+// gettid 获取线程id
+// 实现于sys_linux_amd64.s
 func gettid() uint32
 
+// minit 设置m的信号处理，并设置m的procid为操作系统线程id
 // Called to initialize a new m (including the bootstrap m).
 // Called on the new thread, cannot allocate memory.
 func minit() {
 	minitSignals()
 
+    // CGO和bootstrap创建的m缺少procid，用于异步抢占和调试器
 	// Cgo-created threads and the bootstrap m are missing a
 	// procid. We need this for asynchronous preemption and it's
 	// useful in debuggers.
@@ -411,7 +418,7 @@ func raiseproc(sig uint32)
 
 //go:noescape
 func sched_getaffinity(pid, len uintptr, buf *byte) int32
-func osyield()
+func osyield() // 线程让出CPU
 
 //go:nosplit
 func osyield_no_g() {

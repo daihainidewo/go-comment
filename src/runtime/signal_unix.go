@@ -309,6 +309,7 @@ func setProcessCPUProfiler(hz int32) {
 	}
 }
 
+// setThreadCPUProfiler 修改m的cpu采样率
 // setThreadCPUProfiler makes any thread-specific changes required to
 // implement profiling at a rate of hz.
 // No changes required on Unix systems.
@@ -1026,6 +1027,8 @@ func sigfwdgo(sig uint32, info *siginfo, ctx unsafe.Pointer) bool {
 	return true
 }
 
+// sigsave 保存当前线程的信号掩码存进 p，用于保存非GO线程调用GO函数的非GO信号掩码
+// 它被没有 g 可用的非GO线程调用 needm 调用
 // sigsave saves the current thread's signal mask into *p.
 // This is used to preserve the non-Go signal mask when a non-Go
 // thread calls a Go function.
@@ -1037,6 +1040,8 @@ func sigsave(p *sigset) {
 	sigprocmask(_SIG_SETMASK, nil, p)
 }
 
+// msigrestore 将当前的信号掩码设置为sigmask，用于恢复非GO线程调用GO函数的非GO信号掩码
+// 它被 g 已经清理后的 dropm 调用
 // msigrestore sets the current thread's signal mask to sigmask.
 // This is used to restore the non-Go signal mask when a non-Go thread
 // calls a Go function.
@@ -1054,6 +1059,9 @@ func msigrestore(sigmask sigset) {
 // osinit().
 var sigsetAllExiting = sigset_all
 
+// sigblock 破坏当前线程的信号掩码，用于非GO线程调用GO函数时设置和拆除 g 时的阻塞信号
+// 当线程退出时使用 sigsetAllExiting 否则使用操作系统特定的 sigset_all
+// 被可能非GO线程没有可用的 g 的 needm 调用
 // sigblock blocks signals in the current thread's signal mask.
 // This is used to block signals while setting up and tearing down g
 // when a non-Go thread calls a Go function. When a thread is exiting
@@ -1083,6 +1091,7 @@ func unblocksig(sig uint32) {
 	sigprocmask(_SIG_UNBLOCK, &set, nil)
 }
 
+// minitSignals 在新建m初始化设置线程备用信号栈和信号掩码
 // minitSignals is called when initializing a new m to set the
 // thread's alternate signal stack and signal mask.
 func minitSignals() {

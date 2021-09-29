@@ -25,6 +25,7 @@ func atomicwb(ptr *unsafe.Pointer, new unsafe.Pointer) {
 	}
 }
 
+// atomicstorep 原子的执行 *ptr = new 并调用写屏障
 // atomicstorep performs *ptr = new atomically and invokes a write barrier.
 //
 //go:nosplit

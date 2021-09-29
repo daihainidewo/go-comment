@@ -161,6 +161,7 @@ func os_fastrand() uint32 { return fastrand() }
 //go:noescape
 func memequal(a, b unsafe.Pointer, size uintptr) bool
 
+// noescape 对于逃逸分析隐藏指针
 // noescape hides a pointer from escape analysis.  noescape is
 // the identity function but escape analysis doesn't think the
 // output depends on the input.  noescape is inlined and currently
@@ -182,6 +183,7 @@ func cgocallback(fn, frame, ctxt uintptr)
 
 func gogo(buf *gobuf)   // 切换到buf
 
+// asminit amd64架构不需要汇编初始化
 func asminit()
 func setg(gg *g)
 func breakpoint()
@@ -264,6 +266,10 @@ func goexit(neverCallThisFunction)
 // data dependency ordering.
 func publicationBarrier()
 
+// getcallerpc 返回调用者的调用者的程序计数器
+// getcallersp 返回调用者的调用者的堆栈指针
+// 可能由编译器编码，没有在所有平台有具体代码实现
+// getcallersp 返回结果可能当时有效，后面会可能扩缩栈改变栈指针，所以返回值只能传给nosplit函数
 // getcallerpc returns the program counter (PC) of its caller's caller.
 // getcallersp returns the stack pointer (SP) of its caller's caller.
 // The implementation may be a compiler intrinsic; there is not
@@ -294,6 +300,7 @@ func getcallerpc() uintptr
 //go:noescape
 func getcallersp() uintptr // implemented as an intrinsic on all platforms
 
+// getclosureptr 返回当前闭包的指针
 // getclosureptr returns the pointer to the current closure.
 // getclosureptr can only be used in an assignment statement
 // at the entry of a function. Moreover, go:nosplit directive

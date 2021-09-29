@@ -310,6 +310,7 @@ func (mp muintptr) ptr() *m { return (*m)(unsafe.Pointer(mp)) }
 //go:nosplit
 func (mp *muintptr) set(m *m) { *mp = muintptr(unsafe.Pointer(m)) }
 
+// setMNoWB 设置mp指向new，没有写屏障
 // setMNoWB performs *mp = new without a write barrier.
 // For times when it's impractical to use an muintptr.
 //go:nosplit
@@ -332,12 +333,12 @@ type gobuf struct {
 	// and restores it doesn't need write barriers. It's still
 	// typed as a pointer so that any other writes from Go get
 	// write barriers.
-	sp   uintptr  // 栈顶
-	pc   uintptr  // 下一步执行地址
-	g    guintptr // g 对象
+	sp   uintptr        // 栈指针
+	pc   uintptr        // 程序计数器
+	g    guintptr       // 反向关联 g 对象
 	ctxt unsafe.Pointer
-	ret  uintptr
-	lr   uintptr
+	ret  uintptr        // 系统调用返回值
+	lr   uintptr        // 某些架构用于暂存pc
 	bp   uintptr // for framepointer-enabled architectures
 }
 
@@ -408,6 +409,7 @@ type stack struct {
 	hi uintptr
 }
 
+// heldLockInfo 持有锁信息和锁排名
 // heldLockInfo gives info on a held lock and the rank of that lock
 type heldLockInfo struct {
 	lockAddr uintptr
@@ -426,9 +428,9 @@ type g struct {
 	stackguard0 uintptr // go栈指针，用于标识栈基地址，也可用来标志抢占标志 offset known to liblink
 	stackguard1 uintptr // c栈指针 offset known to liblink
 
-	_panic    *_panic // innermost panic - offset known to liblink
-	_defer    *_defer // innermost defer 最新的defer
-	m         *m      // current m; offset known to arm liblink
+	_panic    *_panic // panic 链表 innermost panic - offset known to liblink
+	_defer    *_defer // defer 链表 innermost defer
+	m         *m      // 当前绑定的m current m; offset known to arm liblink
 	sched     gobuf   // 调度信息
 	syscallsp uintptr // if status==Gsyscall, syscallsp = sched.sp to use during gc
 	syscallpc uintptr // if status==Gsyscall, syscallpc = sched.pc to use during gc
@@ -445,10 +447,10 @@ type g struct {
 	// 3. By debugCallWrap to pass parameters to a new goroutine because allocating a
 	//    closure in the runtime is forbidden.
 	param        unsafe.Pointer
-	atomicstatus uint32
+	atomicstatus uint32 // g 的原子状态
 	stackLock    uint32 // sigprof/scang lock; TODO: fold in to atomicstatus
 	goid         int64  // goroutine的编号
-	schedlink    guintptr
+	schedlink    guintptr   // 调度链接下一个g，gFree
 	waitsince    int64      // approx time when the g become blocked
 	waitreason   waitReason // if status==Gwaiting
 
@@ -457,7 +459,7 @@ type g struct {
 	preemptShrink bool // 在同步安全点收缩堆栈 // shrink stack at synchronous safe point
 
 	// asyncSafePoint is set if g is stopped at an asynchronous
-	// safe point. This means there are frames on the stack
+	// safe pofint. This means there are frames on the stack
 	// without precise pointer information.
 	asyncSafePoint bool // 异步安全点
 
@@ -533,7 +535,7 @@ type m struct {
 	goSigStack    gsignalStack      // Go-allocated signal handling stack
 	sigmask       sigset            // storage for saved signal mask
 	tls           [tlsSlots]uintptr // thread-local storage (for x86 extern register)
-	mstartfn      func()
+	mstartfn      func()   // m 开始时调用的函数
 	curg          *g       // current running goroutine
 	caughtsig     guintptr // goroutine running during fatal signal
 	p             puintptr // attached p for executing go code (nil if not executing go code)
@@ -545,7 +547,7 @@ type m struct {
 	preemptoff    string // if != "", keep curg running on this m
 	locks         int32 // 引用计数，非零表示禁止抢占当前g
 	dying         int32
-	profilehz     int32
+	profilehz     int32 // cpu 采样率
 	spinning      bool // 是否自旋 等待 g 去执行
 	blocked       bool // 是否被note阻塞
 	newSigstack   bool // minit on C thread called sigaltstack
@@ -576,6 +578,7 @@ type m struct {
 	syscalltick   uint32 // 系统调用次数
 	freelink      *m     // 指向全局空闲 m 列表 on sched.freem
 
+    // mFixup 用来同步操作系统相关m的状态，需要获得锁操作，为了避免死锁执行mDoFixupFn时fn必须为nil
 	// mFixup is used to synchronize OS related m state
 	// (credentials etc) use mutex to access. To avoid deadlocks
 	// an atomic.Load() of used being zero in mDoFixupFn()
@@ -610,6 +613,7 @@ type m struct {
 
 	mOS
 
+    // m最多持有10个lock，由锁排序代码维护
 	// Up to 10 locks held by this m, maintained by the lock ranking code.
 	locksHeldLen int
 	locksHeld    [10]heldLockInfo
@@ -817,7 +821,7 @@ type schedt struct {
 
 	// freem is the list of m's waiting to be freed when their
 	// m.exited is set. Linked through m.freelink.
-	freem *m // 释放的m列表
+	freem *m // 等待被释放的m列表
 
 	gcwaiting  uint32 // gc is waiting to run
 	stopwait   int32
@@ -835,6 +839,7 @@ type schedt struct {
 	safePointWait int32
 	safePointNote note
 
+    // cpu信息采样率
 	profilehz int32 // cpu profiling rate
 
 	procresizetime int64 // nanotime() of last change to gomaxprocs
@@ -1105,19 +1110,19 @@ func (w waitReason) String() string {
 }
 
 var (
-	allm       *m
-	gomaxprocs int32
-	ncpu       int32
+	allm       *m           // 所有m的链表
+	gomaxprocs int32        // 最大proc个数
+	ncpu       int32        // cpu核心数
 	forcegc    forcegcstate
-	sched      schedt
-	newprocs   int32
+	sched      schedt       // 全局资源管理器
+	newprocs   int32        // 当前proc个数
 
 	// allpLock protects P-less reads and size changes of allp, idlepMask,
 	// and timerpMask, and all writes to allp.
-	allpLock mutex
+	allpLock mutex  // 保护 allp idlepMask timerpMask
 	// len(allp) == gomaxprocs; may change at safe points, otherwise
 	// immutable.
-	allp []*p
+	allp []*p       // 所有的p
 	// Bitmask of Ps in _Pidle list, one bit per P. Reads and writes must
 	// be atomic. Length may change at safe points.
 	//
@@ -1128,17 +1133,17 @@ var (
 	// corrupting the bitmap.
 	//
 	// N.B., procresize takes ownership of all Ps in stopTheWorldWithSema.
-	idlepMask pMask
+	idlepMask pMask     // 空闲p的位图
 	// Bitmask of Ps that may have a timer, one bit per P. Reads and writes
 	// must be atomic. Length may change at safe points.
-	timerpMask pMask
+	timerpMask pMask    // timer的位图
 
 	// Pool of GC parked background workers. Entries are type
 	// *gcBgMarkWorkerNode.
 	gcBgMarkWorkerPool lfstack
 
 	// Total number of gcBgMarkWorker goroutines. Protected by worldsema.
-	gcBgMarkWorkerCount int32
+	gcBgMarkWorkerCount int32   // GC 后台标记工作者的goroutine总数
 
 	// Information about what cpu features are available.
 	// Packages outside the runtime should not use these

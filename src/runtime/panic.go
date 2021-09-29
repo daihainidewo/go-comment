@@ -458,6 +458,8 @@ func deferreturn() {
 	}
 }
 
+// Goexit 主动终止调用它的 goroutine，在终止前执行所有的 defer 函数
+// 因为没有 panic 发生，需要给那些在 defer 的 recover 的调用者返回 nil
 // Goexit terminates the goroutine that calls it. No other goroutine is affected.
 // Goexit runs all deferred calls before terminating the goroutine. Because Goexit
 // is not a panic, any recover calls in those deferred functions will return nil.
@@ -472,7 +474,7 @@ func Goexit() {
 	// for detailed comments.
 	gp := getg()
 
-    // 创建新的panic，绕过recover()
+    // 创建新的panic，绕过recover()，在gp的panic链表前插一个标记是goexit标记位的panic元素
 	// Create a panic object for Goexit, so we can recognize when it might be
 	// bypassed by a recover().
 	var p _panic
@@ -480,6 +482,7 @@ func Goexit() {
 	p.link = gp._panic
 	gp._panic = (*_panic)(noescape(unsafe.Pointer(&p)))
 
+    // 执行所有的defer函数
 	addOneOpenDeferFrame(gp, getcallerpc(), unsafe.Pointer(getcallersp()))
 	for {
 		d := gp._defer
@@ -585,6 +588,7 @@ func printpanics(p *_panic) {
 	print("\n")
 }
 
+// addOneOpenDeferFrame 添加一个开发代码的defer帧
 // addOneOpenDeferFrame scans the stack for the first frame (if any) with
 // open-coded defers and if it finds one, adds a single record to the defer chain
 // for that frame. If sp is non-nil, it starts the stack scan from the frame

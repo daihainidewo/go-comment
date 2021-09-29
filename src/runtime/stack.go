@@ -172,6 +172,7 @@ var stackLarge struct {
 	free [heapAddrBits - pageShift]mSpanList // free lists by log_2(s.npages)
 }
 
+// stackinit 初始化去全局栈空闲池
 func stackinit() {
 	if _StackCacheSize&_PageMask != 0 {
 		throw("cache size must be a multiple of page size")
