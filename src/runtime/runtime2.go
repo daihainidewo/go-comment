@@ -162,9 +162,9 @@ const (
 type mutex struct {
 	// Empty struct if lock ranking is disabled, otherwise includes the lock rank
 	lockRankStruct
-    // 基于futex实现的是 uint32 key
-    // 基于信号量实现的是 M* waitm 的指针
-    // 以前是联合体，但是会破坏精准GC
+	// 基于futex实现的是 uint32 key
+	// 基于信号量实现的是 M* waitm 的指针
+	// 以前是联合体，但是会破坏精准GC
 	// Futex-based impl treats it as uint32 key,
 	// while sema-based impl as M* waitm.
 	// Used to be a union, but unions break precise GC.
@@ -333,12 +333,12 @@ type gobuf struct {
 	// and restores it doesn't need write barriers. It's still
 	// typed as a pointer so that any other writes from Go get
 	// write barriers.
-	sp   uintptr        // 栈指针
-	pc   uintptr        // 程序计数器
-	g    guintptr       // 反向关联 g 对象
+	sp   uintptr  // 栈指针
+	pc   uintptr  // 程序计数器
+	g    guintptr // 反向关联 g 对象
 	ctxt unsafe.Pointer
-	ret  uintptr        // 系统调用返回值
-	lr   uintptr        // 某些架构用于暂存pc
+	ret  uintptr // 系统调用返回值
+	lr   uintptr // 某些架构用于暂存pc
 	bp   uintptr // for framepointer-enabled architectures
 }
 
@@ -361,8 +361,8 @@ type sudog struct {
 
 	g *g // 关联的G
 
-	next *sudog // 链表前驱
-	prev *sudog // 链表后继
+	next *sudog         // 链表前驱
+	prev *sudog         // 链表后继
 	elem unsafe.Pointer // data element (may point to stack)
 
 	// The following fields are never accessed concurrently.
@@ -447,9 +447,9 @@ type g struct {
 	// 3. By debugCallWrap to pass parameters to a new goroutine because allocating a
 	//    closure in the runtime is forbidden.
 	param        unsafe.Pointer
-	atomicstatus uint32 // g 的原子状态
-	stackLock    uint32 // sigprof/scang lock; TODO: fold in to atomicstatus
-	goid         int64  // goroutine的编号
+	atomicstatus uint32     // g 的原子状态
+	stackLock    uint32     // sigprof/scang lock; TODO: fold in to atomicstatus
+	goid         int64      // goroutine的编号
 	schedlink    guintptr   // 调度链接下一个g，gFree
 	waitsince    int64      // approx time when the g become blocked
 	waitreason   waitReason // if status==Gwaiting
@@ -535,25 +535,25 @@ type m struct {
 	goSigStack    gsignalStack      // Go-allocated signal handling stack
 	sigmask       sigset            // storage for saved signal mask
 	tls           [tlsSlots]uintptr // thread-local storage (for x86 extern register)
-	mstartfn      func()   // m 开始时调用的函数
-	curg          *g       // current running goroutine
-	caughtsig     guintptr // goroutine running during fatal signal
-	p             puintptr // attached p for executing go code (nil if not executing go code)
+	mstartfn      func()            // m 开始时调用的函数
+	curg          *g                // current running goroutine
+	caughtsig     guintptr          // goroutine running during fatal signal
+	p             puintptr          // attached p for executing go code (nil if not executing go code)
 	nextp         puintptr
 	oldp          puintptr // the p that was attached before executing a syscall
 	id            int64
 	mallocing     int32
 	throwing      int32
 	preemptoff    string // if != "", keep curg running on this m
-	locks         int32 // 引用计数，非零表示禁止抢占当前g
+	locks         int32  // 引用计数，非零表示禁止抢占当前g
 	dying         int32
 	profilehz     int32 // cpu 采样率
-	spinning      bool // 是否自旋 等待 g 去执行
-	blocked       bool // 是否被note阻塞
-	newSigstack   bool // minit on C thread called sigaltstack
+	spinning      bool  // 是否自旋 等待 g 去执行
+	blocked       bool  // 是否被note阻塞
+	newSigstack   bool  // minit on C thread called sigaltstack
 	printlock     int8
-	incgo         bool   // 是否执行cgo调用 m is executing a cgo call
-	freeWait      uint32 // 为0表示可以释放当前m if == 0, safe to free g0 and delete m (atomic)
+	incgo         bool      // 是否执行cgo调用 m is executing a cgo call
+	freeWait      uint32    // 为0表示可以释放当前m if == 0, safe to free g0 and delete m (atomic)
 	fastrand      [2]uint32 // 随机数种子
 	needextram    bool
 	traceback     uint8
@@ -571,14 +571,14 @@ type m struct {
 	lockedInt     uint32                        // tracking for internal lockOSThread
 	nextwaitm     muintptr                      // next m waiting for lock
 	waitunlockf   func(*g, unsafe.Pointer) bool // m park 时的附加函数
-	waitlock      unsafe.Pointer 				// m park 时的锁
+	waitlock      unsafe.Pointer                // m park 时的锁
 	waittraceev   byte
 	waittraceskip int
 	startingtrace bool
 	syscalltick   uint32 // 系统调用次数
 	freelink      *m     // 指向全局空闲 m 列表 on sched.freem
 
-    // mFixup 用来同步操作系统相关m的状态，需要获得锁操作，为了避免死锁执行mDoFixupFn时fn必须为nil
+	// mFixup 用来同步操作系统相关m的状态，需要获得锁操作，为了避免死锁执行mDoFixupFn时fn必须为nil
 	// mFixup is used to synchronize OS related m state
 	// (credentials etc) use mutex to access. To avoid deadlocks
 	// an atomic.Load() of used being zero in mDoFixupFn()
@@ -592,10 +592,10 @@ type m struct {
 	// these are here because they are too large to be on the stack
 	// of low-level NOSPLIT functions.
 	libcall   libcall
-	libcallpc uintptr // for cpu profiler
-	libcallsp uintptr // libcall 的sp
+	libcallpc uintptr  // for cpu profiler
+	libcallsp uintptr  // libcall 的sp
 	libcallg  guintptr // libcall 的g
-	syscall   libcall // stores syscall parameters on windows
+	syscall   libcall  // stores syscall parameters on windows
 
 	vdsoSP uintptr // SP for traceback while in VDSO call (0 if not in call)
 	vdsoPC uintptr // PC for traceback while in VDSO call
@@ -613,7 +613,7 @@ type m struct {
 
 	mOS
 
-    // m最多持有10个lock，由锁排序代码维护
+	// m最多持有10个lock，由锁排序代码维护
 	// Up to 10 locks held by this m, maintained by the lock ranking code.
 	locksHeldLen int
 	locksHeld    [10]heldLockInfo
@@ -631,7 +631,7 @@ type p struct {
 	pcache      pageCache  // 页缓存
 	raceprocctx uintptr
 
-    // 本地的defer对象池
+	// 本地的defer对象池
 	deferpool    []*_defer // pool of available defer structs (see panic.go)
 	deferpoolbuf [32]*_defer
 
@@ -816,7 +816,7 @@ type schedt struct {
 	sudogcache *sudog // sudog 全局缓存
 
 	// Central pool of available defer structs.
-	deferlock mutex  // defer对象池锁
+	deferlock mutex   // defer对象池锁
 	deferpool *_defer // 全局defer对象池
 
 	// freem is the list of m's waiting to be freed when their
@@ -839,7 +839,7 @@ type schedt struct {
 	safePointWait int32
 	safePointNote note
 
-    // cpu信息采样率
+	// cpu信息采样率
 	profilehz int32 // cpu profiling rate
 
 	procresizetime int64 // nanotime() of last change to gomaxprocs
@@ -964,7 +964,7 @@ func extendRandom(r []byte, n int) {
 type _defer struct {
 	started bool
 	heap    bool
-    // 标识当前defer是open-coded的defer
+	// 标识当前defer是open-coded的defer
 	// openDefer indicates that this _defer is for a frame with open-coded
 	// defers. We have only one defer record for the entire frame (which may
 	// currently have 0, 1, or more defers active).
@@ -1110,19 +1110,19 @@ func (w waitReason) String() string {
 }
 
 var (
-	allm       *m           // 所有m的链表
-	gomaxprocs int32        // 最大proc个数
-	ncpu       int32        // cpu核心数
+	allm       *m    // 所有m的链表
+	gomaxprocs int32 // 最大proc个数
+	ncpu       int32 // cpu核心数
 	forcegc    forcegcstate
-	sched      schedt       // 全局资源管理器
-	newprocs   int32        // 当前proc个数
+	sched      schedt // 全局资源管理器
+	newprocs   int32  // 当前proc个数
 
 	// allpLock protects P-less reads and size changes of allp, idlepMask,
 	// and timerpMask, and all writes to allp.
-	allpLock mutex  // 保护 allp idlepMask timerpMask
+	allpLock mutex // 保护 allp idlepMask timerpMask
 	// len(allp) == gomaxprocs; may change at safe points, otherwise
 	// immutable.
-	allp []*p       // 所有的p
+	allp []*p // 所有的p
 	// Bitmask of Ps in _Pidle list, one bit per P. Reads and writes must
 	// be atomic. Length may change at safe points.
 	//
@@ -1133,17 +1133,17 @@ var (
 	// corrupting the bitmap.
 	//
 	// N.B., procresize takes ownership of all Ps in stopTheWorldWithSema.
-	idlepMask pMask     // 空闲p的位图
+	idlepMask pMask // 空闲p的位图
 	// Bitmask of Ps that may have a timer, one bit per P. Reads and writes
 	// must be atomic. Length may change at safe points.
-	timerpMask pMask    // timer的位图
+	timerpMask pMask // timer的位图
 
 	// Pool of GC parked background workers. Entries are type
 	// *gcBgMarkWorkerNode.
 	gcBgMarkWorkerPool lfstack
 
 	// Total number of gcBgMarkWorker goroutines. Protected by worldsema.
-	gcBgMarkWorkerCount int32   // GC 后台标记工作者的goroutine总数
+	gcBgMarkWorkerCount int32 // GC 后台标记工作者的goroutine总数
 
 	// Information about what cpu features are available.
 	// Packages outside the runtime should not use these
