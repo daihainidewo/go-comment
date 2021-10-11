@@ -167,8 +167,8 @@
 // 		directory, but it is not accessed. When -modfile is specified, an
 // 		alternate go.sum file is also used: its path is derived from the
 // 		-modfile flag by trimming the ".mod" extension and appending ".sum".
-//   -workfile file
-//     in module aware mode, use the given go.work file as a workspace file.
+// 	-workfile file
+// 		in module aware mode, use the given go.work file as a workspace file.
 // 		By default or when -workfile is "auto", the go command searches for a
 // 		file named go.work in the current directory and then containing directories
 // 		until one is found. If a valid go.work file is found, the modules
@@ -293,8 +293,11 @@
 // dependencies.
 //
 // The -fuzzcache flag causes clean to remove files stored in the Go build
-// cache for fuzz testing. Files stored in source testdata directories
-// are left in place.
+// cache for fuzz testing. The fuzzing engine caches files that expand
+// code coverage, so removing them may make fuzzing less effective until
+// new inputs are found that provide the same coverage. These files are
+// distinct from those stored in testdata directory; clean does not remove
+// those files.
 //
 // For more about build flags, see 'go help build'.
 //
@@ -610,11 +613,11 @@
 //
 // Usage:
 //
-// 	go get [-d] [-t] [-u] [-v] [build flags] [packages]
+// 	go get [-t] [-u] [-v] [build flags] [packages]
 //
 // Get resolves its command-line arguments to packages at specific module versions,
-// updates go.mod to require those versions, downloads source code into the
-// module cache, then builds and installs the named packages.
+// updates go.mod to require those versions, and downloads source code into the
+// module cache.
 //
 // To add a dependency for a package or upgrade it to its latest version:
 //
@@ -630,9 +633,11 @@
 //
 // See https://golang.org/ref/mod#go-get for details.
 //
-// The 'go install' command may be used to build and install packages. When a
-// version is specified, 'go install' runs in module-aware mode and ignores
-// the go.mod file in the current directory. For example:
+// In earlier versions of Go, 'go get' was used to build and install packages.
+// Now, 'go get' is dedicated to adjusting dependencies in go.mod. 'go install'
+// may be used to build and install commands instead. When a version is specified,
+// 'go install' runs in module-aware mode and ignores the go.mod file in the
+// current directory. For example:
 //
 // 	go install example.com/pkg@v1.2.3
 // 	go install example.com/pkg@latest
@@ -654,16 +659,6 @@
 //
 // When the -t and -u flags are used together, get will update
 // test dependencies as well.
-//
-// The -d flag instructs get not to build or install packages. get will only
-// update go.mod and download source code needed to build packages.
-//
-// Building and installing packages with get is deprecated. In a future release,
-// the -d flag will be enabled by default, and 'go get' will be only be used to
-// adjust dependencies of the current module. To install a package using
-// dependencies from the current module, use 'go install'. To install a package
-// ignoring the current module, use 'go install' with an @version suffix like
-// "@latest" after each argument.
 //
 // For more about modules, see https://golang.org/ref/mod.
 //
@@ -1563,8 +1558,6 @@
 // in no time at all,so a successful package test result will be cached and
 // reused regardless of -timeout setting.
 //
-// Run 'go help fuzz' for details around how the go command handles fuzz targets.
-//
 // In addition to the build flags, the flags handled by 'go test' itself are:
 //
 // 	-args
@@ -1853,6 +1846,13 @@
 // The go command also caches successful package test results.
 // See 'go help test' for details. Running 'go clean -testcache' removes
 // all cached test results (but not cached build results).
+//
+// The go command also caches values used in fuzzing with 'go test -fuzz',
+// specifically, values that expanded code coverage when passed to a
+// fuzz function. These values are not used for regular building and
+// testing, but they're stored in a subdirectory of the build cache.
+// Running 'go clean -fuzzcache' removes all cached fuzzing values.
+// This may make fuzzing less effective, temporarily.
 //
 // The GODEBUG environment variable can enable printing of debugging
 // information about the state of the cache:

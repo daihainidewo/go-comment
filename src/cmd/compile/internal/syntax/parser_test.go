@@ -26,11 +26,11 @@ var (
 )
 
 func TestParse(t *testing.T) {
-	ParseFile(*src_, func(err error) { t.Error(err) }, nil, AllowGenerics)
+	ParseFile(*src_, func(err error) { t.Error(err) }, nil, AllowGenerics|AllowTypeSets)
 }
 
 func TestVerify(t *testing.T) {
-	ast, err := ParseFile(*src_, func(err error) { t.Error(err) }, nil, AllowGenerics)
+	ast, err := ParseFile(*src_, func(err error) { t.Error(err) }, nil, AllowGenerics|AllowTypeSets)
 	if err != nil {
 		return // error already reported
 	}
@@ -46,15 +46,12 @@ func TestParseGo2(t *testing.T) {
 	for _, fi := range list {
 		name := fi.Name()
 		if !fi.IsDir() && !strings.HasPrefix(name, ".") {
-			ParseFile(filepath.Join(dir, name), func(err error) { t.Error(err) }, nil, AllowGenerics|AllowTypeLists)
+			ParseFile(filepath.Join(dir, name), func(err error) { t.Error(err) }, nil, AllowGenerics|AllowTypeSets)
 		}
 	}
 }
 
-func TestStdLib(t *testing.T)        { testStdLib(t, 0) }
-func TestStdLibGeneric(t *testing.T) { testStdLib(t, AllowGenerics) }
-
-func testStdLib(t *testing.T, mode Mode) {
+func TestStdLib(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping test in short mode")
 	}
@@ -93,7 +90,7 @@ func testStdLib(t *testing.T, mode Mode) {
 				if debug {
 					fmt.Printf("parsing %s\n", filename)
 				}
-				ast, err := ParseFile(filename, nil, nil, mode)
+				ast, err := ParseFile(filename, nil, nil, AllowGenerics)
 				if err != nil {
 					t.Error(err)
 					return

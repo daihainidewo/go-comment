@@ -38,8 +38,6 @@ func (check *Checker) funcInst(x *operand, inst *syntax.IndexExpr) {
 		return
 	}
 
-	// if we don't have enough type arguments, try type inference
-	inferred := false
 	if got < want {
 		targs = check.infer(inst.Pos(), sig.TypeParams().list(), targs, nil, nil)
 		if targs == nil {
@@ -49,7 +47,6 @@ func (check *Checker) funcInst(x *operand, inst *syntax.IndexExpr) {
 			return
 		}
 		got = len(targs)
-		inferred = true
 	}
 	assert(got == want)
 
@@ -62,9 +59,7 @@ func (check *Checker) funcInst(x *operand, inst *syntax.IndexExpr) {
 	// instantiate function signature
 	res := check.instantiate(x.Pos(), sig, targs, poslist).(*Signature)
 	assert(res.TypeParams().Len() == 0) // signature is not generic anymore
-	if inferred {
-		check.recordInferred(inst, targs, res)
-	}
+	check.recordInstance(inst.X, targs, res)
 	x.typ = res
 	x.mode = value
 	x.expr = inst
@@ -108,7 +103,7 @@ func (check *Checker) callExpr(x *operand, call *syntax.CallExpr) exprKind {
 			check.expr(x, call.ArgList[0])
 			if x.mode != invalid {
 				if t := asInterface(T); t != nil {
-					if t.IsConstraint() {
+					if !t.IsMethodSet() {
 						check.errorf(call, "cannot use interface %s in conversion (contains type list or is comparable)", T)
 						break
 					}
@@ -178,7 +173,13 @@ func (check *Checker) callExpr(x *operand, call *syntax.CallExpr) exprKind {
 
 	// evaluate arguments
 	args, _ := check.exprList(call.ArgList, false)
+	isGeneric := sig.TypeParams().Len() > 0
 	sig = check.arguments(call, sig, targs, args)
+
+	if isGeneric && sig.TypeParams().Len() == 0 {
+		// update the recorded type of call.Fun to its instantiated type
+		check.recordTypeAndValue(call.Fun, value, sig, nil)
+	}
 
 	// determine result
 	switch sig.results.Len() {
@@ -346,7 +347,7 @@ func (check *Checker) arguments(call *syntax.CallExpr, sig *Signature, targs []T
 		// compute result signature
 		rsig = check.instantiate(call.Pos(), sig, targs, nil).(*Signature)
 		assert(rsig.TypeParams().Len() == 0) // signature is not generic anymore
-		check.recordInferred(call, targs, rsig)
+		check.recordInstance(call.Fun, targs, rsig)
 
 		// Optimization: Only if the parameter list was adjusted do we
 		// need to compute it from the adjusted list; otherwise we can
@@ -627,48 +628,20 @@ Error:
 func (check *Checker) use(arg ...syntax.Expr) {
 	var x operand
 	for _, e := range arg {
-		// Certain AST fields may legally be nil (e.g., the ast.SliceExpr.High field).
-		if e == nil {
+		switch n := e.(type) {
+		case nil:
+			// some AST fields may be nil (e.g., elements of syntax.SliceExpr.Index)
+			// TODO(gri) can those fields really make it here?
 			continue
-		}
-		if l, _ := e.(*syntax.ListExpr); l != nil {
-			check.use(l.ElemList...)
-			continue
-		}
-		check.rawExpr(&x, e, nil, false)
-	}
-}
-
-// useLHS is like use, but doesn't "use" top-level identifiers.
-// It should be called instead of use if the arguments are
-// expressions on the lhs of an assignment.
-// The arguments must not be nil.
-func (check *Checker) useLHS(arg ...syntax.Expr) {
-	var x operand
-	for _, e := range arg {
-		// If the lhs is an identifier denoting a variable v, this assignment
-		// is not a 'use' of v. Remember current value of v.used and restore
-		// after evaluating the lhs via check.rawExpr.
-		var v *Var
-		var v_used bool
-		if ident, _ := unparen(e).(*syntax.Name); ident != nil {
-			// never type-check the blank name on the lhs
-			if ident.Value == "_" {
+		case *syntax.Name:
+			// don't report an error evaluating blank
+			if n.Value == "_" {
 				continue
 			}
-			if _, obj := check.scope.LookupParent(ident.Value, nopos); obj != nil {
-				// It's ok to mark non-local variables, but ignore variables
-				// from other packages to avoid potential race conditions with
-				// dot-imported variables.
-				if w, _ := obj.(*Var); w != nil && w.pkg == check.pkg {
-					v = w
-					v_used = v.used
-				}
-			}
+		case *syntax.ListExpr:
+			check.use(n.ElemList...)
+			continue
 		}
 		check.rawExpr(&x, e, nil, false)
-		if v != nil {
-			v.used = v_used // restore v.used
-		}
 	}
 }

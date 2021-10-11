@@ -136,13 +136,12 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 
 	// Ensure that any crash we find is written to the corpus, even if an error
 	// or interruption occurs while minimizing it.
-	var crashMinimizing *fuzzResult
 	crashWritten := false
 	defer func() {
-		if crashMinimizing == nil || crashWritten {
+		if c.crashMinimizing == nil || crashWritten {
 			return
 		}
-		fileName, werr := writeToCorpus(crashMinimizing.entry.Data, opts.CorpusDir)
+		fileName, werr := writeToCorpus(c.crashMinimizing.entry.Data, opts.CorpusDir)
 		if werr != nil {
 			err = fmt.Errorf("%w\n%v", err, werr)
 			return
@@ -150,7 +149,7 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 		if err == nil {
 			err = &crashError{
 				name: filepath.Base(fileName),
-				err:  errors.New(crashMinimizing.crasherMsg),
+				err:  errors.New(c.crashMinimizing.crasherMsg),
 			}
 		}
 	}()
@@ -198,7 +197,7 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 	for {
 		var inputC chan fuzzInput
 		input, ok := c.peekInput()
-		if ok && crashMinimizing == nil && !stopping {
+		if ok && c.crashMinimizing == nil && !stopping {
 			inputC = c.inputC
 		}
 
@@ -228,9 +227,6 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 				break
 			}
 			c.updateStats(result)
-			if c.opts.Limit > 0 && c.count >= c.opts.Limit {
-				stop(nil)
-			}
 
 			if result.crasherMsg != "" {
 				if c.warmupRun() && result.entry.IsSeed {
@@ -238,8 +234,8 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 					stop(errors.New(result.crasherMsg))
 					break
 				}
-				if c.canMinimize() && !result.minimizeAttempted {
-					if crashMinimizing != nil {
+				if c.canMinimize() && result.canMinimize {
+					if c.crashMinimizing != nil {
 						// This crash is not minimized, and another crash is being minimized.
 						// Ignore this one and wait for the other one to finish.
 						break
@@ -247,8 +243,8 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 					// Found a crasher but haven't yet attempted to minimize it.
 					// Send it back to a worker for minimization. Disable inputC so
 					// other workers don't continue fuzzing.
-					crashMinimizing = &result
-					fmt.Fprintf(c.opts.Log, "fuzz: found a %d-byte crash input; minimizing...\n", len(result.entry.Data))
+					c.crashMinimizing = &result
+					fmt.Fprintf(c.opts.Log, "fuzz: minimizing %d-byte crash input...\n", len(result.entry.Data))
 					c.queueForMinimization(result, nil)
 				} else if !crashWritten {
 					// Found a crasher that's either minimized or not minimizable.
@@ -261,7 +257,7 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 							err:  errors.New(result.crasherMsg),
 						}
 					}
-					if printDebugInfo() {
+					if shouldPrintDebugInfo() {
 						fmt.Fprintf(
 							c.opts.Log,
 							"DEBUG new crasher, elapsed: %s, id: %s, parent: %s, gen: %d, size: %d, exec time: %s\n",
@@ -277,7 +273,7 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 				}
 			} else if result.coverageData != nil {
 				if c.warmupRun() {
-					if printDebugInfo() {
+					if shouldPrintDebugInfo() {
 						fmt.Fprintf(
 							c.opts.Log,
 							"DEBUG processed an initial input, elapsed: %s, id: %s, new bits: %d, size: %d, exec time: %s\n",
@@ -289,15 +285,18 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 						)
 					}
 					c.updateCoverage(result.coverageData)
-					c.warmupInputCount--
-					if printDebugInfo() && c.warmupInputCount == 0 {
-						fmt.Fprintf(
-							c.opts.Log,
-							"DEBUG finished processing input corpus, elapsed: %s, entries: %d, initial coverage bits: %d\n",
-							c.elapsed(),
-							len(c.corpus.entries),
-							countBits(c.coverageMask),
-						)
+					c.warmupInputLeft--
+					if c.warmupInputLeft == 0 {
+						fmt.Fprintf(c.opts.Log, "fuzz: elapsed: %s, gathering baseline coverage: %d/%d completed, now fuzzing with %d workers\n", c.elapsed(), c.warmupInputCount, c.warmupInputCount, c.opts.Parallel)
+						if shouldPrintDebugInfo() {
+							fmt.Fprintf(
+								c.opts.Log,
+								"DEBUG finished processing input corpus, elapsed: %s, entries: %d, initial coverage bits: %d\n",
+								c.elapsed(),
+								len(c.corpus.entries),
+								countBits(c.coverageMask),
+							)
+						}
 					}
 				} else if keepCoverage := diffCoverage(c.coverageMask, result.coverageData); keepCoverage != nil {
 					// Found a value that expanded coverage.
@@ -308,7 +307,7 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 					// number of new edges that this result expanded.
 					// TODO(jayconrod, katiehockman): Don't write a value that's already
 					// in the corpus.
-					if !result.minimizeAttempted && crashMinimizing == nil && c.canMinimize() {
+					if c.canMinimize() && result.canMinimize && c.crashMinimizing == nil {
 						// Send back to workers to find a smaller value that preserves
 						// at least one new coverage bit.
 						c.queueForMinimization(result, keepCoverage)
@@ -327,7 +326,7 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 						c.corpus.entries = append(c.corpus.entries, result.entry)
 						c.inputQueue.enqueue(result.entry)
 						c.interestingCount++
-						if printDebugInfo() {
+						if shouldPrintDebugInfo() {
 							fmt.Fprintf(
 								c.opts.Log,
 								"DEBUG new interesting input, elapsed: %s, id: %s, parent: %s, gen: %d, new bits: %d, total bits: %d, size: %d, exec time: %s\n",
@@ -343,29 +342,38 @@ func CoordinateFuzzing(ctx context.Context, opts CoordinateFuzzingOpts) (err err
 						}
 					}
 				} else {
-					if printDebugInfo() {
+					if shouldPrintDebugInfo() {
 						fmt.Fprintf(
 							c.opts.Log,
-							"DEBUG worker reported interesting input that doesn't expand coverage, elapsed: %s, id: %s, parent: %s, minimized: %t\n",
+							"DEBUG worker reported interesting input that doesn't expand coverage, elapsed: %s, id: %s, parent: %s, canMinimize: %t\n",
 							c.elapsed(),
 							result.entry.Name,
 							result.entry.Parent,
-							result.minimizeAttempted,
+							result.canMinimize,
 						)
 					}
 				}
 			} else if c.warmupRun() {
 				// No error or coverage data was reported for this input during
 				// warmup, so continue processing results.
-				c.warmupInputCount--
-				if printDebugInfo() && c.warmupInputCount == 0 {
-					fmt.Fprintf(
-						c.opts.Log,
-						"DEBUG finished testing-only phase, elapsed: %s, entries: %d\n",
-						time.Since(c.startTime),
-						len(c.corpus.entries),
-					)
+				c.warmupInputLeft--
+				if c.warmupInputLeft == 0 {
+					fmt.Fprintf(c.opts.Log, "fuzz: elapsed: %s, testing seed corpus: %d/%d completed, now fuzzing with %d workers\n", c.elapsed(), c.warmupInputCount, c.warmupInputCount, c.opts.Parallel)
+					if shouldPrintDebugInfo() {
+						fmt.Fprintf(
+							c.opts.Log,
+							"DEBUG finished testing-only phase, elapsed: %s, entries: %d\n",
+							time.Since(c.startTime),
+							len(c.corpus.entries),
+						)
+					}
 				}
+			}
+
+			// Once the result has been processed, stop the worker if we
+			// have reached the fuzzing limit.
+			if c.opts.Limit > 0 && c.count >= c.opts.Limit {
+				stop(nil)
 			}
 
 		case inputC <- input:
@@ -477,9 +485,9 @@ type fuzzResult struct {
 	// crasherMsg is an error message from a crash. It's "" if no crash was found.
 	crasherMsg string
 
-	// minimizeAttempted is true if the worker attempted to minimize this input.
-	// The worker may or may not have succeeded.
-	minimizeAttempted bool
+	// canMinimize is true if the worker should attempt to minimize this result.
+	// It may be false because an attempt has already been made.
+	canMinimize bool
 
 	// coverageData is set if the worker found new coverage.
 	coverageData []byte
@@ -547,15 +555,27 @@ type coordinator struct {
 	// count is the number of values fuzzed so far.
 	count int64
 
+	// countLastLog is the number of values fuzzed when the output was last
+	// logged.
+	countLastLog int64
+
+	// timeLastLog is the time at which the output was last logged.
+	timeLastLog time.Time
+
 	// interestingCount is the number of unique interesting values which have
 	// been found this execution.
 	interestingCount int64
 
-	// warmupInputCount is the number of entries in the corpus which still need
-	// to be received from workers to run once during warmup, but not fuzz. This
-	// could be for coverage data, or only for the purposes of verifying that
-	// the seed corpus doesn't have any crashers. See warmupRun.
+	// warmupInputCount is the count of all entries in the corpus which will
+	// need to be received from workers to run once during warmup, but not fuzz.
+	// This could be for coverage data, or only for the purposes of verifying
+	// that the seed corpus doesn't have any crashers. See warmupRun.
 	warmupInputCount int
+
+	// warmupInputLeft is the number of entries in the corpus which still need
+	// to be received from workers to run once during warmup, but not fuzz.
+	// See warmupInputLeft.
+	warmupInputLeft int
 
 	// duration is the time spent fuzzing inside workers, not counting time
 	// starting up or tearing down.
@@ -570,8 +590,7 @@ type coordinator struct {
 	corpus corpus
 
 	// minimizationAllowed is true if one or more of the types of fuzz
-	// function's parameters can be minimized, and either the limit or duration
-	// for minimization is non-zero.
+	// function's parameters can be minimized.
 	minimizationAllowed bool
 
 	// inputQueue is a queue of inputs that workers should try fuzzing. This is
@@ -583,6 +602,9 @@ type coordinator struct {
 	// coverage. Workers should attempt to find smaller inputs that do the
 	// same thing.
 	minimizeQueue queue
+
+	// crashMinimizing is the crash that is currently being minimized.
+	crashMinimizing *fuzzResult
 
 	// coverageMask aggregates coverage that was found for all inputs in the
 	// corpus. Each byte represents a single basic execution block. Each set bit
@@ -605,12 +627,13 @@ func newCoordinator(opts CoordinateFuzzingOpts) (*coordinator, error) {
 		return nil, err
 	}
 	c := &coordinator{
-		opts:      opts,
-		startTime: time.Now(),
-		inputC:    make(chan fuzzInput),
-		minimizeC: make(chan fuzzMinimizeInput),
-		resultC:   make(chan fuzzResult),
-		corpus:    corpus,
+		opts:        opts,
+		startTime:   time.Now(),
+		inputC:      make(chan fuzzInput),
+		minimizeC:   make(chan fuzzMinimizeInput),
+		resultC:     make(chan fuzzResult),
+		corpus:      corpus,
+		timeLastLog: time.Now(),
 	}
 	if opts.MinimizeLimit > 0 || opts.MinimizeTimeout > 0 {
 		for _, t := range opts.Types {
@@ -639,6 +662,7 @@ func newCoordinator(opts CoordinateFuzzingOpts) (*coordinator, error) {
 		// Set c.coverageMask to a clean []byte full of zeros.
 		c.coverageMask = make([]byte, covSize)
 	}
+	c.warmupInputLeft = c.warmupInputCount
 
 	if len(c.corpus.entries) == 0 {
 		fmt.Fprintf(c.opts.Log, "warning: starting with empty corpus\n")
@@ -662,17 +686,27 @@ func (c *coordinator) updateStats(result fuzzResult) {
 }
 
 func (c *coordinator) logStats() {
-	elapsed := c.elapsed()
+	now := time.Now()
 	if c.warmupRun() {
+		runSoFar := c.warmupInputCount - c.warmupInputLeft
 		if coverageEnabled {
-			fmt.Fprintf(c.opts.Log, "gathering baseline coverage, elapsed: %s, workers: %d, left: %d\n", elapsed, c.opts.Parallel, c.warmupInputCount)
+			fmt.Fprintf(c.opts.Log, "fuzz: elapsed: %s, gathering baseline coverage: %d/%d completed\n", c.elapsed(), runSoFar, c.warmupInputCount)
 		} else {
-			fmt.Fprintf(c.opts.Log, "testing seed corpus, elapsed: %s, workers: %d, left: %d\n", elapsed, c.opts.Parallel, c.warmupInputCount)
+			fmt.Fprintf(c.opts.Log, "fuzz: elapsed: %s, testing seed corpus: %d/%d completed\n", c.elapsed(), runSoFar, c.warmupInputCount)
 		}
+	} else if c.crashMinimizing != nil {
+		fmt.Fprintf(c.opts.Log, "fuzz: elapsed: %s, minimizing\n", c.elapsed())
 	} else {
-		rate := float64(c.count) / time.Since(c.startTime).Seconds() // be more precise here
-		fmt.Fprintf(c.opts.Log, "fuzz: elapsed: %s, execs: %d (%.0f/sec), workers: %d, interesting: %d\n", elapsed, c.count, rate, c.opts.Parallel, c.interestingCount)
+		rate := float64(c.count-c.countLastLog) / now.Sub(c.timeLastLog).Seconds()
+		if coverageEnabled {
+			interestingTotalCount := int64(c.warmupInputCount-len(c.opts.Seed)) + c.interestingCount
+			fmt.Fprintf(c.opts.Log, "fuzz: elapsed: %s, execs: %d (%.0f/sec), new interesting: %d (total: %d)\n", c.elapsed(), c.count, rate, c.interestingCount, interestingTotalCount)
+		} else {
+			fmt.Fprintf(c.opts.Log, "fuzz: elapsed: %s, execs: %d (%.0f/sec)", c.elapsed(), c.count, rate)
+		}
 	}
+	c.countLastLog = c.count
+	c.timeLastLog = now
 }
 
 // peekInput returns the next value that should be sent to workers.
@@ -692,7 +726,7 @@ func (c *coordinator) peekInput() (fuzzInput, bool) {
 		return fuzzInput{}, false
 	}
 	if c.inputQueue.len == 0 {
-		if c.warmupInputCount > 0 {
+		if c.warmupRun() {
 			// Wait for coverage/testing-only run to finish before sending more
 			// inputs.
 			return fuzzInput{}, false
@@ -819,7 +853,7 @@ func (c *coordinator) sentMinimizeInput(input fuzzMinimizeInput) {
 // phase ends when all workers have finished, and the coordinator has a combined
 // coverage map.
 func (c *coordinator) warmupRun() bool {
-	return c.warmupInputCount > 0
+	return c.warmupInputLeft > 0
 }
 
 // updateCoverage sets bits in c.coverageMask that are set in newCoverage.
@@ -1006,7 +1040,7 @@ var (
 	debugInfoOnce sync.Once
 )
 
-func printDebugInfo() bool {
+func shouldPrintDebugInfo() bool {
 	debugInfoOnce.Do(func() {
 		debug := strings.Split(os.Getenv("GODEBUG"), ",")
 		for _, f := range debug {

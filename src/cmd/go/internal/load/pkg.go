@@ -203,6 +203,7 @@ type PackageInternal struct {
 	Local             bool                 // imported via local path (./ or ../)
 	LocalPrefix       string               // interpret ./ and ../ imports relative to this prefix
 	ExeName           string               // desired name for temporary executable
+	FuzzInstrument    bool                 // package should be instrumented for fuzzing
 	CoverMode         string               // preprocess Go source files with the coverage tool in this mode
 	CoverVars         map[string]*CoverVar // variables created by coverage analysis
 	OmitDebug         bool                 // tell linker not to write debug information
@@ -1677,9 +1678,10 @@ func (p *Package) DefaultExecName() string {
 func (p *Package) load(ctx context.Context, opts PackageOpts, path string, stk *ImportStack, importPos []token.Position, bp *build.Package, err error) {
 	p.copyBuild(opts, bp)
 
-	// The localPrefix is the path we interpret ./ imports relative to.
+	// The localPrefix is the path we interpret ./ imports relative to,
+	// if we support them at all (not in module mode!).
 	// Synthesized main packages sometimes override this.
-	if p.Internal.Local {
+	if p.Internal.Local && !cfg.ModulesEnabled {
 		p.Internal.LocalPrefix = dirToImportPath(p.Dir)
 	}
 
@@ -2630,20 +2632,10 @@ func (e *mainPackageError) ImportPath() string {
 
 func setToolFlags(pkgs ...*Package) {
 	for _, p := range PackageList(pkgs) {
-		appendFlags(p, &p.Internal.Asmflags, &BuildAsmflags)
-		appendFlags(p, &p.Internal.Gcflags, &BuildGcflags)
-		appendFlags(p, &p.Internal.Ldflags, &BuildLdflags)
-		appendFlags(p, &p.Internal.Gccgoflags, &BuildGccgoflags)
-	}
-}
-
-func appendFlags(p *Package, flags *[]string, packageFlag *PerPackageFlag) {
-	if !packageFlag.seenPackages[p] {
-		if packageFlag.seenPackages == nil {
-			packageFlag.seenPackages = make(map[*Package]bool)
-		}
-		packageFlag.seenPackages[p] = true
-		*flags = append(*flags, packageFlag.For(p)...)
+		p.Internal.Asmflags = BuildAsmflags.For(p)
+		p.Internal.Gcflags = BuildGcflags.For(p)
+		p.Internal.Ldflags = BuildLdflags.For(p)
+		p.Internal.Gccgoflags = BuildGccgoflags.For(p)
 	}
 }
 
@@ -2712,7 +2704,9 @@ func GoFilesPackage(ctx context.Context, opts PackageOpts, gofiles []string) *Pa
 	pkg.Internal.Local = true
 	pkg.Internal.CmdlineFiles = true
 	pkg.load(ctx, opts, "command-line-arguments", &stk, nil, bp, err)
-	pkg.Internal.LocalPrefix = dirToImportPath(dir)
+	if !cfg.ModulesEnabled {
+		pkg.Internal.LocalPrefix = dirToImportPath(dir)
+	}
 	pkg.ImportPath = "command-line-arguments"
 	pkg.Target = ""
 	pkg.Match = gofiles

@@ -587,8 +587,6 @@ func gcWakeAllAssists() {
 //
 // gcParkAssist reports whether the assist is now satisfied. If it
 // returns false, the caller must retry the assist.
-//
-//go:nowritebarrier
 func gcParkAssist() bool {
 	lock(&work.assistQueue.lock)
 	// If the GC cycle finished while we were getting the lock,
@@ -805,7 +803,7 @@ func scanstack(gp *g, gcw *gcWork) {
 			println()
 			printunlock()
 		}
-		gcdata := r.gcdata
+		gcdata := r.gcdata()
 		var s *mspan
 		if r.useGCProg() {
 			// This path is pretty unlikely, an object large enough
@@ -925,7 +923,8 @@ func scanframeworker(frame *stkframe, state *stackScanState, gcw *gcWork) {
 		// varp is 0 for defers, where there are no locals.
 		// In that case, there can't be a pointer to its args, either.
 		// (And all args would be scanned above anyway.)
-		for i, obj := range objs {
+		for i := range objs {
+			obj := &objs[i]
 			off := obj.off
 			base := frame.varp // locals base pointer
 			if off >= 0 {
@@ -939,7 +938,7 @@ func scanframeworker(frame *stkframe, state *stackScanState, gcw *gcWork) {
 			if stackTraceDebug {
 				println("stkobj at", hex(ptr), "of size", obj.size)
 			}
-			state.addObject(ptr, &objs[i])
+			state.addObject(ptr, obj)
 		}
 	}
 }

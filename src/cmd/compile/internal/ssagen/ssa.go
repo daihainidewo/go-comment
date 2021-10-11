@@ -318,6 +318,7 @@ func dvarint(x *obj.LSym, off int, v int64) int {
 //    - Offset of the closure value to call
 func (s *state) emitOpenDeferInfo() {
 	x := base.Ctxt.Lookup(s.curfn.LSym.Name + ".opendefer")
+	x.Set(obj.AttrContentAddressable, true)
 	s.curfn.LSym.Func().OpenCodedDeferInfo = x
 	off := 0
 	off = dvarint(x, off, -s.deferBitsTemp.FrameOffset())
@@ -3206,6 +3207,11 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 		n := n.(*ir.BinaryExpr)
 		ptr := s.expr(n.X)
 		len := s.expr(n.Y)
+
+		// Force len to uintptr to prevent misuse of garbage bits in the
+		// upper part of the register (#48536).
+		len = s.conv(n, len, len.Type, types.Types[types.TUINTPTR])
+
 		return s.newValue2(ssa.OpAddPtr, n.Type(), ptr, len)
 
 	default:
@@ -3851,6 +3857,13 @@ func InitTables() {
 		},
 		all...)
 
+	addF("runtime", "publicationBarrier",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			s.vars[memVar] = s.newValue1(ssa.OpPubBarrier, types.TypeMem, s.mem())
+			return nil
+		},
+		sys.ARM64)
+
 	/******** runtime/internal/sys ********/
 	addF("runtime/internal/sys", "Ctz32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
@@ -3884,9 +3897,9 @@ func InitTables() {
 	// Make Prefetch intrinsics for supported platforms
 	// On the unsupported platforms stub function will be eliminated
 	addF("runtime/internal/sys", "Prefetch", makePrefetchFunc(ssa.OpPrefetchCache),
-		sys.AMD64, sys.ARM64)
+		sys.AMD64, sys.ARM64, sys.PPC64)
 	addF("runtime/internal/sys", "PrefetchStreamed", makePrefetchFunc(ssa.OpPrefetchCacheStreamed),
-		sys.AMD64, sys.ARM64)
+		sys.AMD64, sys.ARM64, sys.PPC64)
 
 	/******** runtime/internal/atomic ********/
 	addF("runtime/internal/atomic", "Load",
@@ -4232,6 +4245,11 @@ func InitTables() {
 				s.vars[n] = s.callResult(n, callNormal) // types.Types[TFLOAT64]
 				return s.variable(n, types.Types[types.TFLOAT64])
 			}
+
+			if buildcfg.GOAMD64 >= 3 {
+				return s.newValue3(ssa.OpFMA, types.Types[types.TFLOAT64], args[0], args[1], args[2])
+			}
+
 			v := s.entryNewValue0A(ssa.OpHasCPUFeature, types.Types[types.TBOOL], ir.Syms.X86HasFMA)
 			b := s.endBlock()
 			b.Kind = ssa.BlockIf
@@ -4294,6 +4312,10 @@ func InitTables() {
 
 	makeRoundAMD64 := func(op ssa.Op) func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			if buildcfg.GOAMD64 >= 2 {
+				return s.newValue1(op, types.Types[types.TFLOAT64], args[0])
+			}
+
 			v := s.entryNewValue0A(ssa.OpHasCPUFeature, types.Types[types.TBOOL], ir.Syms.X86HasSSE41)
 			b := s.endBlock()
 			b.Kind = ssa.BlockIf
@@ -4498,8 +4520,12 @@ func InitTables() {
 		sys.AMD64, sys.ARM64, sys.S390X, sys.PPC64, sys.Wasm)
 	alias("math/bits", "RotateLeft", "math/bits", "RotateLeft64", p8...)
 
-	makeOnesCountAMD64 := func(op64 ssa.Op, op32 ssa.Op) func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+	makeOnesCountAMD64 := func(op ssa.Op) func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			if buildcfg.GOAMD64 >= 2 {
+				return s.newValue1(op, types.Types[types.TINT], args[0])
+			}
+
 			v := s.entryNewValue0A(ssa.OpHasCPUFeature, types.Types[types.TBOOL], ir.Syms.X86HasPOPCNT)
 			b := s.endBlock()
 			b.Kind = ssa.BlockIf
@@ -4513,10 +4539,6 @@ func InitTables() {
 
 			// We have the intrinsic - use it directly.
 			s.startBlock(bTrue)
-			op := op64
-			if s.config.PtrSize == 4 {
-				op = op32
-			}
 			s.vars[n] = s.newValue1(op, types.Types[types.TINT], args[0])
 			s.endBlock().AddEdgeTo(bEnd)
 
@@ -4531,7 +4553,7 @@ func InitTables() {
 		}
 	}
 	addF("math/bits", "OnesCount64",
-		makeOnesCountAMD64(ssa.OpPopCount64, ssa.OpPopCount64),
+		makeOnesCountAMD64(ssa.OpPopCount64),
 		sys.AMD64)
 	addF("math/bits", "OnesCount64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
@@ -4539,7 +4561,7 @@ func InitTables() {
 		},
 		sys.PPC64, sys.ARM64, sys.S390X, sys.Wasm)
 	addF("math/bits", "OnesCount32",
-		makeOnesCountAMD64(ssa.OpPopCount32, ssa.OpPopCount32),
+		makeOnesCountAMD64(ssa.OpPopCount32),
 		sys.AMD64)
 	addF("math/bits", "OnesCount32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
@@ -4547,7 +4569,7 @@ func InitTables() {
 		},
 		sys.PPC64, sys.ARM64, sys.S390X, sys.Wasm)
 	addF("math/bits", "OnesCount16",
-		makeOnesCountAMD64(ssa.OpPopCount16, ssa.OpPopCount16),
+		makeOnesCountAMD64(ssa.OpPopCount16),
 		sys.AMD64)
 	addF("math/bits", "OnesCount16",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
@@ -4560,7 +4582,7 @@ func InitTables() {
 		},
 		sys.S390X, sys.PPC64, sys.Wasm)
 	addF("math/bits", "OnesCount",
-		makeOnesCountAMD64(ssa.OpPopCount64, ssa.OpPopCount32),
+		makeOnesCountAMD64(ssa.OpPopCount64),
 		sys.AMD64)
 	addF("math/bits", "Mul64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
@@ -6536,6 +6558,7 @@ func emitArgInfo(e *ssafn, f *ssa.Func, pp *objw.Progs) {
 	}
 
 	x := EmitArgInfo(e.curfn, f.OwnAux.ABIInfo())
+	x.Set(obj.AttrContentAddressable, true)
 	e.curfn.LSym.Func().ArgInfo = x
 
 	// Emit a funcdata pointing at the arg info data.
@@ -6549,6 +6572,9 @@ func emitArgInfo(e *ssafn, f *ssa.Func, pp *objw.Progs) {
 // emit argument info (locations on stack) of f for traceback.
 func EmitArgInfo(f *ir.Func, abiInfo *abi.ABIParamResultInfo) *obj.LSym {
 	x := base.Ctxt.Lookup(fmt.Sprintf("%s.arginfo%d", f.LSym.Name, f.ABI))
+	// NOTE: do not set ContentAddressable here. This may be referenced from
+	// assembly code by name (in this case f is a declaration).
+	// Instead, set it in emitArgInfo above.
 
 	PtrSize := int64(types.PtrSize)
 	uintptrTyp := types.Types[types.TUINTPTR]
@@ -6663,7 +6689,13 @@ func EmitArgInfo(f *ir.Func, abiInfo *abi.ABIParamResultInfo) *obj.LSym {
 		return true
 	}
 
-	for _, a := range abiInfo.InParams() {
+	start := 0
+	if strings.Contains(f.LSym.Name, "[") {
+		// Skip the dictionary argument - it is implicit and the user doesn't need to see it.
+		start = 1
+	}
+
+	for _, a := range abiInfo.InParams()[start:] {
 		if !visitType(a.FrameOffset(abiInfo), a.Type, 0) {
 			break
 		}

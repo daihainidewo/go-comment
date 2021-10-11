@@ -70,7 +70,7 @@ import (
 var depsRules = `
 	# No dependencies allowed for any of these packages.
 	NONE
-	< container/list, container/ring,
+	< constraints, container/list, container/ring,
 	  internal/cfg, internal/cpu, internal/goarch,
 	  internal/goexperiment, internal/goos,
 	  internal/goversion, internal/nettrace,
@@ -656,6 +656,9 @@ func findImports(pkg string) ([]string, error) {
 		f.Close()
 		if err != nil {
 			return nil, fmt.Errorf("reading %v: %v", name, err)
+		}
+		if info.parsed.Name.Name == "main" {
+			continue
 		}
 		if bytes.Contains(info.header, buildIgnore) {
 			continue

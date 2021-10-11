@@ -132,8 +132,6 @@ variables are unchanged. A cached test result is treated as executing
 in no time at all,so a successful package test result will be cached and
 reused regardless of -timeout setting.
 
-Run 'go help fuzz' for details around how the go command handles fuzz targets.
-
 In addition to the build flags, the flags handled by 'go test' itself are:
 
 	-args
@@ -820,12 +818,11 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 
 	// Inform the compiler that it should instrument the binary at
 	// build-time when fuzzing is enabled.
-	fuzzFlags := work.FuzzInstrumentFlags()
-	if testFuzz != "" && fuzzFlags != nil {
+	if testFuzz != "" {
 		// Don't instrument packages which may affect coverage guidance but are
 		// unlikely to be useful. Most of these are used by the testing or
-		// internal/fuzz concurrently with fuzzing.
-		var fuzzNoInstrument = map[string]bool{
+		// internal/fuzz packages concurrently with fuzzing.
+		var skipInstrumentation = map[string]bool{
 			"context":       true,
 			"internal/fuzz": true,
 			"reflect":       true,
@@ -837,10 +834,9 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 			"time":          true,
 		}
 		for _, p := range load.TestPackageList(ctx, pkgOpts, pkgs) {
-			if fuzzNoInstrument[p.ImportPath] {
-				continue
+			if !skipInstrumentation[p.ImportPath] {
+				p.Internal.FuzzInstrument = true
 			}
-			p.Internal.Gcflags = append(p.Internal.Gcflags, fuzzFlags...)
 		}
 	}
 
@@ -1794,9 +1790,23 @@ func builderNoTest(b *work.Builder, ctx context.Context, a *work.Action) error {
 	return nil
 }
 
-// printExitStatus is the action for printing the exit status
+// printExitStatus is the action for printing the final exit status.
+// If we are running multiple test targets, print a final "FAIL"
+// in case a failure in an early package has already scrolled
+// off of the user's terminal.
+// (See https://golang.org/issue/30507#issuecomment-470593235.)
+//
+// In JSON mode, we need to maintain valid JSON output and
+// we assume that the test output is being parsed by a tool
+// anyway, so the failure will not be missed and would be
+// awkward to try to wedge into the JSON stream.
+//
+// In fuzz mode, we only allow a single package for now
+// (see CL 350156 and https://golang.org/issue/46312),
+// so there is no possibility of scrolling off and no need
+// to print the final status.
 func printExitStatus(b *work.Builder, ctx context.Context, a *work.Action) error {
-	if !testJSON && len(pkgArgs) != 0 {
+	if !testJSON && testFuzz == "" && len(pkgArgs) != 0 {
 		if base.GetExitStatus() != 0 {
 			fmt.Println("FAIL")
 			return nil

@@ -144,6 +144,9 @@ func (gcToolchain) gc(b *Builder, a *Action, archive string, importcfg, embedcfg
 	}
 
 	gcflags := str.StringList(forcedGcflags, p.Internal.Gcflags)
+	if p.Internal.FuzzInstrument {
+		gcflags = append(gcflags, fuzzInstrumentFlags()...)
+	}
 	if compilingRuntime {
 		// Remove -N, if present.
 		// It is not possible to build the runtime with no optimizations,
@@ -156,10 +159,15 @@ func (gcToolchain) gc(b *Builder, a *Action, archive string, importcfg, embedcfg
 			}
 		}
 	}
+	// Add -c=N to use concurrent backend compilation, if possible.
+	if c := gcBackendConcurrency(gcflags); c > 1 {
+		gcflags = append(gcflags, fmt.Sprintf("-c=%d", c))
+	}
 
 	args := []interface{}{cfg.BuildToolexec, base.Tool("compile"), "-o", ofile, "-trimpath", a.trimpath(), defaultGcFlags, gcflags}
-	if p.Internal.LocalPrefix != "" {
-		// Workaround #43883.
+	if p.Internal.LocalPrefix == "" {
+		args = append(args, "-nolocalimports")
+	} else {
 		args = append(args, "-D", p.Internal.LocalPrefix)
 	}
 	if importcfg != nil {
@@ -179,11 +187,6 @@ func (gcToolchain) gc(b *Builder, a *Action, archive string, importcfg, embedcfg
 	}
 	if asmhdr {
 		args = append(args, "-asmhdr", objdir+"go_asm.h")
-	}
-
-	// Add -c=N to use concurrent backend compilation, if possible.
-	if c := gcBackendConcurrency(gcflags); c > 1 {
-		args = append(args, fmt.Sprintf("-c=%d", c))
 	}
 
 	for _, f := range gofiles {
@@ -232,7 +235,7 @@ CheckFlags:
 		// except for known commonly used flags.
 		// If the user knows better, they can manually add their own -c to the gcflags.
 		switch flag {
-		case "-N", "-l", "-S", "-B", "-C", "-I":
+		case "-N", "-l", "-S", "-B", "-C", "-I", "-shared":
 			// OK
 		default:
 			canDashC = false

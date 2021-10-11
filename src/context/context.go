@@ -354,7 +354,7 @@ func (c *cancelCtx) Value(key interface{}) interface{} {
 	if key == &cancelCtxKey {
 		return c
 	}
-	return c.Context.Value(key)
+	return value(c.Context, key)
 }
 
 func (c *cancelCtx) Done() <-chan struct{} {
@@ -565,5 +565,31 @@ func (c *valueCtx) Value(key interface{}) interface{} {
 	if c.key == key {
 		return c.val
 	}
-	return c.Context.Value(key)
+	return value(c.Context, key)
+}
+
+func value(c Context, key interface{}) interface{} {
+	for {
+		switch ctx := c.(type) {
+		case *valueCtx:
+			if key == ctx.key {
+				return ctx.val
+			}
+			c = ctx.Context
+		case *cancelCtx:
+			if key == &cancelCtxKey {
+				return c
+			}
+			c = ctx.Context
+		case *timerCtx:
+			if key == &cancelCtxKey {
+				return &ctx.cancelCtx
+			}
+			c = ctx.Context
+		case *emptyCtx:
+			return nil
+		default:
+			return c.Value(key)
+		}
+	}
 }

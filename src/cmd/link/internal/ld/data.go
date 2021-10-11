@@ -92,10 +92,10 @@ func maxSizeTrampolines(ctxt *Link, ldr *loader.Loader, s loader.Sym, isTramp bo
 	panic("unreachable")
 }
 
-// detect too-far jumps in function s, and add trampolines if necessary
-// ARM, PPC64 & PPC64LE support trampoline insertion for internal and external linking
-// On PPC64 & PPC64LE the text sections might be split but will still insert trampolines
-// where necessary.
+// Detect too-far jumps in function s, and add trampolines if necessary.
+// ARM, PPC64, PPC64LE and RISCV64 support trampoline insertion for internal
+// and external linking. On PPC64 and PPC64LE the text sections might be split
+// but will still insert trampolines where necessary.
 func trampoline(ctxt *Link, s loader.Sym) {
 	if thearch.Trampoline == nil {
 		return // no need or no support of trampolines on this arch
@@ -113,8 +113,11 @@ func trampoline(ctxt *Link, s loader.Sym) {
 		if !ldr.AttrReachable(rs) || ldr.SymType(rs) == sym.Sxxx {
 			continue // something is wrong. skip it here and we'll emit a better error later
 		}
-		rs = ldr.ResolveABIAlias(rs)
-		if ldr.SymValue(rs) == 0 && (ldr.SymType(rs) != sym.SDYNIMPORT && ldr.SymType(rs) != sym.SUNDEFEXT) {
+
+		// RISC-V is only able to reach +/-1MiB via a JAL instruction,
+		// which we can readily exceed in the same package. As such, we
+		// need to generate trampolines when the address is unknown.
+		if ldr.SymValue(rs) == 0 && !ctxt.Target.IsRISCV64() && ldr.SymType(rs) != sym.SDYNIMPORT && ldr.SymType(rs) != sym.SUNDEFEXT {
 			if ldr.SymPkg(s) != "" && ldr.SymPkg(rs) == ldr.SymPkg(s) {
 				// Symbols in the same package are laid out together.
 				// Except that if SymPkg(s) == "", it is a host object symbol
@@ -125,7 +128,6 @@ func trampoline(ctxt *Link, s loader.Sym) {
 				continue // runtime packages are laid out together
 			}
 		}
-
 		thearch.Trampoline(ctxt, ldr, ri, rs, s)
 	}
 }
@@ -194,7 +196,6 @@ func (st *relocSymState) relocsym(s loader.Sym, P []byte) {
 		off := r.Off()
 		siz := int32(r.Siz())
 		rs := r.Sym()
-		rs = ldr.ResolveABIAlias(rs)
 		rt := r.Type()
 		weak := r.Weak()
 		if off < 0 || off+siz > int32(len(P)) {
@@ -340,7 +341,6 @@ func (st *relocSymState) relocsym(s loader.Sym, P []byte) {
 			if weak && !ldr.AttrReachable(rs) {
 				// Redirect it to runtime.unreachableMethod, which will throw if called.
 				rs = syms.unreachableMethod
-				rs = ldr.ResolveABIAlias(rs)
 			}
 			if target.IsExternal() {
 				nExtReloc++
@@ -614,7 +614,7 @@ func extreloc(ctxt *Link, ldr *loader.Loader, s loader.Sym, r loader.Reloc) (loa
 
 	case objabi.R_TLS_LE, objabi.R_TLS_IE:
 		if target.IsElf() {
-			rs := ldr.ResolveABIAlias(r.Sym())
+			rs := r.Sym()
 			rr.Xsym = rs
 			if rr.Xsym == 0 {
 				rr.Xsym = ctxt.Tlsg
@@ -626,10 +626,9 @@ func extreloc(ctxt *Link, ldr *loader.Loader, s loader.Sym, r loader.Reloc) (loa
 
 	case objabi.R_ADDR:
 		// set up addend for eventual relocation via outer symbol.
-		rs := ldr.ResolveABIAlias(r.Sym())
+		rs := r.Sym()
 		if r.Weak() && !ldr.AttrReachable(rs) {
 			rs = ctxt.ArchSyms.unreachableMethod
-			rs = ldr.ResolveABIAlias(rs)
 		}
 		rs, off := FoldSubSymbolOffset(ldr, rs)
 		rr.Xadd = r.Add() + off
@@ -644,13 +643,13 @@ func extreloc(ctxt *Link, ldr *loader.Loader, s loader.Sym, r loader.Reloc) (loa
 		if target.IsDarwin() {
 			return rr, false
 		}
-		rs := ldr.ResolveABIAlias(r.Sym())
+		rs := r.Sym()
 		rr.Xsym = loader.Sym(ldr.SymSect(rs).Sym)
 		rr.Xadd = r.Add() + ldr.SymValue(rs) - int64(ldr.SymSect(rs).Vaddr)
 
 	// r.Sym() can be 0 when CALL $(constant) is transformed from absolute PC to relative PC call.
 	case objabi.R_GOTPCREL, objabi.R_CALL, objabi.R_PCREL:
-		rs := ldr.ResolveABIAlias(r.Sym())
+		rs := r.Sym()
 		if rt == objabi.R_GOTPCREL && target.IsDynlinkingGo() && target.IsDarwin() && rs != 0 {
 			rr.Xadd = r.Add()
 			rr.Xadd -= int64(siz) // relative to address after the relocated chunk
@@ -692,7 +691,7 @@ func extreloc(ctxt *Link, ldr *loader.Loader, s loader.Sym, r loader.Reloc) (loa
 // symbol and addend.
 func ExtrelocSimple(ldr *loader.Loader, r loader.Reloc) loader.ExtReloc {
 	var rr loader.ExtReloc
-	rs := ldr.ResolveABIAlias(r.Sym())
+	rs := r.Sym()
 	rr.Xsym = rs
 	rr.Xadd = r.Add()
 	rr.Type = r.Type()
@@ -705,7 +704,7 @@ func ExtrelocSimple(ldr *loader.Loader, r loader.Reloc) loader.ExtReloc {
 func ExtrelocViaOuterSym(ldr *loader.Loader, r loader.Reloc, s loader.Sym) loader.ExtReloc {
 	// set up addend for eventual relocation via outer symbol.
 	var rr loader.ExtReloc
-	rs := ldr.ResolveABIAlias(r.Sym())
+	rs := r.Sym()
 	rs, off := FoldSubSymbolOffset(ldr, rs)
 	rr.Xadd = r.Add() + off
 	rst := ldr.SymType(rs)
@@ -1169,13 +1168,6 @@ func symalign(ldr *loader.Loader, s loader.Sym) int32 {
 	} else if align != 0 {
 		return min
 	}
-	// FIXME: figure out a way to avoid checking by name here.
-	sname := ldr.SymName(s)
-	if strings.HasPrefix(sname, "go.string.") || strings.HasPrefix(sname, "type..namedata.") {
-		// String data is just bytes.
-		// If we align it, we waste a lot of space to padding.
-		return min
-	}
 	align = int32(thearch.Maxalign)
 	ssz := ldr.SymSize(s)
 	for int64(align) > ssz && align > min {
@@ -1375,6 +1367,11 @@ func (state *dodataState) makeRelroForSharedLib(target *Link) {
 					// the relro data.
 					isRelro = true
 				}
+			case sym.SGOFUNC:
+				// The only SGOFUNC symbols that contain relocations are .stkobj,
+				// and their relocations are of type objabi.R_ADDROFF,
+				// which always get resolved during linking.
+				isRelro = false
 			}
 			if isRelro {
 				state.setSymType(s, symnrelro)
@@ -2445,6 +2442,11 @@ func splitTextSections(ctxt *Link) bool {
 	return (ctxt.IsPPC64() || (ctxt.IsARM64() && ctxt.IsDarwin())) && ctxt.IsExternal()
 }
 
+// On Wasm, we reserve 4096 bytes for zero page, then 4096 bytes for wasm_exec.js
+// to store command line args. Data sections starts from at least address 8192.
+// Keep in sync with wasm_exec.js.
+const wasmMinDataAddr = 4096 + 4096
+
 // address assigns virtual addresses to all segments and sections and
 // returns all segments in file order.
 func (ctxt *Link) address() []*sym.Segment {
@@ -2454,10 +2456,14 @@ func (ctxt *Link) address() []*sym.Segment {
 	order = append(order, &Segtext)
 	Segtext.Rwx = 05
 	Segtext.Vaddr = va
-	for _, s := range Segtext.Sections {
+	for i, s := range Segtext.Sections {
 		va = uint64(Rnd(int64(va), int64(s.Align)))
 		s.Vaddr = va
 		va += s.Length
+
+		if ctxt.IsWasm() && i == 0 && va < wasmMinDataAddr {
+			va = wasmMinDataAddr
+		}
 	}
 
 	Segtext.Length = va - uint64(*FlagTextAddr)

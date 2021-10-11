@@ -18,6 +18,7 @@ import (
 	"io"
 	"math/big"
 	"sort"
+	"strings"
 )
 
 type intReader struct {
@@ -304,8 +305,7 @@ func (r *importReader) obj(name string) {
 		if tag == 'G' {
 			tparams = r.tparamList()
 		}
-		sig := r.signature(nil)
-		sig.SetTypeParams(tparams)
+		sig := r.signature(nil, nil, tparams)
 		r.declare(types.NewFunc(pos, r.currPkg, name, sig))
 
 	case 'T', 'U':
@@ -329,19 +329,19 @@ func (r *importReader) obj(name string) {
 				mpos := r.pos()
 				mname := r.ident()
 				recv := r.param()
-				msig := r.signature(recv)
 
 				// If the receiver has any targs, set those as the
 				// rparams of the method (since those are the
 				// typeparams being used in the method sig/body).
-				targs := baseType(msig.Recv().Type()).TypeArgs()
+				targs := baseType(recv.Type()).TypeArgs()
+				var rparams []*types.TypeParam
 				if targs.Len() > 0 {
-					rparams := make([]*types.TypeParam, targs.Len())
+					rparams = make([]*types.TypeParam, targs.Len())
 					for i := range rparams {
 						rparams[i], _ = targs.At(i).(*types.TypeParam)
 					}
-					msig.SetRecvTypeParams(rparams)
 				}
+				msig := r.signature(recv, rparams, nil)
 
 				named.AddMethod(types.NewFunc(mpos, r.currPkg, mname, msig))
 			}
@@ -354,16 +354,13 @@ func (r *importReader) obj(name string) {
 		if r.p.exportVersion < iexportVersionGenerics {
 			errorf("unexpected type param type")
 		}
-		name0, sub := parseSubscript(name)
-		tn := types.NewTypeName(pos, r.currPkg, name0, nil)
-		t := types.NewTypeParam(tn, nil)
-		if sub == 0 {
-			errorf("missing subscript")
+		// Remove the "path" from the type param name that makes it unique
+		ix := strings.LastIndex(name, ".")
+		if ix < 0 {
+			errorf("missing path for type param")
 		}
-
-		// TODO(rfindley): can we use a different, stable ID?
-		// t.SetId(sub)
-
+		tn := types.NewTypeName(pos, r.currPkg, name[ix+1:], nil)
+		t := types.NewTypeParam(tn, nil)
 		// To handle recursive references to the typeparam within its
 		// bound, save the partial type in tparamIndex before reading the bounds.
 		id := ident{r.currPkg.Name(), name}
@@ -576,7 +573,7 @@ func (r *importReader) doType(base *types.Named) types.Type {
 		return types.NewMap(r.typ(), r.typ())
 	case signatureType:
 		r.currPkg = r.pkg()
-		return r.signature(nil)
+		return r.signature(nil, nil, nil)
 
 	case structType:
 		r.currPkg = r.pkg()
@@ -616,7 +613,7 @@ func (r *importReader) doType(base *types.Named) types.Type {
 				recv = types.NewVar(token.NoPos, r.currPkg, "", base)
 			}
 
-			msig := r.signature(recv)
+			msig := r.signature(recv, nil, nil)
 			methods[i] = types.NewFunc(mpos, r.currPkg, mname, msig)
 		}
 
@@ -653,7 +650,7 @@ func (r *importReader) doType(base *types.Named) types.Type {
 		baseType := r.typ()
 		// The imported instantiated type doesn't include any methods, so
 		// we must always use the methods of the base (orig) type.
-		// TODO provide a non-nil *Environment
+		// TODO provide a non-nil *Context
 		t, _ := types.Instantiate(nil, baseType, targs, false)
 		return t
 
@@ -673,11 +670,11 @@ func (r *importReader) kind() itag {
 	return itag(r.uint64())
 }
 
-func (r *importReader) signature(recv *types.Var) *types.Signature {
+func (r *importReader) signature(recv *types.Var, rparams, tparams []*types.TypeParam) *types.Signature {
 	params := r.paramList()
 	results := r.paramList()
 	variadic := params.Len() > 0 && r.bool()
-	return types.NewSignature(recv, params, results, variadic)
+	return types.NewSignatureType(recv, rparams, tparams, params, results, variadic)
 }
 
 func (r *importReader) tparamList() []*types.TypeParam {
@@ -743,24 +740,4 @@ func baseType(typ types.Type) *types.Named {
 	// receiver base types are always (possibly generic) types.Named types
 	n, _ := typ.(*types.Named)
 	return n
-}
-
-func parseSubscript(name string) (string, uint64) {
-	// Extract the subscript value from the type param name. We export
-	// and import the subscript value, so that all type params have
-	// unique names.
-	sub := uint64(0)
-	startsub := -1
-	for i, r := range name {
-		if '₀' <= r && r < '₀'+10 {
-			if startsub == -1 {
-				startsub = i
-			}
-			sub = sub*10 + uint64(r-'₀')
-		}
-	}
-	if startsub >= 0 {
-		name = name[:startsub]
-	}
-	return name, sub
 }

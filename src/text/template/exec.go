@@ -5,6 +5,7 @@
 package template
 
 import (
+	"errors"
 	"fmt"
 	"internal/fmtsort"
 	"io"
@@ -243,6 +244,12 @@ func (t *Template) DefinedTemplates() string {
 	return b.String()
 }
 
+// Sentinel errors for use with panic to signal early exits from range loops.
+var (
+	walkBreak    = errors.New("break")
+	walkContinue = errors.New("continue")
+)
+
 // Walk functions step through the major pieces of the template structure,
 // generating output as they go.
 func (s *state) walk(dot reflect.Value, node parse.Node) {
@@ -255,7 +262,11 @@ func (s *state) walk(dot reflect.Value, node parse.Node) {
 		if len(node.Pipe.Decl) == 0 {
 			s.printValue(node, val)
 		}
+	case *parse.BreakNode:
+		panic(walkBreak)
 	case *parse.CommentNode:
+	case *parse.ContinueNode:
+		panic(walkContinue)
 	case *parse.IfNode:
 		s.walkIfOrWith(parse.NodeIf, dot, node.Pipe, node.List, node.ElseList)
 	case *parse.ListNode:
@@ -334,6 +345,11 @@ func isTrue(val reflect.Value) (truth, ok bool) {
 
 func (s *state) walkRange(dot reflect.Value, r *parse.RangeNode) {
 	s.at(r)
+	defer func() {
+		if r := recover(); r != nil && r != walkBreak {
+			panic(r)
+		}
+	}()
 	defer s.pop(s.mark())
 	val, _ := indirect(s.evalPipeline(dot, r.Pipe))
 	// mark top of stack before any variables in the body are pushed.
@@ -347,8 +363,14 @@ func (s *state) walkRange(dot reflect.Value, r *parse.RangeNode) {
 		if len(r.Pipe.Decl) > 1 {
 			s.setTopVar(2, index)
 		}
+		defer s.pop(mark)
+		defer func() {
+			// Consume panic(walkContinue)
+			if r := recover(); r != nil && r != walkContinue {
+				panic(r)
+			}
+		}()
 		s.walk(elem, r.List)
-		s.pop(mark)
 	}
 	switch val.Kind() {
 	case reflect.Array, reflect.Slice:
@@ -692,6 +714,13 @@ func (s *state) evalCall(dot, fun reflect.Value, isBuiltin bool, node parse.Node
 		s.errorf("can't call method/function %q with %d results", name, typ.NumOut())
 	}
 
+	unwrap := func(v reflect.Value) reflect.Value {
+		if v.Type() == reflectValueType {
+			v = v.Interface().(reflect.Value)
+		}
+		return v
+	}
+
 	// Special case for builtin and/or, which short-circuit.
 	if isBuiltin && (name == "and" || name == "or") {
 		argType := typ.In(0)
@@ -699,8 +728,19 @@ func (s *state) evalCall(dot, fun reflect.Value, isBuiltin bool, node parse.Node
 		for _, arg := range args {
 			v = s.evalArg(dot, argType, arg).Interface().(reflect.Value)
 			if truth(v) == (name == "or") {
-				break
+				// This value was already unwrapped
+				// by the .Interface().(reflect.Value).
+				return v
 			}
+		}
+		if final != missingVal {
+			// The last argument to and/or is coming from
+			// the pipeline. We didn't short circuit on an earlier
+			// argument, so we are going to return this one.
+			// We don't have to evaluate final, but we do
+			// have to check its type. Then, since we are
+			// going to return it, we have to unwrap it.
+			v = unwrap(s.validateType(final, argType))
 		}
 		return v
 	}
@@ -742,10 +782,7 @@ func (s *state) evalCall(dot, fun reflect.Value, isBuiltin bool, node parse.Node
 		s.at(node)
 		s.errorf("error calling %s: %w", name, err)
 	}
-	if v.Type() == reflectValueType {
-		v = v.Interface().(reflect.Value)
-	}
-	return v
+	return unwrap(v)
 }
 
 // canBeNil reports whether an untyped nil can be assigned to the type. See reflect.Zero.

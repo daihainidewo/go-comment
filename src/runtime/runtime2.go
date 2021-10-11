@@ -554,7 +554,7 @@ type m struct {
 	printlock     int8
 	incgo         bool      // 是否执行cgo调用 m is executing a cgo call
 	freeWait      uint32    // 为0表示可以释放当前m if == 0, safe to free g0 and delete m (atomic)
-	fastrand      [2]uint32 // 随机数种子
+	fastrand      uint64 	// 随机数种子
 	needextram    bool
 	traceback     uint8
 	ncgocall      uint64                        // cgo调用次数 number of cgo calls in total
@@ -879,8 +879,8 @@ const (
 // Keep in sync with linker (../cmd/link/internal/ld/pcln.go:/pclntab)
 // and with package debug/gosym and with symtab.go in package runtime.
 type _func struct {
-	entry   uintptr // start pc
-	nameoff int32   // function name
+	entryoff uint32 // start pc, as offset from moduledata.text/pcHeader.textStart
+	nameoff  int32  // function name
 
 	args        int32  // in/out args size
 	deferreturn uint32 // offset of start of a deferreturn call instruction from entry, if any.
@@ -900,8 +900,8 @@ type _func struct {
 // A *Func can be either a *_func or a *funcinl, and they are distinguished
 // by the first uintptr.
 type funcinl struct {
-	zero  uintptr // set to 0 to distinguish from _func
-	entry uintptr // entry of the real (the "outermost") frame.
+	ones  uint32  // set to ^0 to distinguish from _func
+	entry uintptr // entry of the real (the "outermost") frame
 	name  string
 	file  string
 	line  int

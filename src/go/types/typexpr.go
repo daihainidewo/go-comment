@@ -30,21 +30,23 @@ func (check *Checker) ident(x *operand, e *ast.Ident, def *Named, wantType bool)
 	switch obj {
 	case nil:
 		if e.Name == "_" {
-			check.error(e, _InvalidBlank, "cannot use _ as value or type")
+			// Blank identifiers are never declared, but the current identifier may
+			// be a placeholder for a receiver type parameter. In this case we can
+			// resolve its type and object from Checker.recvTParamMap.
+			if tpar := check.recvTParamMap[e]; tpar != nil {
+				x.mode = typexpr
+				x.typ = tpar
+			} else {
+				check.error(e, _InvalidBlank, "cannot use _ as value or type")
+			}
 		} else {
 			check.errorf(e, _UndeclaredName, "undeclared name: %s", e.Name)
 		}
 		return
 	case universeAny, universeComparable:
-		// complain if necessary
 		if !check.allowVersion(check.pkg, 1, 18) {
 			check.errorf(e, _UndeclaredName, "undeclared name: %s (requires version go1.18 or later)", e.Name)
 			return // avoid follow-on errors
-		}
-		if obj == universeAny {
-			// If we allow "any" for general use, this if-statement can be removed (issue #33232).
-			check.softErrorf(e, _Todo, "cannot use any outside constraint position")
-			// ok to continue
 		}
 	}
 	check.recordUse(e, obj)
@@ -145,7 +147,7 @@ func (check *Checker) varType(e ast.Expr) Type {
 	check.later(func() {
 		if t := asInterface(typ); t != nil {
 			tset := computeInterfaceTypeSet(check, e.Pos(), t) // TODO(gri) is this the correct position?
-			if tset.IsConstraint() {
+			if !tset.IsMethodSet() {
 				if tset.comparable {
 					check.softErrorf(e, _Todo, "interface is (or embeds) comparable")
 				} else {

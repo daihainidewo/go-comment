@@ -188,9 +188,18 @@ func ReadImports(pkg *types.Pkg, data string) {
 	// Inline body index.
 	for nPkgs := ird.uint64(); nPkgs > 0; nPkgs-- {
 		pkg := p.pkgAt(ird.uint64())
+		pkgPrefix := pkg.Prefix + "."
 
 		for nSyms := ird.uint64(); nSyms > 0; nSyms-- {
-			s := pkg.Lookup(p.stringAt(ird.uint64()))
+			s2 := p.stringAt(ird.uint64())
+			// Function/method instantiation names may include "" to
+			// represent the path name of the imported package (in type
+			// names), so replace "" with pkg.Prefix. The "" in the names
+			// will get replaced by the linker as well, so will not
+			// appear in the executable. Include the dot to avoid
+			// matching with struct tags ending in '"'.
+			s2 = strings.Replace(s2, "\"\".", pkgPrefix, -1)
+			s := pkg.Lookup(s2)
 			off := ird.uint64()
 
 			if _, ok := inlineImporter[s]; !ok {
@@ -1359,7 +1368,11 @@ func (r *importReader) node() ir.Node {
 		return ir.NewCompLitExpr(r.pos(), ir.OCOMPLIT, ir.TypeNode(r.typ()), r.fieldList())
 
 	case ir.OCOMPLIT:
-		return ir.NewCompLitExpr(r.pos(), ir.OCOMPLIT, ir.TypeNode(r.typ()), r.exprList())
+		pos := r.pos()
+		t := r.typ()
+		n := ir.NewCompLitExpr(pos, ir.OCOMPLIT, ir.TypeNode(t), r.exprList())
+		n.SetType(t)
+		return n
 
 	case ir.OARRAYLIT, ir.OSLICELIT, ir.OMAPLIT:
 		if !go117ExportTypes {
@@ -1867,11 +1880,6 @@ func substInstType(t *types.Type, baseType *types.Type, targs []*types.Type) {
 	}
 	t.SetUnderlying(subst.Typ(baseType.Underlying()))
 
-	if t.HasShape() && !t.IsInterface() {
-		// Concrete shape types have no methods.
-		return
-	}
-
 	newfields := make([]*types.Field, baseType.Methods().Len())
 	for i, f := range baseType.Methods().Slice() {
 		if !f.IsMethod() || types.IsInterfaceMethod(f.Type) {
@@ -1895,13 +1903,14 @@ func substInstType(t *types.Type, baseType *types.Type, targs []*types.Type) {
 		}
 		t2 := msubst.Typ(f.Type)
 		oldsym := f.Nname.Sym()
-		newsym := MakeFuncInstSym(oldsym, targs, true)
+		newsym := MakeFuncInstSym(oldsym, targs, true, true)
 		var nname *ir.Name
 		if newsym.Def != nil {
 			nname = newsym.Def.(*ir.Name)
 		} else {
 			nname = ir.NewNameAt(f.Pos, newsym)
 			nname.SetType(t2)
+			ir.MarkFunc(nname)
 			newsym.Def = nname
 		}
 		newfields[i] = types.NewField(f.Pos, f.Sym, t2)

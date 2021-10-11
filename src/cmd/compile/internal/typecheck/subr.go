@@ -14,6 +14,7 @@ import (
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
+	"cmd/internal/objabi"
 	"cmd/internal/src"
 )
 
@@ -918,14 +919,11 @@ func addTargs(b *bytes.Buffer, targs []*types.Type) {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		// Use NameString(), which includes the package name for the local
-		// package, to make sure that type arguments (including type params),
-		// are uniquely specified.
-		tstring := targ.NameString()
-		// types1 uses "interface {" and types2 uses "interface{" - convert
-		// to consistent types2 format.  Same for "struct {"
-		tstring = strings.Replace(tstring, "interface {", "interface{", -1)
-		tstring = strings.Replace(tstring, "struct {", "struct{", -1)
+		// Make sure that type arguments (including type params), are
+		// uniquely specified. LinkString() eliminates all spaces
+		// and includes the package path (local package path is "" before
+		// linker substitution).
+		tstring := targ.LinkString()
 		b.WriteString(tstring)
 	}
 	b.WriteString("]")
@@ -961,8 +959,8 @@ func makeInstName1(name string, targs []*types.Type, hasBrackets bool) string {
 }
 
 // MakeFuncInstSym makes the unique sym for a stenciled generic function or method,
-// based on the name of the function fnsym and the targs. It replaces any
-// existing bracket type list in the name. MakeInstName asserts that fnsym has
+// based on the name of the function gf and the targs. It replaces any
+// existing bracket type list in the name. MakeInstName asserts that gf has
 // brackets in its name if and only if hasBrackets is true.
 //
 // Names of declared generic functions have no brackets originally, so hasBrackets
@@ -972,8 +970,19 @@ func makeInstName1(name string, targs []*types.Type, hasBrackets bool) string {
 //
 // The standard naming is something like: 'genFn[int,bool]' for functions and
 // '(*genType[int,bool]).methodName' for methods
-func MakeFuncInstSym(gf *types.Sym, targs []*types.Type, hasBrackets bool) *types.Sym {
-	return gf.Pkg.Lookup(makeInstName1(gf.Name, targs, hasBrackets))
+//
+// isMethodNode specifies if the name of a method node is being generated (as opposed
+// to a name of an instantiation of generic function or name of the shape-based
+// function that helps implement a method of an instantiated type). For method nodes
+// on shape types, we prepend "nofunc.", because method nodes for shape types will
+// have no body, and we want to avoid a name conflict with the shape-based function
+// that helps implement the same method for fully-instantiated types.
+func MakeFuncInstSym(gf *types.Sym, targs []*types.Type, isMethodNode, hasBrackets bool) *types.Sym {
+	nm := makeInstName1(gf.Name, targs, hasBrackets)
+	if targs[0].HasShape() && isMethodNode {
+		nm = "nofunc." + nm
+	}
+	return gf.Pkg.Lookup(nm)
 }
 
 func MakeDictSym(gf *types.Sym, targs []*types.Type, hasBrackets bool) *types.Sym {
@@ -987,7 +996,7 @@ func MakeDictSym(gf *types.Sym, targs []*types.Type, hasBrackets bool) *types.Sy
 		}
 	}
 	name := makeInstName1(gf.Name, targs, hasBrackets)
-	name = ".dict." + name
+	name = fmt.Sprintf("%s.%s", objabi.GlobalDictPrefix, name)
 	return gf.Pkg.Lookup(name)
 }
 
@@ -1261,13 +1270,14 @@ func (ts *Tsubster) typ1(t *types.Type) *types.Type {
 		for i, f := range t.Methods().Slice() {
 			t2 := ts.typ1(f.Type)
 			oldsym := f.Nname.Sym()
-			newsym := MakeFuncInstSym(oldsym, ts.Targs, true)
+			newsym := MakeFuncInstSym(oldsym, ts.Targs, true, true)
 			var nname *ir.Name
 			if newsym.Def != nil {
 				nname = newsym.Def.(*ir.Name)
 			} else {
 				nname = ir.NewNameAt(f.Pos, newsym)
 				nname.SetType(t2)
+				ir.MarkFunc(nname)
 				newsym.Def = nname
 			}
 			newfields[i] = types.NewField(f.Pos, f.Sym, t2)
@@ -1427,6 +1437,7 @@ func Shapify(t *types.Type, index int) *types.Type {
 		return s
 	}
 
+	// LinkString specifies the type uniquely, but has no spaces.
 	nm := fmt.Sprintf("%s_%d", u.LinkString(), index)
 	sym := types.ShapePkg.Lookup(nm)
 	if sym.Def != nil {

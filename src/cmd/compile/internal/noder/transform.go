@@ -132,7 +132,9 @@ func transformConvCall(n *ir.CallExpr) ir.Node {
 // transformCall transforms a normal function/method call. Corresponds to last half
 // (non-conversion, non-builtin part) of typecheck.tcCall. This code should work even
 // in the case of OCALL/OFUNCINST.
-func transformCall(n *ir.CallExpr) {
+// The dict parameter is used for OCALLINTER nodes to ensure that the called method
+// is retained by the linker.
+func transformCall(n *ir.CallExpr, dict *ir.Name) {
 	// n.Type() can be nil for calls with no return value
 	assert(n.Typecheck() == 1)
 	transformArgs(n)
@@ -142,6 +144,17 @@ func transformCall(n *ir.CallExpr) {
 	switch l.Op() {
 	case ir.ODOTINTER:
 		n.SetOp(ir.OCALLINTER)
+		if n.X.(*ir.SelectorExpr).X.Type().HasShape() {
+			if dict == nil {
+				base.Fatalf("calls on shape interfaces need a dictionary reference")
+			}
+			dict.SetAddrtaken(true)
+			// KeepAlive isn't exactly the right thing here, as we only
+			// need to keep the dictionary live in the linker-deadcode
+			// sense, not the at-runtime sense. But the at-runtime sense
+			// is stronger, so it works. See issue 48047.
+			n.KeepAlive = append(n.KeepAlive, dict)
+		}
 
 	case ir.ODOTMETH:
 		l := l.(*ir.SelectorExpr)
@@ -175,6 +188,12 @@ func transformCall(n *ir.CallExpr) {
 		}
 		return
 	}
+}
+
+// transformEarlyCall transforms the arguments of a call with an OFUNCINST node.
+func transformEarlyCall(n *ir.CallExpr) {
+	transformArgs(n)
+	typecheckaste(ir.OCALL, n.X, n.IsDDD, n.X.Type().Params(), n.Args)
 }
 
 // transformCompare transforms a compare operation (currently just equals/not
@@ -914,7 +933,7 @@ func transformArrayLit(elemType *types.Type, bound int64, elts []ir.Node) int64 
 
 // transformCompLit transforms n to an OARRAYLIT, OSLICELIT, OMAPLIT, or
 // OSTRUCTLIT node, with any needed conversions. Corresponds to
-// typecheck.tcCompLit.
+// typecheck.tcCompLit (and includes parts corresponding to tcStructLitKey).
 func transformCompLit(n *ir.CompLitExpr) (res ir.Node) {
 	assert(n.Type() != nil && n.Typecheck() == 1)
 	lno := base.Pos
@@ -988,12 +1007,20 @@ func transformCompLit(n *ir.CompLitExpr) (res ir.Node) {
 				if id, ok := key.(*ir.Ident); ok && typecheck.DotImportRefs[id] != nil {
 					s = typecheck.Lookup(s.Name)
 				}
+				if types.IsExported(s.Name) && s.Pkg != types.LocalPkg {
+					// Exported field names should always have
+					// local pkg. We only need to do this
+					// adjustment for generic functions that are
+					// being transformed after being imported
+					// from another package.
+					s = typecheck.Lookup(s.Name)
+				}
 
 				// An OXDOT uses the Sym field to hold
 				// the field to the right of the dot,
 				// so s will be non-nil, but an OXDOT
 				// is never a valid struct literal key.
-				assert(!(s == nil || s.Pkg != types.LocalPkg || key.Op() == ir.OXDOT || s.IsBlank()))
+				assert(!(s == nil || key.Op() == ir.OXDOT || s.IsBlank()))
 
 				f := typecheck.Lookdot1(nil, s, t, t.Fields(), 0)
 				l := ir.NewStructKeyExpr(l.Pos(), f, kv.Value)
@@ -1007,4 +1034,12 @@ func transformCompLit(n *ir.CompLitExpr) (res ir.Node) {
 	}
 
 	return n
+}
+
+// transformAddr corresponds to typecheck.tcAddr.
+func transformAddr(n *ir.AddrExpr) {
+	switch n.X.Op() {
+	case ir.OARRAYLIT, ir.OMAPLIT, ir.OSLICELIT, ir.OSTRUCTLIT:
+		n.SetOp(ir.OPTRLIT)
+	}
 }
