@@ -390,27 +390,6 @@ func (v *hairyVisitor) doNode(n ir.Node) bool {
 		// These nodes don't produce code; omit from inlining budget.
 		return false
 
-	case ir.OFOR, ir.OFORUNTIL:
-		n := n.(*ir.ForStmt)
-		if n.Label != nil {
-			v.reason = "labeled control"
-			return true
-		}
-	case ir.OSWITCH:
-		n := n.(*ir.SwitchStmt)
-		if n.Label != nil {
-			v.reason = "labeled control"
-			return true
-		}
-	// case ir.ORANGE, ir.OSELECT in "unhandled" above
-
-	case ir.OBREAK, ir.OCONTINUE:
-		n := n.(*ir.BranchStmt)
-		if n.Label != nil {
-			// Should have short-circuited due to labeled control error above.
-			base.Fatalf("unexpected labeled break/continue: %v", n)
-		}
-
 	case ir.OIF:
 		n := n.(*ir.IfStmt)
 		if ir.IsConst(n.Cond, constant.Bool) {
@@ -1244,7 +1223,7 @@ func (subst *inlsubst) node(n ir.Node) ir.Node {
 			// Don't do special substitutions if inside a closure
 			break
 		}
-		// Since we don't handle bodies with closures,
+		// Because of the above test for subst.newclofn,
 		// this return is guaranteed to belong to the current inlined function.
 		n := n.(*ir.ReturnStmt)
 		init := subst.list(n.Init())
@@ -1272,7 +1251,7 @@ func (subst *inlsubst) node(n ir.Node) ir.Node {
 		typecheck.Stmts(init)
 		return ir.NewBlockStmt(base.Pos, init)
 
-	case ir.OGOTO:
+	case ir.OGOTO, ir.OBREAK, ir.OCONTINUE:
 		if subst.newclofn != nil {
 			// Don't do special substitutions if inside a closure
 			break
@@ -1281,8 +1260,7 @@ func (subst *inlsubst) node(n ir.Node) ir.Node {
 		m := ir.Copy(n).(*ir.BranchStmt)
 		m.SetPos(subst.updatedPos(m.Pos()))
 		*m.PtrInit() = nil
-		p := fmt.Sprintf("%s·%d", n.Label.Name, inlgen)
-		m.Label = typecheck.Lookup(p)
+		m.Label = translateLabel(n.Label)
 		return m
 
 	case ir.OLABEL:
@@ -1294,8 +1272,7 @@ func (subst *inlsubst) node(n ir.Node) ir.Node {
 		m := ir.Copy(n).(*ir.LabelStmt)
 		m.SetPos(subst.updatedPos(m.Pos()))
 		*m.PtrInit() = nil
-		p := fmt.Sprintf("%s·%d", n.Label.Name, inlgen)
-		m.Label = typecheck.Lookup(p)
+		m.Label = translateLabel(n.Label)
 		return m
 
 	case ir.OCLOSURE:
@@ -1306,6 +1283,21 @@ func (subst *inlsubst) node(n ir.Node) ir.Node {
 	m := ir.Copy(n)
 	m.SetPos(subst.updatedPos(m.Pos()))
 	ir.EditChildren(m, subst.edit)
+
+	if subst.newclofn == nil {
+		// Translate any label on FOR or RANGE loops
+		if m.Op() == ir.OFOR {
+			m := m.(*ir.ForStmt)
+			m.Label = translateLabel(m.Label)
+			return m
+		}
+
+		if m.Op() == ir.ORANGE {
+			m := m.(*ir.RangeStmt)
+			m.Label = translateLabel(m.Label)
+			return m
+		}
+	}
 
 	switch m := m.(type) {
 	case *ir.AssignStmt:
@@ -1321,6 +1313,16 @@ func (subst *inlsubst) node(n ir.Node) ir.Node {
 	}
 
 	return m
+}
+
+// translateLabel makes a label from an inlined function (if non-nil) be unique by
+// adding "·inlgen".
+func translateLabel(l *types.Sym) *types.Sym {
+	if l == nil {
+		return nil
+	}
+	p := fmt.Sprintf("%s·%d", l.Name, inlgen)
+	return typecheck.Lookup(p)
 }
 
 func (subst *inlsubst) updatedPos(xpos src.XPos) src.XPos {

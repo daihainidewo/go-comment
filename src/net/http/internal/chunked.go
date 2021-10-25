@@ -82,6 +82,11 @@ func (cr *chunkedReader) Read(b []uint8) (n int, err error) {
 					cr.err = errors.New("malformed chunked encoding")
 					break
 				}
+			} else {
+				if cr.err == io.EOF {
+					cr.err = io.ErrUnexpectedEOF
+				}
+				break
 			}
 			cr.checkEnd = false
 		}
@@ -110,6 +115,8 @@ func (cr *chunkedReader) Read(b []uint8) (n int, err error) {
 		// bytes to verify they are "\r\n".
 		if cr.n == 0 && cr.err == nil {
 			cr.checkEnd = true
+		} else if cr.err == io.EOF {
+			cr.err = io.ErrUnexpectedEOF
 		}
 	}
 	return n, cr.err
