@@ -201,7 +201,7 @@ const (
 	//   plan9            | 4KB        | 3
 	_NumStackOrders = 4 - goarch.PtrSize/4*goos.IsWindows - 1*goos.IsPlan9
 
-	// heapAddrBits 堆地址中的位数
+	// heapAddrBits 堆地址中的位数，地址总线48位
 	// heapAddrBits is the number of bits in a heap address. On
 	// amd64, addresses are sign-extended beyond heapAddrBits. On
 	// other arches, they are zero-extended.
@@ -260,12 +260,13 @@ const (
     // value 48
 	heapAddrBits = (_64bit*(1-goarch.IsWasm)*(1-goos.IsIos*goarch.IsArm64))*48 + (1-_64bit+goarch.IsWasm)*(32-(goarch.IsMips+goarch.IsMipsle)) + 33*goos.IsIos*goarch.IsArm64
 
+	// maxAlloc 理论上可以管理的内存，即地址总线能够标址的内存空间
 	// maxAlloc is the maximum size of an allocation. On 64-bit,
 	// it's theoretically possible to allocate 1<<heapAddrBits bytes. On
 	// 32-bit, however, this is one less than 1<<32 because the
 	// number of bytes in the address space doesn't actually fit
 	// in a uintptr.
-	maxAlloc = (1 << heapAddrBits) - (1-_64bit)*1
+	maxAlloc = (1 << heapAddrBits) - (1-_64bit)*1 // 1<<48 256T
 
 	// The number of bits in a heap address, the size of heap
 	// arenas, and the L1 and L2 arena map sizes are related by
@@ -282,6 +283,8 @@ const (
 	//       */32-bit         32         4MB           1  1024  (4KB)
 	//     */mips(le)         31         4MB           1   512  (2KB)
 
+	// heapArenaBytes 表示一个arena包含内存大小
+	// 堆由 heapArenaBytes 的映射组成，并基于 heapArenaBytes 对齐
 	// heapArenaBytes is the size of a heap arena. The heap
 	// consists of mappings of size heapArenaBytes, aligned to
 	// heapArenaBytes. The initial heap mapping is one arena.
@@ -296,17 +299,20 @@ const (
 	// memory.
 	heapArenaBytes = 1 << logHeapArenaBytes // 1 << 26 = 64M
 
+	// logHeapArenaBytes heapArenaBytes 以2为底的对数值，结果直接用于数组下标
 	// logHeapArenaBytes is log_2 of heapArenaBytes. For clarity,
 	// prefer using heapArenaBytes where possible (we need the
 	// constant to compute some other constants).
     // value 26
 	logHeapArenaBytes = (6+20)*(_64bit*(1-goos.IsWindows)*(1-goarch.IsWasm)*(1-goos.IsIos*goarch.IsArm64)) + (2+20)*(_64bit*goos.IsWindows) + (2+20)*(1-_64bit) + (2+20)*goarch.IsWasm + (2+20)*goos.IsIos*goarch.IsArm64
 
+	// heapArenaBitmapBytes 表示每个arena的位图
 	// heapArenaBitmapBytes is the size of each heap arena's bitmap.
-	heapArenaBitmapBytes = heapArenaBytes / (goarch.PtrSize * 8 / 2)
+	heapArenaBitmapBytes = heapArenaBytes / (goarch.PtrSize * 8 / 2) // 2M
 
-	pagesPerArena = heapArenaBytes / pageSize
+	pagesPerArena = heapArenaBytes / pageSize // 8K
 
+	// arenaL1Bits L1大小的bit位数
 	// arenaL1Bits is the number of bits of the arena number
 	// covered by the first level arena map.
 	//
@@ -320,8 +326,9 @@ const (
 	// We use the L1 map on 64-bit Windows because the arena size
 	// is small, but the address space is still 48 bits, and
 	// there's a high cost to having a large L2.
-	arenaL1Bits = 6 * (_64bit * goos.IsWindows)
+	arenaL1Bits = 6 * (_64bit * goos.IsWindows) // 0
 
+	// arenaL2Bits L2覆盖bit位数
 	// arenaL2Bits is the number of bits of the arena number
 	// covered by the second level arena index.
 	//
@@ -329,16 +336,16 @@ const (
 	// 1<<arenaL2Bits, so it's important that this not be too
 	// large. 48 bits leads to 32MB arena index allocations, which
 	// is about the practical threshold.
-	arenaL2Bits = heapAddrBits - logHeapArenaBytes - arenaL1Bits
+	arenaL2Bits = heapAddrBits - logHeapArenaBytes - arenaL1Bits // 48 - 26 - 0 = 22
 
 	// arenaL1Shift is the number of bits to shift an arena frame
 	// number by to compute an index into the first level arena map.
-	arenaL1Shift = arenaL2Bits
+	arenaL1Shift = arenaL2Bits // 22
 
 	// arenaBits is the total bits in a combined arena map index.
 	// This is split between the index into the L1 arena map and
 	// the L2 arena map.
-	arenaBits = arenaL1Bits + arenaL2Bits
+	arenaBits = arenaL1Bits + arenaL2Bits // 0 + 22
 
 	// arenaBaseOffset is the pointer value that corresponds to
 	// index 0 in the heap arena map.
@@ -356,9 +363,9 @@ const (
 	// On other platforms, the user address space is contiguous
 	// and starts at 0, so no offset is necessary.
     // value 0xffff800000000000
-	arenaBaseOffset = 0xffff800000000000*goarch.IsAmd64 + 0x0a00000000000000*goos.IsAix
+	arenaBaseOffset = 0xffff800000000000*goarch.IsAmd64 + 0x0a00000000000000*goos.IsAix // 0xffff800000000000
 	// A typed version of this constant that will make it into DWARF (for viewcore).
-	arenaBaseOffsetUintptr = uintptr(arenaBaseOffset)
+	arenaBaseOffsetUintptr = uintptr(arenaBaseOffset) // 0xffff800000000000
 
 	// Max number of threads to run garbage collection.
 	// 2, 3, and 4 are all plausible maximums depending
@@ -381,8 +388,10 @@ const (
 //
 // This must be set by the OS init code (typically in osinit) before
 // mallocinit.
-var physPageSize uintptr
+var physPageSize uintptr  // 4096
 
+// physHugePageSize 操作系统huge页，对应用程序不透明 假设为2的幂次
+// physHugePageSize == 1 << physHugePageShift
 // physHugePageSize is the size in bytes of the OS's default physical huge
 // page size whose allocation is opaque to the application. It is assumed
 // and verified to be a power of two.
@@ -399,6 +408,38 @@ var (
 	physHugePageSize  uintptr
 	physHugePageShift uint
 )
+
+// 操作系统内存管理抽象层
+// 运行时管理的地址空间只能是4种状态
+// 1）None，未映射的区域，默认状态
+// 2）Reserved，由运行时拥有，但访问会出错，不计入进程内存使用
+// 3）Prepared，保留，可有效地过渡到Ready，访问内存会出现未知错误（也许失败，也许返回意外的零等）
+// 4）Ready，可以安全访问
+
+// 每个操作系统都有辅助函数，用于状态的转换
+// sysAlloc，将操作系统选择的内存区域从 None 转换为 Ready
+// 		更具体地说，它从操作系统获得一大块清零内存，通常大约为 100KB 或 1MB 字节
+// 		该内存始终可以立即使用。
+// sysFree，将内存区域从任何状态转换为 None
+// 		因此，它无条件地返回内存
+// 		如果在分配的中途检测到内存不足错误或划出地址空间的对齐部分，则使用它
+// 		仅当 sysReserve 总是返回一个与堆分配器的对齐限制对齐的内存区域时，sysFree 是空操作
+// sysReserve，将内存区域从 None 转换为 Reserved
+// 		它以这样一种方式保留地址空间，即在访问时会导致致命错误（通过权限或不提交内存）
+// 		因此，这种预留永远不会得到物理内存的支持
+// 		如果传递给它的指针非零，调用者希望在那里保留，但如果那个位置不可用，sysReserve 仍然可以选择另一个位置
+// 		注意：sysReserve 返回 OS 对齐的内存，但堆分配器可能会使用更大的对齐方式，因此调用者必须小心重新对齐 sysReserve 获得的内存
+// sysMap，将内存区域从 Reserved 转换为 Prepared
+// 		它确保内存区域可以有效地过渡到 Ready
+// sysUsed，将内存区域从 Prepared 转换为 Ready
+// 		它通知操作系统需要该内存区域并确保可以安全访问该区域
+// 		这在没有明确提交步骤和硬性过度提交限制的系统上通常是空操作，但例如在 Windows 上至关重要。
+// sysUnused，将内存区域从 Ready 转换为 Prepared
+// 		它通知操作系统不再需要支持该内存区域的物理页面，可以将其重用于其他目的
+// 		sysUnused 内存区域的内容被认为是无效的，并且在调用 sysUsed 之前不得再次访问该区域。
+// sysFault，将内存区域从 Ready 或 Prepared 转换为 Reserved
+// 		它标记了一个区域，以便在访问时它总是会出错
+// 		仅用于调试运行时
 
 // OS memory management abstraction layer
 //
@@ -1328,6 +1369,7 @@ func profilealloc(mp *m, x unsafe.Pointer, size uintptr) {
 	mProf_Malloc(x, size)
 }
 
+// nextSample 返回内存 prof 下次采样时间，基于泊松分布
 // nextSample returns the next sampling point for heap profiling. The goal is
 // to sample allocations on average every MemProfileRate bytes, but with a
 // completely random distribution over the allocation timeline; this
@@ -1514,7 +1556,8 @@ func inPersistentAlloc(p uintptr) bool {
 	return false
 }
 
-// linearAlloc 是一个简单的线性内存分配器 由调用方锁保护
+// linearAlloc 是一个简单的线性内存分配器 将预先保留的内存区域根据需要转换为 Ready状态
+// 由调用方锁保护
 // linearAlloc is a simple linear allocator that pre-reserves a region
 // of memory and then optionally maps that region into the Ready state
 // as needed.
@@ -1540,7 +1583,7 @@ func (l *linearAlloc) init(base, size uintptr, mapMemory bool) {
 	l.mapMemory = mapMemory
 }
 
-// alloc
+// alloc 申请内存，并标记使用
 func (l *linearAlloc) alloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
 	p := alignUp(l.next, align)// 字节对齐
 	if p+size > l.end {
@@ -1560,6 +1603,7 @@ func (l *linearAlloc) alloc(size, align uintptr, sysStat *sysMemStat) unsafe.Poi
 	return unsafe.Pointer(p)
 }
 
+// notInHeap 低级分配器分配的堆外内存
 // notInHeap is off-heap memory allocated by a lower-level allocator
 // like sysAlloc or persistentAlloc.
 //

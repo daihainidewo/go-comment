@@ -10,7 +10,14 @@ import (
 )
 
 const (
+	// _EACCES 文件描述符是指非常规文件
+	// 或者 MAP_PRIVATE 被请求，但 fd 没有打开读取
+	// 或者请求了 MAP_SHARED 并设置了 PROT_WRITE，但 fd 未在读/写 (O_RDWR) 模式下打开
+	// 或者设置了 PROT_WRITE，但文件是仅附加的。
 	_EACCES = 13
+	// _EINVAL 我们不喜欢 addr、length 或 offset（例如，它们太大，或未在页面边界上对齐）
+	// （自 Linux 2.6.12 起）length 为 0。
+	// 标志既不包含 MAP_PRIVATE 也不包含 MAP_SHARED，或者同时包含这两个
 	_EINVAL = 22
 )
 
@@ -130,6 +137,7 @@ func sysUsed(v unsafe.Pointer, n uintptr) {
 
 func sysHugePage(v unsafe.Pointer, n uintptr) {
 	if physHugePageSize != 0 {
+		// 支持huge page获取
 		// Round v up to a huge page boundary.
 		beg := alignUp(uintptr(v), physHugePageSize)
 		// Round v+n down to a huge page boundary.

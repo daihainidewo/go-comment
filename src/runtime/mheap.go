@@ -21,13 +21,19 @@ const (
 	// sys.PhysPageSize is an upper-bound on the physical page size.
 	minPhysPageSize = 4096
 
+	// maxPhysPageSize runtime支持最大的物理页大小
 	// maxPhysPageSize is the maximum page size the runtime supports.
 	maxPhysPageSize = 512 << 10
 
+	// maxPhysHugePageSize runtime支持最大的huge page大小
 	// maxPhysHugePageSize sets an upper-bound on the maximum huge page size
 	// that the runtime supports.
-	maxPhysHugePageSize = pallocChunkBytes
+	maxPhysHugePageSize = pallocChunkBytes // 4M
 
+	// pagesPerReclaimerChunk 指示一次从 pageInUse 位图中扫描多少页，由页面回收器使用
+	// 值越大 越减少对扫描的竞争但会增加操作延迟
+	// 实验数据 512页限制在100µs
+	// 必须是 pageInUse 位图元素大小的倍数，并且还必须平均划分 pagesPerArena。
 	// pagesPerReclaimerChunk indicates how many pages to scan from the
 	// pageInUse bitmap at a time. Used by the page reclaimer.
 	//
@@ -218,9 +224,10 @@ type mheap struct {
 	unused *specialfinalizer // never set, just here to force the specialfinalizer type into DWARF
 }
 
-// mheap_ mheap 分配器
+// mheap_ mheap 全局堆内存管理分配器
 var mheap_ mheap
 
+// heapArena 管理Go堆内存
 // A heapArena stores metadata for a heap arena. heapArenas are stored
 // outside of the Go heap and accessed via the mheap_.arenas index.
 //
@@ -389,7 +396,7 @@ type mspan struct {
 	startAddr uintptr // 基址地址 // address of first byte of span aka s.base()
 	npages    uintptr // 页数 // number of pages in span
 
-	manualFreeList gclinkptr // 手动释放的span链表 // list of free objects in mSpanManual spans
+	manualFreeList gclinkptr // 栈内存的空闲span链表 // list of free objects in mSpanManual spans
 
 	// freeindex is the slot index between 0 and nelems at which to begin scanning
 	// for the next free object in this span.
@@ -618,6 +625,7 @@ func inHeapOrStack(b uintptr) bool {
 	}
 }
 
+// spanOf 根据地址p返回p所在的span，如果p是堆外内存则返回nil
 // spanOf returns the span of p. If p does not point into the heap
 // arena or no span has ever contained p, spanOf returns nil.
 //
@@ -658,6 +666,7 @@ func spanOf(p uintptr) *mspan {
 	return ha.spans[(p/pageSize)%pagesPerArena]
 }
 
+// spanOfUnchecked 和spanOf相同，但调用者必须去报p是Go堆内存
 // spanOfUnchecked is equivalent to spanOf, but the caller must ensure
 // that p points into an allocated heap arena.
 //
@@ -669,6 +678,7 @@ func spanOfUnchecked(p uintptr) *mspan {
 	return mheap_.arenas[ai.l1()][ai.l2()].spans[(p/pageSize)%pagesPerArena]
 }
 
+// spanOfHeap 和spanOf类似，如果p没有指向堆对象，返回nil
 // spanOfHeap is like spanOf, but returns nil if p does not point to a
 // heap object.
 //
@@ -688,6 +698,7 @@ func spanOfHeap(p uintptr) *mspan {
 	return s
 }
 
+// pageIndexOf 返回地址p所在的 arena， page index，page mask，调用者确保p在Go堆上
 // pageIndexOf returns the arena, page index, and page mask for pointer p.
 // The caller must ensure p is in the heap.
 func pageIndexOf(p uintptr) (arena *heapArena, pageIdx uintptr, pageMask uint8) {
