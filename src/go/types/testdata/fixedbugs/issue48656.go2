@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// This issue is still open.
-
 package p
 
-func f[P interface{*Q}, Q any](p P, q Q) {
-	// _ = f[P]
-        // _ = f[/* ERROR cannot infer P */ *P]
+func f[P *Q, Q any](P, Q) {
+	_ = f[P]
+}
+
+func f2[P /* ERROR instantiation cycle */ *Q, Q any](P, Q) {
+	_ = f2[*P]
 }

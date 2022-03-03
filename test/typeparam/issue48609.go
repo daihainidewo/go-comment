@@ -1,4 +1,4 @@
-// compile -G=3
+// compile
 
 // Copyright 2021 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
@@ -6,9 +6,7 @@
 
 package p
 
-import "constraints"
-
-func f[T constraints.Chan[E], E any](e E) T {
+func f[T ~chan E, E any](e E) T {
 	ch := make(T)
 	go func() {
 		defer close(ch)

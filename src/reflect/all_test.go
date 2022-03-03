@@ -29,7 +29,7 @@ import (
 	"unsafe"
 )
 
-var sink interface{}
+var sink any
 
 func TestBool(t *testing.T) {
 	v := ValueOf(true)
@@ -47,7 +47,7 @@ type T struct {
 }
 
 type pair struct {
-	i interface{}
+	i any
 	s string
 }
 
@@ -337,7 +337,7 @@ func TestSetValue(t *testing.T) {
 }
 
 func TestMapIterSet(t *testing.T) {
-	m := make(map[string]interface{}, len(valueTests))
+	m := make(map[string]any, len(valueTests))
 	for _, tt := range valueTests {
 		m[tt.s] = tt.i
 	}
@@ -385,7 +385,7 @@ func TestCanIntUintFloatComplex(t *testing.T) {
 	var ops = [...]string{"CanInt", "CanUint", "CanFloat", "CanComplex"}
 
 	var testCases = []struct {
-		i    interface{}
+		i    any
 		want [4]bool
 	}{
 		// signed integer
@@ -546,7 +546,7 @@ func TestCanSetField(t *testing.T) {
 			for _, tc := range tt.cases {
 				f := tt.val
 				for _, i := range tc.index {
-					if f.Kind() == Ptr {
+					if f.Kind() == Pointer {
 						f = f.Elem()
 					}
 					if i == -1 {
@@ -691,7 +691,7 @@ func TestAll(t *testing.T) {
 
 func TestInterfaceGet(t *testing.T) {
 	var inter struct {
-		E interface{}
+		E any
 	}
 	inter.E = 123.456
 	v1 := ValueOf(&inter)
@@ -704,7 +704,7 @@ func TestInterfaceGet(t *testing.T) {
 
 func TestInterfaceValue(t *testing.T) {
 	var inter struct {
-		E interface{}
+		E any
 	}
 	inter.E = 123.456
 	v1 := ValueOf(&inter)
@@ -720,7 +720,7 @@ func TestInterfaceValue(t *testing.T) {
 }
 
 func TestFunctionValue(t *testing.T) {
-	var x interface{} = func() {}
+	var x any = func() {}
 	v := ValueOf(x)
 	if fmt.Sprint(v.Interface()) != fmt.Sprint(x) {
 		t.Fatalf("TestFunction returned wrong pointer")
@@ -920,7 +920,7 @@ type Basic struct {
 type NotBasic Basic
 
 type DeepEqualTest struct {
-	a, b interface{}
+	a, b any
 	eq   bool
 }
 
@@ -934,11 +934,11 @@ var (
 type self struct{}
 
 type Loop *Loop
-type Loopy interface{}
+type Loopy any
 
 var loop1, loop2 Loop
 var loopy1, loopy2 Loopy
-var cycleMap1, cycleMap2, cycleMap3 map[string]interface{}
+var cycleMap1, cycleMap2, cycleMap3 map[string]any
 
 type structWithSelfPtr struct {
 	p *structWithSelfPtr
@@ -952,11 +952,11 @@ func init() {
 	loopy1 = &loopy2
 	loopy2 = &loopy1
 
-	cycleMap1 = map[string]interface{}{}
+	cycleMap1 = map[string]any{}
 	cycleMap1["cycle"] = cycleMap1
-	cycleMap2 = map[string]interface{}{}
+	cycleMap2 = map[string]any{}
 	cycleMap2["cycle"] = cycleMap2
-	cycleMap3 = map[string]interface{}{}
+	cycleMap3 = map[string]any{}
 	cycleMap3["different"] = cycleMap3
 }
 
@@ -1021,7 +1021,7 @@ var deepEqualTests = []DeepEqualTest{
 	{int32(1), int64(1), false},
 	{0.5, "hello", false},
 	{[]int{1, 2, 3}, [3]int{1, 2, 3}, false},
-	{&[3]interface{}{1, 2, 4}, &[3]interface{}{1, 2, "s"}, false},
+	{&[3]any{1, 2, 4}, &[3]any{1, 2, "s"}, false},
 	{Basic{1, 0.5}, NotBasic{1, 0.5}, false},
 	{map[uint]string{1: "one", 2: "two"}, map[int]string{2: "two", 1: "one"}, false},
 	{[]byte{1, 2, 3}, []MyByte{1, 2, 3}, false},
@@ -1127,7 +1127,7 @@ func TestDeepEqualUnexportedMap(t *testing.T) {
 }
 
 var deepEqualPerfTests = []struct {
-	x, y interface{}
+	x, y any
 }{
 	{x: int8(99), y: int8(99)},
 	{x: []int8{99}, y: []int8{99}},
@@ -1202,7 +1202,7 @@ func BenchmarkDeepEqual(b *testing.B) {
 	}
 }
 
-func check2ndField(x interface{}, offs uintptr, t *testing.T) {
+func check2ndField(x any, offs uintptr, t *testing.T) {
 	s := ValueOf(x)
 	f := s.Type().Field(1)
 	if f.Offset != offs {
@@ -1235,14 +1235,14 @@ func TestAlignment(t *testing.T) {
 	check2ndField(x1, uintptr(unsafe.Pointer(&x1.f))-uintptr(unsafe.Pointer(&x1)), t)
 }
 
-func Nil(a interface{}, t *testing.T) {
+func Nil(a any, t *testing.T) {
 	n := ValueOf(a).Field(0)
 	if !n.IsNil() {
 		t.Errorf("%v should be nil", a)
 	}
 }
 
-func NotNil(a interface{}, t *testing.T) {
+func NotNil(a any, t *testing.T) {
 	n := ValueOf(a).Field(0)
 	if n.IsNil() {
 		t.Errorf("value of type %v should not be nil", ValueOf(a).Type().String())
@@ -1252,9 +1252,9 @@ func NotNil(a interface{}, t *testing.T) {
 func TestIsNil(t *testing.T) {
 	// These implement IsNil.
 	// Wrap in extra struct to hide interface type.
-	doNil := []interface{}{
+	doNil := []any{
 		struct{ x *int }{},
-		struct{ x interface{} }{},
+		struct{ x any }{},
 		struct{ x map[string]int }{},
 		struct{ x func() bool }{},
 		struct{ x chan int }{},
@@ -1297,7 +1297,7 @@ func TestIsNil(t *testing.T) {
 	NotNil(mi, t)
 
 	var ii struct {
-		x interface{}
+		x any
 	}
 	Nil(ii, t)
 	ii.x = 2
@@ -1313,7 +1313,7 @@ func TestIsNil(t *testing.T) {
 
 func TestIsZero(t *testing.T) {
 	for i, tt := range []struct {
-		x    interface{}
+		x    any
 		want bool
 	}{
 		// Booleans
@@ -1373,7 +1373,7 @@ func TestIsZero(t *testing.T) {
 		{(map[string]string)(nil), true},
 		{map[string]string{}, false},
 		{make(map[string]string), false},
-		// Ptr
+		// Pointer
 		{(*func())(nil), true},
 		{(*int)(nil), true},
 		{new(int), false},
@@ -1425,7 +1425,7 @@ func TestInterfaceExtraction(t *testing.T) {
 
 	s.W = os.Stdout
 	v := Indirect(ValueOf(&s)).Field(0).Interface()
-	if v != s.W.(interface{}) {
+	if v != s.W.(any) {
 		t.Error("Interface() on interface: ", v, s.W)
 	}
 }
@@ -1974,7 +1974,7 @@ func selectWatcher() {
 // runSelect runs a single select test.
 // It returns the values returned by Select but also returns
 // a panic value if the Select panics.
-func runSelect(cases []SelectCase, info []caseInfo) (chosen int, recv Value, recvOK bool, panicErr interface{}) {
+func runSelect(cases []SelectCase, info []caseInfo) (chosen int, recv Value, recvOK bool, panicErr any) {
 	defer func() {
 		panicErr = recover()
 
@@ -2765,7 +2765,7 @@ func TestMethod5(t *testing.T) {
 
 	var TinterType = TypeOf(new(Tinter)).Elem()
 
-	CheckI := func(name string, i interface{}, inc int) {
+	CheckI := func(name string, i any, inc int) {
 		v := ValueOf(i)
 		CheckV(name, v, inc)
 		CheckV("(i="+name+")", v.Convert(TinterType), inc)
@@ -2814,7 +2814,7 @@ func TestInterfaceSet(t *testing.T) {
 	p := &Point{3, 4}
 
 	var s struct {
-		I interface{}
+		I any
 		P interface {
 			Dist(int) int
 		}
@@ -2856,7 +2856,7 @@ func TestAnonymousFields(t *testing.T) {
 }
 
 type FTest struct {
-	s     interface{}
+	s     any
 	name  string
 	index []int
 	value int
@@ -3087,7 +3087,7 @@ func TestImportPath(t *testing.T) {
 		{TypeOf([]byte(nil)), ""},
 		{TypeOf([]rune(nil)), ""},
 		{TypeOf(string("")), ""},
-		{TypeOf((*interface{})(nil)).Elem(), ""},
+		{TypeOf((*any)(nil)).Elem(), ""},
 		{TypeOf((*byte)(nil)), ""},
 		{TypeOf((*rune)(nil)), ""},
 		{TypeOf((*int64)(nil)), ""},
@@ -3290,7 +3290,7 @@ func TestEmbeddedMethods(t *testing.T) {
 	}
 }
 
-type FuncDDD func(...interface{}) error
+type FuncDDD func(...any) error
 
 func (f FuncDDD) M() {}
 
@@ -3313,22 +3313,22 @@ func TestPtrTo(t *testing.T) {
 
 	typ := TypeOf(z)
 	for i = 0; i < 100; i++ {
-		typ = PtrTo(typ)
+		typ = PointerTo(typ)
 	}
 	for i = 0; i < 100; i++ {
 		typ = typ.Elem()
 	}
 	if typ != TypeOf(z) {
-		t.Errorf("after 100 PtrTo and Elem, have %s, want %s", typ, TypeOf(z))
+		t.Errorf("after 100 PointerTo and Elem, have %s, want %s", typ, TypeOf(z))
 	}
 }
 
 func TestPtrToGC(t *testing.T) {
 	type T *uintptr
 	tt := TypeOf(T(nil))
-	pt := PtrTo(tt)
+	pt := PointerTo(tt)
 	const n = 100
-	var x []interface{}
+	var x []any
 	for i := 0; i < n; i++ {
 		v := New(pt)
 		p := new(*uintptr)
@@ -3360,11 +3360,11 @@ func BenchmarkPtrTo(b *testing.B) {
 	}
 	b.ResetTimer()
 
-	// Now benchmark calling PtrTo on it: we'll have to hit the ptrMap cache on
+	// Now benchmark calling PointerTo on it: we'll have to hit the ptrMap cache on
 	// every call.
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			PtrTo(t)
+			PointerTo(t)
 		}
 	})
 }
@@ -3450,7 +3450,7 @@ func noAlloc(t *testing.T, n int, f func(int)) {
 
 func TestAllocations(t *testing.T) {
 	noAlloc(t, 100, func(j int) {
-		var i interface{}
+		var i any
 		var v Value
 
 		// We can uncomment this when compiler escape analysis
@@ -3624,7 +3624,7 @@ func TestVariadic(t *testing.T) {
 	}
 
 	b.Reset()
-	V(fmt.Fprintf).CallSlice([]Value{V(&b), V("%s, %d world"), V([]interface{}{"hello", 42})})
+	V(fmt.Fprintf).CallSlice([]Value{V(&b), V("%s, %d world"), V([]any{"hello", 42})})
 	if b.String() != "hello, 42 world" {
 		t.Errorf("after Fprintf CallSlice: %q != %q", b.String(), "hello 42 world")
 	}
@@ -3682,8 +3682,11 @@ func TestTagGet(t *testing.T) {
 }
 
 func TestBytes(t *testing.T) {
-	type B []byte
-	x := B{1, 2, 3, 4}
+	shouldPanic("on int Value", func() { ValueOf(0).Bytes() })
+	shouldPanic("of non-byte slice", func() { ValueOf([]string{}).Bytes() })
+
+	type S []byte
+	x := S{1, 2, 3, 4}
 	y := ValueOf(x).Bytes()
 	if !bytes.Equal(x, y) {
 		t.Fatalf("ValueOf(%v).Bytes() = %v", x, y)
@@ -3691,6 +3694,28 @@ func TestBytes(t *testing.T) {
 	if &x[0] != &y[0] {
 		t.Errorf("ValueOf(%p).Bytes() = %p", &x[0], &y[0])
 	}
+
+	type A [4]byte
+	a := A{1, 2, 3, 4}
+	shouldPanic("unaddressable", func() { ValueOf(a).Bytes() })
+	shouldPanic("on ptr Value", func() { ValueOf(&a).Bytes() })
+	b := ValueOf(&a).Elem().Bytes()
+	if !bytes.Equal(a[:], y) {
+		t.Fatalf("ValueOf(%v).Bytes() = %v", a, b)
+	}
+	if &a[0] != &b[0] {
+		t.Errorf("ValueOf(%p).Bytes() = %p", &a[0], &b[0])
+	}
+
+	// Per issue #24746, it was decided that Bytes can be called on byte slices
+	// that normally cannot be converted from per Go language semantics.
+	type B byte
+	type SB []B
+	type AB [4]B
+	ValueOf([]B{1, 2, 3, 4}).Bytes()  // should not panic
+	ValueOf(new([4]B)).Elem().Bytes() // should not panic
+	ValueOf(SB{1, 2, 3, 4}).Bytes()   // should not panic
+	ValueOf(new(AB)).Elem().Bytes()   // should not panic
 }
 
 func TestSetBytes(t *testing.T) {
@@ -3967,7 +3992,7 @@ func shouldPanic(expect string, f func()) {
 	f()
 }
 
-func isNonNil(x interface{}) {
+func isNonNil(x any) {
 	if x == nil {
 		panic("nil interface")
 	}
@@ -3993,7 +4018,7 @@ func TestAlias(t *testing.T) {
 
 var V = ValueOf
 
-func EmptyInterfaceV(x interface{}) Value {
+func EmptyInterfaceV(x any) Value {
 	return ValueOf(&x).Elem()
 }
 
@@ -4434,7 +4459,7 @@ var convertTests = []struct {
 	{V((map[uint]bool)(nil)), V((map[uint]bool)(nil))},
 	{V([]uint(nil)), V([]uint(nil))},
 	{V([]int(nil)), V([]int(nil))},
-	{V(new(interface{})), V(new(interface{}))},
+	{V(new(any)), V(new(any))},
 	{V(new(io.Reader)), V(new(io.Reader))},
 	{V(new(io.Writer)), V(new(io.Writer))},
 
@@ -4633,7 +4658,7 @@ var comparableTests = []struct {
 	{TypeOf(NonComparableStruct{}), false},
 	{TypeOf([10]map[string]int{}), false},
 	{TypeOf([10]string{}), true},
-	{TypeOf(new(interface{})).Elem(), true},
+	{TypeOf(new(any)).Elem(), true},
 }
 
 func TestComparable(t *testing.T) {
@@ -4683,7 +4708,7 @@ func TestOverflow(t *testing.T) {
 	}
 }
 
-func checkSameType(t *testing.T, x Type, y interface{}) {
+func checkSameType(t *testing.T, x Type, y any) {
 	if x != TypeOf(y) || TypeOf(Zero(x).Interface()) != TypeOf(y) {
 		t.Errorf("did not find preexisting type for %s (vs %s)", TypeOf(x), TypeOf(y))
 	}
@@ -4693,73 +4718,73 @@ func TestArrayOf(t *testing.T) {
 	// check construction and use of type not in binary
 	tests := []struct {
 		n          int
-		value      func(i int) interface{}
+		value      func(i int) any
 		comparable bool
 		want       string
 	}{
 		{
 			n:          0,
-			value:      func(i int) interface{} { type Tint int; return Tint(i) },
+			value:      func(i int) any { type Tint int; return Tint(i) },
 			comparable: true,
 			want:       "[]",
 		},
 		{
 			n:          10,
-			value:      func(i int) interface{} { type Tint int; return Tint(i) },
+			value:      func(i int) any { type Tint int; return Tint(i) },
 			comparable: true,
 			want:       "[0 1 2 3 4 5 6 7 8 9]",
 		},
 		{
 			n:          10,
-			value:      func(i int) interface{} { type Tfloat float64; return Tfloat(i) },
+			value:      func(i int) any { type Tfloat float64; return Tfloat(i) },
 			comparable: true,
 			want:       "[0 1 2 3 4 5 6 7 8 9]",
 		},
 		{
 			n:          10,
-			value:      func(i int) interface{} { type Tstring string; return Tstring(strconv.Itoa(i)) },
+			value:      func(i int) any { type Tstring string; return Tstring(strconv.Itoa(i)) },
 			comparable: true,
 			want:       "[0 1 2 3 4 5 6 7 8 9]",
 		},
 		{
 			n:          10,
-			value:      func(i int) interface{} { type Tstruct struct{ V int }; return Tstruct{i} },
+			value:      func(i int) any { type Tstruct struct{ V int }; return Tstruct{i} },
 			comparable: true,
 			want:       "[{0} {1} {2} {3} {4} {5} {6} {7} {8} {9}]",
 		},
 		{
 			n:          10,
-			value:      func(i int) interface{} { type Tint int; return []Tint{Tint(i)} },
+			value:      func(i int) any { type Tint int; return []Tint{Tint(i)} },
 			comparable: false,
 			want:       "[[0] [1] [2] [3] [4] [5] [6] [7] [8] [9]]",
 		},
 		{
 			n:          10,
-			value:      func(i int) interface{} { type Tint int; return [1]Tint{Tint(i)} },
+			value:      func(i int) any { type Tint int; return [1]Tint{Tint(i)} },
 			comparable: true,
 			want:       "[[0] [1] [2] [3] [4] [5] [6] [7] [8] [9]]",
 		},
 		{
 			n:          10,
-			value:      func(i int) interface{} { type Tstruct struct{ V [1]int }; return Tstruct{[1]int{i}} },
+			value:      func(i int) any { type Tstruct struct{ V [1]int }; return Tstruct{[1]int{i}} },
 			comparable: true,
 			want:       "[{[0]} {[1]} {[2]} {[3]} {[4]} {[5]} {[6]} {[7]} {[8]} {[9]}]",
 		},
 		{
 			n:          10,
-			value:      func(i int) interface{} { type Tstruct struct{ V []int }; return Tstruct{[]int{i}} },
+			value:      func(i int) any { type Tstruct struct{ V []int }; return Tstruct{[]int{i}} },
 			comparable: false,
 			want:       "[{[0]} {[1]} {[2]} {[3]} {[4]} {[5]} {[6]} {[7]} {[8]} {[9]}]",
 		},
 		{
 			n:          10,
-			value:      func(i int) interface{} { type TstructUV struct{ U, V int }; return TstructUV{i, i} },
+			value:      func(i int) any { type TstructUV struct{ U, V int }; return TstructUV{i, i} },
 			comparable: true,
 			want:       "[{0 0} {1 1} {2 2} {3 3} {4 4} {5 5} {6 6} {7 7} {8 8} {9 9}]",
 		},
 		{
 			n: 10,
-			value: func(i int) interface{} {
+			value: func(i int) any {
 				type TstructUV struct {
 					U int
 					V float64
@@ -4820,7 +4845,7 @@ func TestArrayOfGC(t *testing.T) {
 	type T *uintptr
 	tt := TypeOf(T(nil))
 	const n = 100
-	var x []interface{}
+	var x []any
 	for i := 0; i < n; i++ {
 		v := New(ArrayOf(n, tt)).Elem()
 		for j := 0; j < v.Len(); j++ {
@@ -4896,7 +4921,7 @@ func TestArrayOfDirectIface(t *testing.T) {
 		v1 := ValueOf(&i1).Elem()
 		p1 := v1.InterfaceData()[1]
 
-		i2 := Zero(ArrayOf(1, PtrTo(TypeOf(int8(0))))).Interface()
+		i2 := Zero(ArrayOf(1, PointerTo(TypeOf(int8(0))))).Interface()
 		v2 := ValueOf(&i2).Elem()
 		p2 := v2.InterfaceData()[1]
 
@@ -4914,7 +4939,7 @@ func TestArrayOfDirectIface(t *testing.T) {
 		v1 := ValueOf(&i1).Elem()
 		p1 := v1.InterfaceData()[1]
 
-		i2 := Zero(ArrayOf(0, PtrTo(TypeOf(int8(0))))).Interface()
+		i2 := Zero(ArrayOf(0, PointerTo(TypeOf(int8(0))))).Interface()
 		v2 := ValueOf(&i2).Elem()
 		p2 := v2.InterfaceData()[1]
 
@@ -4984,7 +5009,7 @@ func TestSliceOfGC(t *testing.T) {
 	tt := TypeOf(T(nil))
 	st := SliceOf(tt)
 	const n = 100
-	var x []interface{}
+	var x []any
 	for i := 0; i < n; i++ {
 		v := MakeSlice(st, n, n)
 		for j := 0; j < v.Len(); j++ {
@@ -5174,7 +5199,7 @@ func TestStructOf(t *testing.T) {
 	checkSameType(t, StructOf(fields[2:3]), struct{ Y uint64 }{})
 
 	// gccgo used to fail this test.
-	type structFieldType interface{}
+	type structFieldType any
 	checkSameType(t,
 		StructOf([]StructField{
 			{
@@ -5350,7 +5375,7 @@ func TestStructOfGC(t *testing.T) {
 	st := StructOf(fields)
 
 	const n = 10000
-	var x []interface{}
+	var x []any
 	for i := 0; i < n; i++ {
 		v := New(st).Elem()
 		for j := 0; j < v.NumField(); j++ {
@@ -5615,8 +5640,8 @@ func TestStructOfWithInterface(t *testing.T) {
 		},
 		{
 			name: "StructI",
-			typ:  PtrTo(TypeOf(StructI(want))),
-			val: ValueOf(func() interface{} {
+			typ:  PointerTo(TypeOf(StructI(want))),
+			val: ValueOf(func() any {
 				v := StructI(want)
 				return &v
 			}()),
@@ -5624,8 +5649,8 @@ func TestStructOfWithInterface(t *testing.T) {
 		},
 		{
 			name: "StructIPtr",
-			typ:  PtrTo(TypeOf(StructIPtr(want))),
-			val: ValueOf(func() interface{} {
+			typ:  PointerTo(TypeOf(StructIPtr(want))),
+			val: ValueOf(func() any {
 				v := StructIPtr(want)
 				return &v
 			}()),
@@ -5713,7 +5738,7 @@ func TestStructOfWithInterface(t *testing.T) {
 	fields := []StructField{{
 		Name:      "StructIPtr",
 		Anonymous: true,
-		Type:      PtrTo(TypeOf(StructIPtr(want))),
+		Type:      PointerTo(TypeOf(StructIPtr(want))),
 	}}
 	rt := StructOf(fields)
 	rv := New(rt).Elem()
@@ -5727,7 +5752,7 @@ func TestStructOfWithInterface(t *testing.T) {
 	fields = []StructField{{
 		Name:      "SettableStruct",
 		Anonymous: true,
-		Type:      PtrTo(TypeOf(SettableStruct{})),
+		Type:      PointerTo(TypeOf(SettableStruct{})),
 	}}
 	rt = StructOf(fields)
 	rv = New(rt).Elem()
@@ -5743,7 +5768,7 @@ func TestStructOfWithInterface(t *testing.T) {
 		{
 			Name:      "SettableStruct",
 			Anonymous: true,
-			Type:      PtrTo(TypeOf(SettableStruct{})),
+			Type:      PointerTo(TypeOf(SettableStruct{})),
 		},
 		{
 			Name:      "EmptyStruct",
@@ -5887,7 +5912,7 @@ func TestChanOfGC(t *testing.T) {
 	// so we have to save pointers to channels in x; the pointer code will
 	// use the gc info in the newly constructed chan type.
 	const n = 100
-	var x []interface{}
+	var x []any
 	for i := 0; i < n; i++ {
 		v := MakeChan(ct, n)
 		for j := 0; j < n; j++ {
@@ -5945,7 +5970,7 @@ func TestMapOfGCKeys(t *testing.T) {
 	// so we have to save pointers to maps in x; the pointer code will
 	// use the gc info in the newly constructed map type.
 	const n = 100
-	var x []interface{}
+	var x []any
 	for i := 0; i < n; i++ {
 		v := MakeMap(mt)
 		for j := 0; j < n; j++ {
@@ -5983,7 +6008,7 @@ func TestMapOfGCValues(t *testing.T) {
 	// so we have to save pointers to maps in x; the pointer code will
 	// use the gc info in the newly constructed map type.
 	const n = 100
-	var x []interface{}
+	var x []any
 	for i := 0; i < n; i++ {
 		v := MakeMap(mt)
 		for j := 0; j < n; j++ {
@@ -6051,7 +6076,7 @@ func TestFuncOf(t *testing.T) {
 	testCases := []struct {
 		in, out  []Type
 		variadic bool
-		want     interface{}
+		want     any
 	}{
 		{in: []Type{TypeOf(T1(0))}, want: (func(T1))(nil)},
 		{in: []Type{TypeOf(int(0))}, want: (func(int))(nil)},
@@ -6478,6 +6503,29 @@ func TestCallMethodJump(t *testing.T) {
 	*CallGC = false
 }
 
+func TestCallArgLive(t *testing.T) {
+	type T struct{ X, Y *string } // pointerful aggregate
+
+	F := func(t T) { *t.X = "ok" }
+
+	// In reflect.Value.Call, trigger a garbage collection in reflect.call
+	// between marshaling argument and the actual call.
+	*CallGC = true
+
+	x := new(string)
+	runtime.SetFinalizer(x, func(p *string) {
+		if *p != "ok" {
+			t.Errorf("x dead prematurely")
+		}
+	})
+	v := T{x, nil}
+
+	ValueOf(F).Call([]Value{ValueOf(v)})
+
+	// Stop garbage collecting during reflect.call.
+	*CallGC = false
+}
+
 func TestMakeFuncStackCopy(t *testing.T) {
 	target := func(in []Value) []Value {
 		runtime.GC()
@@ -6521,7 +6569,7 @@ func TestValueString(t *testing.T) {
 
 func TestInvalid(t *testing.T) {
 	// Used to have inconsistency between IsValid() and Kind() != Invalid.
-	type T struct{ v interface{} }
+	type T struct{ v any }
 
 	v := ValueOf(T{}).Field(0)
 	if v.IsValid() != true || v.Kind() != Interface {
@@ -6539,7 +6587,7 @@ func TestLargeGCProg(t *testing.T) {
 	fv.Call([]Value{ValueOf([256]*byte{})})
 }
 
-func fieldIndexRecover(t Type, i int) (recovered interface{}) {
+func fieldIndexRecover(t Type, i int) (recovered any) {
 	defer func() {
 		recovered = recover()
 	}()
@@ -6713,7 +6761,7 @@ func TestFuncLayout(t *testing.T) {
 			gc:        r,
 		},
 		{
-			typ:       ValueOf(func(a map[int]int, b uintptr, c interface{}) {}).Type(),
+			typ:       ValueOf(func(a map[int]int, b uintptr, c any) {}).Type(),
 			size:      4 * goarch.PtrSize,
 			argsize:   4 * goarch.PtrSize,
 			retOffset: 4 * goarch.PtrSize,
@@ -6959,14 +7007,14 @@ func TestGCBits(t *testing.T) {
 	verifyGCBits(t, MapOf(ArrayOf(10000, Tscalarptr), Tscalar), lit(1))
 
 	verifyGCBits(t, TypeOf((*[10000]Xscalar)(nil)), lit(1))
-	verifyGCBits(t, PtrTo(ArrayOf(10000, Tscalar)), lit(1))
+	verifyGCBits(t, PointerTo(ArrayOf(10000, Tscalar)), lit(1))
 
 	verifyGCBits(t, TypeOf(([][10000]Xscalar)(nil)), lit(1))
 	verifyGCBits(t, SliceOf(ArrayOf(10000, Tscalar)), lit(1))
 
 	hdr := make([]byte, 8/goarch.PtrSize)
 
-	verifyMapBucket := func(t *testing.T, k, e Type, m interface{}, want []byte) {
+	verifyMapBucket := func(t *testing.T, k, e Type, m any, want []byte) {
 		verifyGCBits(t, MapBucketOf(k, e), want)
 		verifyGCBits(t, CachedBucketOf(TypeOf(m)), want)
 	}
@@ -7028,7 +7076,7 @@ func TestTypeOfTypeOf(t *testing.T) {
 	check("ChanOf", ChanOf(BothDir, TypeOf(T{})))
 	check("FuncOf", FuncOf([]Type{TypeOf(T{})}, nil, false))
 	check("MapOf", MapOf(TypeOf(T{}), TypeOf(T{})))
-	check("PtrTo", PtrTo(TypeOf(T{})))
+	check("PtrTo", PointerTo(TypeOf(T{})))
 	check("SliceOf", SliceOf(TypeOf(T{})))
 }
 
@@ -7095,7 +7143,7 @@ func TestChanAlloc(t *testing.T) {
 type TheNameOfThisTypeIsExactly255BytesLongSoWhenTheCompilerPrependsTheReflectTestPackageNameAndExtraStarTheLinkerRuntimeAndReflectPackagesWillHaveToCorrectlyDecodeTheSecondLengthByte0123456789_0123456789_0123456789_0123456789_0123456789_012345678 int
 
 type nameTest struct {
-	v    interface{}
+	v    any
 	want string
 }
 
@@ -7107,7 +7155,7 @@ var nameTests = []nameTest{
 	{(*func() D1)(nil), ""},
 	{(*<-chan D1)(nil), ""},
 	{(*chan<- D1)(nil), ""},
-	{(*interface{})(nil), ""},
+	{(*any)(nil), ""},
 	{(*interface {
 		F()
 	})(nil), ""},
@@ -7133,7 +7181,7 @@ func TestExported(t *testing.T) {
 	type p3 p
 
 	type exportTest struct {
-		v    interface{}
+		v    any
 		want bool
 	}
 	exportTests := []exportTest{
@@ -7268,9 +7316,9 @@ func TestSwapper(t *testing.T) {
 	type S string
 
 	tests := []struct {
-		in   interface{}
+		in   any
 		i, j int
-		want interface{}
+		want any
 	}{
 		{
 			in:   []int{1, 20, 300},
@@ -7568,6 +7616,16 @@ func TestMapIterNext(t *testing.T) {
 	}
 }
 
+func BenchmarkMapIterNext(b *testing.B) {
+	m := ValueOf(map[string]int{"a": 0, "b": 1, "c": 2, "d": 3})
+	it := m.MapRange()
+	for i := 0; i < b.N; i++ {
+		for it.Next() {
+		}
+		it.Reset(m)
+	}
+}
+
 func TestMapIterDelete0(t *testing.T) {
 	// Delete all elements before first iteration.
 	m := map[string]int{"one": 1, "two": 2, "three": 3}
@@ -7674,7 +7732,7 @@ func TestSetIter(t *testing.T) {
 	})
 
 	// Make sure assignment conversion works.
-	var x interface{}
+	var x any
 	y := ValueOf(&x).Elem()
 	y.SetIterKey(i)
 	if _, ok := data[x.(string)]; !ok {
@@ -7733,5 +7791,19 @@ func TestMethodCallValueCodePtr(t *testing.T) {
 	}
 	if got := m.Pointer(); got != want {
 		t.Errorf("methodValueCall code pointer mismatched, want: %v, got: %v", want, got)
+	}
+}
+
+type A struct{}
+type B[T any] struct{}
+
+func TestIssue50208(t *testing.T) {
+	want1 := "B[reflect_test.A]"
+	if got := TypeOf(new(B[A])).Elem().Name(); got != want1 {
+		t.Errorf("name of type parameter mismatched, want:%s, got:%s", want1, got)
+	}
+	want2 := "B[reflect_test.B[reflect_test.A]]"
+	if got := TypeOf(new(B[B[A]])).Elem().Name(); got != want2 {
+		t.Errorf("name of type parameter mismatched, want:%s, got:%s", want2, got)
 	}
 }

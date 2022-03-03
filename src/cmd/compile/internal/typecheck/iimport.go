@@ -81,6 +81,27 @@ func ImportBody(fn *ir.Func) {
 	inimport = false
 }
 
+// HaveInlineBody reports whether we have fn's inline body available
+// for inlining.
+func HaveInlineBody(fn *ir.Func) bool {
+	if fn.Inl == nil {
+		return false
+	}
+
+	// Unified IR is much more conservative about pruning unreachable
+	// methods (at the cost of increased build artifact size).
+	if base.Debug.Unified != 0 {
+		return true
+	}
+
+	if fn.Inl.Body != nil {
+		return true
+	}
+
+	_, ok := inlineImporter[fn.Nname.Sym()]
+	return ok
+}
+
 func importReaderFor(sym *types.Sym, importers map[*types.Sym]iimporterAndOffset) *importReader {
 	x, ok := importers[sym]
 	if !ok {
@@ -118,13 +139,9 @@ func ReadImports(pkg *types.Pkg, data string) {
 
 	version := ird.uint64()
 	switch version {
-	case /* iexportVersionGenerics, */ iexportVersionPosCol, iexportVersionGo1_11:
+	case iexportVersionGo1_18, iexportVersionPosCol, iexportVersionGo1_11:
 	default:
-		if version > iexportVersionGenerics {
-			base.Errorf("import %q: unstable export format version %d, just recompile", pkg.Path, version)
-		} else {
-			base.Errorf("import %q: unknown export format version %d", pkg.Path, version)
-		}
+		base.Errorf("import %q: unknown export format version %d", pkg.Path, version)
 		base.ErrorExit()
 	}
 
@@ -337,15 +354,18 @@ func (r *importReader) doDecl(sym *types.Sym) *ir.Name {
 		// declaration before recursing.
 		n := importtype(pos, sym)
 		t := n.Type()
+
+		// Because of recursion, we need to defer width calculations and
+		// instantiations on intermediate types until the top-level type is
+		// fully constructed. Note that we can have recursion via type
+		// constraints.
+		types.DeferCheckSize()
+		deferDoInst()
 		if tag == 'U' {
 			rparams := r.typeList()
 			t.SetRParams(rparams)
 		}
 
-		// We also need to defer width calculations until
-		// after the underlying type has been assigned.
-		types.DeferCheckSize()
-		deferDoInst()
 		underlying := r.typ()
 		t.SetUnderlying(underlying)
 
@@ -408,8 +428,15 @@ func (r *importReader) doDecl(sym *types.Sym) *ir.Name {
 		sym.Def = nname
 		nname.SetType(t)
 		t.SetNod(nname)
-
-		t.SetBound(r.typ())
+		implicit := false
+		if r.p.exportVersion >= iexportVersionGo1_18 {
+			implicit = r.bool()
+		}
+		bound := r.typ()
+		if implicit {
+			bound.MarkImplicit()
+		}
+		t.SetBound(bound)
 		return nname
 
 	case 'V':
@@ -429,10 +456,17 @@ func (r *importReader) value(typ *types.Type) constant.Value {
 	var kind constant.Kind
 	var valType *types.Type
 
-	if typ.IsTypeParam() {
-		// If a constant had a typeparam type, then we wrote out its
-		// actual constant kind as well.
+	if r.p.exportVersion >= iexportVersionGo1_18 {
+		// TODO: add support for using the kind in the non-typeparam case.
 		kind = constant.Kind(r.int64())
+	}
+
+	if typ.IsTypeParam() {
+		if r.p.exportVersion < iexportVersionGo1_18 {
+			// If a constant had a typeparam type, then we wrote out its
+			// actual constant kind as well.
+			kind = constant.Kind(r.int64())
+		}
 		switch kind {
 		case constant.Int:
 			valType = types.Types[types.TINT64]
@@ -815,7 +849,7 @@ func (r *importReader) typ1() *types.Type {
 			return types.Types[types.TINTER]
 		}
 
-		t := types.NewInterface(r.currPkg, append(embeddeds, methods...))
+		t := types.NewInterface(r.currPkg, append(embeddeds, methods...), false)
 
 		// Ensure we expand the interface in the frontend (#25055).
 		types.CheckSize(t)
@@ -1284,9 +1318,15 @@ func (r *importReader) node() ir.Node {
 		return n
 
 	case ir.ONONAME:
+		isKey := r.bool()
 		n := r.qualifiedIdent()
 		if go117ExportTypes {
-			n2 := Resolve(n)
+			var n2 ir.Node = n
+			// Key ONONAME entries should not be resolved - they should
+			// stay as identifiers.
+			if !isKey {
+				n2 = Resolve(n)
+			}
 			typ := r.typ()
 			if n2.Type() == nil {
 				n2.SetType(typ)
@@ -1593,11 +1633,16 @@ func (r *importReader) node() ir.Node {
 		return n
 
 	case ir.OADDR, ir.OPTRLIT:
-		n := NodAddrAt(r.pos(), r.expr())
 		if go117ExportTypes {
+			pos := r.pos()
+			expr := r.expr()
+			expr.SetTypecheck(1) // we do this for all nodes after importing, but do it now so markAddrOf can see it.
+			n := NodAddrAt(pos, expr)
 			n.SetOp(op)
 			n.SetType(r.typ())
+			return n
 		}
+		n := NodAddrAt(r.pos(), r.expr())
 		return n
 
 	case ir.ODEREF:

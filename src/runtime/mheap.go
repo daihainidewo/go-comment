@@ -71,9 +71,7 @@ type mheap struct {
 	lock  mutex
 	pages pageAlloc // page allocation data structure
 
-	sweepgen     uint32 // sweep generation, see comment in mspan; written during STW
-	sweepDrained uint32 // all spans are swept or are being swept
-	sweepers     uint32 // number of active sweepone calls
+	sweepgen uint32 // sweep generation, see comment in mspan; written during STW
 
 	// allspans is a slice of all mspans ever created. Each mspan
 	// appears exactly once.
@@ -88,7 +86,7 @@ type mheap struct {
 	// access (since that may free the backing store).
 	allspans []*mspan // all spans out there
 
-	_ uint32 // align uint64 fields on 32-bit for atomics
+	// _ uint32 // align uint64 fields on 32-bit for atomics
 
 	// Proportional sweep
 	//
@@ -119,6 +117,8 @@ type mheap struct {
 	// scavengeGoal is the amount of total retained heap memory (measured by
 	// heapRetained) that the runtime will try to maintain by returning memory
 	// to the OS.
+	//
+	// Accessed atomically.
 	scavengeGoal uint64
 
 	// Page reclaimer state
@@ -831,7 +831,10 @@ func (h *mheap) reclaimChunk(arenas []arenaIdx, pageIdx, n uintptr) uintptr {
 
 	n0 := n
 	var nFreed uintptr
-	sl := newSweepLocker()
+	sl := sweep.active.begin()
+	if !sl.valid {
+		return 0
+	}
 	for n > 0 {
 		ai := arenas[pageIdx/pagesPerArena]
 		ha := h.arenas[ai.l1()][ai.l2()]
@@ -877,7 +880,7 @@ func (h *mheap) reclaimChunk(arenas []arenaIdx, pageIdx, n uintptr) uintptr {
 		pageIdx += uintptr(len(inUse) * 8)
 		n -= uintptr(len(inUse) * 8)
 	}
-	sl.dispose()
+	sweep.active.end(sl)
 	if trace.enabled {
 		unlock(&h.lock)
 		// Account for pages scanned but not reclaimed.
@@ -909,10 +912,9 @@ func (s spanAllocType) manual() bool {
 //
 // spanclass indicates the span's size class and scannability.
 //
-// If needzero is true, the memory for the returned span will be zeroed.
-// The boolean returned indicates whether the returned span contains zeroes,
-// either because this was requested, or because it was already zeroed.
-func (h *mheap) alloc(npages uintptr, spanclass spanClass, needzero bool) (*mspan, bool) {
+// Returns a span that has been fully initialized. span.needzero indicates
+// whether the span has been zeroed. Note that it may not be.
+func (h *mheap) alloc(npages uintptr, spanclass spanClass) *mspan {
 	// Don't do any operations that lock the heap on the G stack.
 	// It might trigger stack growth, and the stack growth code needs
 	// to be able to allocate heap.
@@ -925,17 +927,7 @@ func (h *mheap) alloc(npages uintptr, spanclass spanClass, needzero bool) (*mspa
 		}
 		s = h.allocSpan(npages, spanAllocHeap, spanclass)
 	})
-
-	if s == nil {
-		return nil, false
-	}
-	isZeroed := s.needzero == 0
-	if needzero && !isZeroed {
-		memclrNoHeapPointers(unsafe.Pointer(s.base()), s.npages<<_PageShift)
-		isZeroed = true
-	}
-	s.needzero = 0
-	return s, isZeroed
+	return s
 }
 
 // allocManual 手动申请 span
@@ -1025,7 +1017,7 @@ func (h *mheap) allocNeedsZero(base, npage uintptr) (needZero bool) {
 				break
 			}
 			zeroedBase = atomic.Loaduintptr(&ha.zeroedBase)
-			// Sanity check zeroedBase.
+			// Double check basic conditions of zeroedBase.
 			if zeroedBase <= arenaLimit && zeroedBase > arenaBase {
 				// The zeroedBase moved into the space we were trying to
 				// claim. That's very bad, and indicates someone allocated
@@ -1146,6 +1138,7 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 	// Function-global state.
 	gp := getg()
 	base, scav := uintptr(0), uintptr(0)
+	growth := uintptr(0)
 
 	// On some platforms we need to provide physical page aligned stack
 	// allocations. Where the page size is less than the physical page
@@ -1194,9 +1187,11 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 	// 如果 alloc 没有获取页
 	if base == 0 {
 		// Try to acquire a base address.
-		base, scav = h.pages.alloc(npages) // 尝试获取页
-		if base == 0 {                     // 获取失败
-			if !h.grow(npages) {
+		base, scav = h.pages.alloc(npages)
+		if base == 0 {
+			var ok bool
+			growth, ok = h.grow(npages)
+			if !ok {
 				unlock(&h.lock)
 				return nil
 			}
@@ -1220,15 +1215,34 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 		// Return memory around the aligned allocation.
 		spaceBefore := base - allocBase
 		if spaceBefore > 0 {
-			h.pages.free(allocBase, spaceBefore/pageSize)
+			h.pages.free(allocBase, spaceBefore/pageSize, false)
 		}
 		spaceAfter := (allocPages-npages)*pageSize - spaceBefore
 		if spaceAfter > 0 {
-			h.pages.free(base+npages*pageSize, spaceAfter/pageSize)
+			h.pages.free(base+npages*pageSize, spaceAfter/pageSize, false)
 		}
 	}
 
 	unlock(&h.lock)
+
+	if growth > 0 {
+		// We just caused a heap growth, so scavenge down what will soon be used.
+		// By scavenging inline we deal with the failure to allocate out of
+		// memory fragments by scavenging the memory fragments that are least
+		// likely to be re-used.
+		scavengeGoal := atomic.Load64(&h.scavengeGoal)
+		if retained := heapRetained(); retained+uint64(growth) > scavengeGoal {
+			// The scavenging algorithm requires the heap lock to be dropped so it
+			// can acquire it only sparingly. This is a potentially expensive operation
+			// so it frees up other goroutines to allocate in the meanwhile. In fact,
+			// they can make use of the growth we just created.
+			todo := growth
+			if overage := uintptr(retained + uint64(growth) - scavengeGoal); todo > overage {
+				todo = overage
+			}
+			h.pages.scavenge(todo)
+		}
+	}
 
 HaveSpan:
 	// At this point, both s != nil and base != 0, and the heap
@@ -1343,10 +1357,10 @@ HaveSpan:
 
 // grow 尝试向操作系统索要npage页内存，返回是否成功
 // Try to add at least npage pages of memory to the heap,
-// returning whether it worked.
+// returning how much the heap grew by and whether it worked.
 //
 // h.lock must be held.
-func (h *mheap) grow(npage uintptr) bool {
+func (h *mheap) grow(npage uintptr) (uintptr, bool) {
 	assertLockHeld(&h.lock)
 
 	// We must grow the heap in whole palloc chunks.
@@ -1369,7 +1383,7 @@ func (h *mheap) grow(npage uintptr) bool {
 		av, asize := h.sysAlloc(ask)
 		if av == nil {
 			print("runtime: out of memory: cannot allocate ", ask, "-byte block (", memstats.heap_sys, " in use)\n")
-			return false
+			return 0, false
 		}
 
 		if uintptr(av) == h.curArena.end {
@@ -1429,19 +1443,7 @@ func (h *mheap) grow(npage uintptr) bool {
 	// space ready for allocation.
 	h.pages.grow(v, nBase-v)
 	totalGrowth += nBase - v
-
-	// We just caused a heap growth, so scavenge down what will soon be used.
-	// By scavenging inline we deal with the failure to allocate out of
-	// memory fragments by scavenging the memory fragments that are least
-	// likely to be re-used.
-	if retained := heapRetained(); retained+uint64(totalGrowth) > h.scavengeGoal {
-		todo := totalGrowth
-		if overage := uintptr(retained + uint64(totalGrowth) - h.scavengeGoal); todo > overage {
-			todo = overage
-		}
-		h.pages.scavenge(todo, false)
-	}
-	return true
+	return totalGrowth, true
 }
 
 // Free the span back into the heap.
@@ -1453,6 +1455,12 @@ func (h *mheap) freeSpan(s *mspan) {
 			base := unsafe.Pointer(s.base())
 			bytes := s.npages << _PageShift
 			msanfree(base, bytes)
+		}
+		if asanenabled {
+			// Tell asan that this entire span is no longer in use.
+			base := unsafe.Pointer(s.base())
+			bytes := s.npages << _PageShift
+			asanpoison(base, bytes)
 		}
 		h.freeSpanLocked(s, spanAllocHeap)
 		unlock(&h.lock)
@@ -1525,7 +1533,7 @@ func (h *mheap) freeSpanLocked(s *mspan, typ spanAllocType) {
 	memstats.heapStats.release()
 
 	// Mark the space as free.
-	h.pages.free(s.base(), s.npages)
+	h.pages.free(s.base(), s.npages, false)
 
 	// Free the span structure. We no longer have a use for it.
 	s.state.set(mSpanDead)
@@ -1541,13 +1549,19 @@ func (h *mheap) scavengeAll() {
 	// the mheap API.
 	gp := getg()
 	gp.m.mallocing++
+
 	lock(&h.lock)
 	// Start a new scavenge generation so we have a chance to walk
 	// over the whole heap.
 	h.pages.scavengeStartGen()
-	released := h.pages.scavenge(^uintptr(0), false)
-	gen := h.pages.scav.gen
 	unlock(&h.lock)
+
+	released := h.pages.scavenge(^uintptr(0))
+
+	lock(&h.pages.scav.lock)
+	gen := h.pages.scav.gen
+	unlock(&h.pages.scav.lock)
+
 	gp.m.mallocing--
 
 	if debug.scavtrace > 0 {

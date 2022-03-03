@@ -92,9 +92,9 @@ func o() int {
 	foo := func() int { return 1 } // ERROR "can inline o.func1" "func literal does not escape"
 	func(x int) {                  // ERROR "can inline o.func2"
 		if x > 10 {
-			foo = func() int { return 2 } // ERROR "func literal does not escape" "can inline o.func2"
+			foo = func() int { return 2 } // ERROR "can inline o.func2"
 		}
-	}(11) // ERROR "inlining call to o.func2"
+	}(11) // ERROR "func literal does not escape" "inlining call to o.func2"
 	return foo()
 }
 
@@ -158,6 +158,19 @@ func switchType(x interface{}) int { // ERROR "can inline switchType" "x does no
 	default:
 		return 0
 	}
+}
+
+func inlineRangeIntoMe(data []int) { // ERROR "can inline inlineRangeIntoMe" "data does not escape"
+	rangeFunc(data, 12) // ERROR "inlining call to rangeFunc"
+}
+
+func rangeFunc(xs []int, b int) int { // ERROR "can inline rangeFunc" "xs does not escape"
+	for i, x := range xs {
+		if x == b {
+			return i
+		}
+	}
+	return -1
 }
 
 type T struct{}

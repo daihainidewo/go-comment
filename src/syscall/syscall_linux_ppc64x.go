@@ -3,16 +3,8 @@
 // license that can be found in the LICENSE file.
 
 //go:build linux && (ppc64 || ppc64le)
-// +build linux
-// +build ppc64 ppc64le
 
 package syscall
-
-// archHonorsR2 captures the fact that r2 is honored by the
-// runtime.GOARCH.  Syscall conventions are generally r1, r2, err :=
-// syscall(trap, ...).  Not all architectures define r2 in their
-// ABI. See "man syscall".
-const archHonorsR2 = false
 
 const _SYS_setgroups = SYS_SETGROUPS
 
@@ -51,7 +43,6 @@ const _SYS_setgroups = SYS_SETGROUPS
 //sys	Statfs(path string, buf *Statfs_t) (err error)
 //sys	Truncate(path string, length int64) (err error)
 //sys	Ustat(dev int, ubuf *Ustat_t) (err error)
-//sys	accept(s int, rsa *RawSockaddrAny, addrlen *_Socklen) (fd int, err error)
 //sys	accept4(s int, rsa *RawSockaddrAny, addrlen *_Socklen, flags int) (fd int, err error)
 //sys	bind(s int, addr unsafe.Pointer, addrlen _Socklen) (err error)
 //sys	connect(s int, addr unsafe.Pointer, addrlen _Socklen) (err error)

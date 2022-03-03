@@ -55,5 +55,3 @@ type (
 	_ = C1
 	_ = C2
 )
-
-// TODO(gri) need test cases for imported constraint types (see also issue #47967)

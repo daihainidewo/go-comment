@@ -76,6 +76,9 @@ func makeslicecopy(et *_type, tolen int, fromlen int, from unsafe.Pointer) unsaf
 	if msanenabled {
 		msanread(from, copymem)
 	}
+	if asanenabled {
+		asanread(from, copymem)
+	}
 
 	memmove(to, from, copymem)
 
@@ -168,6 +171,9 @@ func growslice(et *_type, old slice, cap int) slice {
 	if msanenabled {
 		msanread(old.array, uintptr(old.len*int(et.size)))
 	}
+	if asanenabled {
+		asanread(old.array, uintptr(old.len*int(et.size)))
+	}
 
 	if cap < old.cap {
 		panic(errorString("growslice: cap out of range"))
@@ -208,7 +214,7 @@ func growslice(et *_type, old slice, cap int) slice {
 	var lenmem, newlenmem, capmem uintptr
 	// Specialize for common values of et.size.
 	// For 1 we don't need any division/multiplication.
-	// For sys.PtrSize, compiler will optimize division/multiplication into a shift by a constant.
+	// For goarch.PtrSize, compiler will optimize division/multiplication into a shift by a constant.
 	// For powers of 2, use a variable shift.
 	switch {
 	case et.size == 1:
@@ -310,6 +316,10 @@ func slicecopy(toPtr unsafe.Pointer, toLen int, fromPtr unsafe.Pointer, fromLen 
 	if msanenabled {
 		msanread(fromPtr, size)
 		msanwrite(toPtr, size)
+	}
+	if asanenabled {
+		asanread(fromPtr, size)
+		asanwrite(toPtr, size)
 	}
 
 	if size == 1 { // common case worth about 2x to do here

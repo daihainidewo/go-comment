@@ -155,7 +155,7 @@ as follows:
 1. Remember I and FP.
 1. If T has zero size, add T to the stack sequence S and return.
 1. Try to register-assign V.
-1. If step 2 failed, reset I and FP to the values from step 1, add T
+1. If step 3 failed, reset I and FP to the values from step 1, add T
    to the stack sequence S, and assign V to this field in S.
 
 Register-assignment of a value V of underlying type T works as follows:
@@ -410,7 +410,11 @@ Special-purpose registers are as follows:
 | R13 | Scratch | Scratch | Scratch |
 | R14 | Current goroutine | Same | Same |
 | R15 | GOT reference temporary if dynlink | Same | Same |
-| X15 | Zero value | Same | Scratch |
+| X15 | Zero value (*) | Same | Scratch |
+
+(*) Except on Plan 9, where X15 is a scratch register because SSE
+registers cannot be used in note handlers (so the compiler avoids
+using them except when absolutely necessary).
 
 *Rationale*: These register meanings are compatible with Go’s
 stack-based calling convention except for R14 and X15, which will have

@@ -73,8 +73,8 @@ type transferWriter struct {
 	ByteReadCh   chan readResult // non-nil if probeRequestBody called
 }
 
+func newTransferWriter(r any) (t *transferWriter, err error) {
 // newTransferWriter 把 Request 或 Response 转换成 transferWriter
-func newTransferWriter(r interface{}) (t *transferWriter, err error) {
 	t = &transferWriter{}
 
 	// Extract relevant fields
@@ -484,7 +484,7 @@ func suppressedHeaders(status int) []string {
 
 // readTransfer 读取传输数据 支持请求和响应
 // msg is *Request or *Response.
-func readTransfer(msg interface{}, r *bufio.Reader) (err error) {
+func readTransfer(msg any, r *bufio.Reader) (err error) {
 	t := &transferReader{RequestMethod: "GET"}
 
 	// Unify input
@@ -829,7 +829,7 @@ func fixTrailer(header Header, chunked bool) (Header, error) {
 // and then reads the trailer if necessary.
 type body struct {
 	src          io.Reader
-	hdr          interface{}   // non-nil (Response or Request) value means read trailer
+	hdr          any           // non-nil (Response or Request) value means read trailer
 	r            *bufio.Reader // underlying wire-format reader for the trailer
 	closing      bool          // is the connection to be closed after reading body?
 	doEarlyClose bool          // whether Close should stop early
@@ -1050,7 +1050,7 @@ func (b *body) registerOnHitEOF(fn func()) {
 	b.onHitEOF = fn
 }
 
-// bodyLocked is a io.Reader reading from a *body when its mutex is
+// bodyLocked is an io.Reader reading from a *body when its mutex is
 // already held.
 type bodyLocked struct {
 	b *body

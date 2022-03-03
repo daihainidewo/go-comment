@@ -722,6 +722,62 @@ func stacksplit(ctxt *obj.Link, p *obj.Prog, cursym *obj.LSym, newprog obj.ProgA
 		return p
 	}
 
+	if ctxt.Flag_maymorestack != "" {
+		// Save LR and REGCTXT
+		const frameSize = 16
+		p = ctxt.StartUnsafePoint(p, newprog)
+		// MOV LR, -16(SP)
+		p = obj.Appendp(p, newprog)
+		p.As = AMOV
+		p.From = obj.Addr{Type: obj.TYPE_REG, Reg: REG_LR}
+		p.To = obj.Addr{Type: obj.TYPE_MEM, Reg: REG_SP, Offset: -frameSize}
+		// ADDI $-16, SP
+		p = obj.Appendp(p, newprog)
+		p.As = AADDI
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: -frameSize}
+		p.Reg = REG_SP
+		p.To = obj.Addr{Type: obj.TYPE_REG, Reg: REG_SP}
+		p.Spadj = frameSize
+		// MOV REGCTXT, 8(SP)
+		p = obj.Appendp(p, newprog)
+		p.As = AMOV
+		p.From = obj.Addr{Type: obj.TYPE_REG, Reg: REG_CTXT}
+		p.To = obj.Addr{Type: obj.TYPE_MEM, Reg: REG_SP, Offset: 8}
+
+		// CALL maymorestack
+		p = obj.Appendp(p, newprog)
+		p.As = obj.ACALL
+		p.To.Type = obj.TYPE_BRANCH
+		// See ../x86/obj6.go
+		p.To.Sym = ctxt.LookupABI(ctxt.Flag_maymorestack, cursym.ABI())
+		jalToSym(ctxt, p, REG_X5)
+
+		// Restore LR and REGCTXT
+
+		// MOV 8(SP), REGCTXT
+		p = obj.Appendp(p, newprog)
+		p.As = AMOV
+		p.From = obj.Addr{Type: obj.TYPE_MEM, Reg: REG_SP, Offset: 8}
+		p.To = obj.Addr{Type: obj.TYPE_REG, Reg: REG_CTXT}
+		// MOV (SP), LR
+		p = obj.Appendp(p, newprog)
+		p.As = AMOV
+		p.From = obj.Addr{Type: obj.TYPE_MEM, Reg: REG_SP, Offset: 0}
+		p.To = obj.Addr{Type: obj.TYPE_REG, Reg: REG_LR}
+		// ADDI $16, SP
+		p = obj.Appendp(p, newprog)
+		p.As = AADDI
+		p.From = obj.Addr{Type: obj.TYPE_CONST, Offset: frameSize}
+		p.Reg = REG_SP
+		p.To = obj.Addr{Type: obj.TYPE_REG, Reg: REG_SP}
+		p.Spadj = -frameSize
+
+		p = ctxt.EndUnsafePoint(p, newprog, -1)
+	}
+
+	// Jump back to here after morestack returns.
+	startPred := p
+
 	// MOV	g_stackguard(g), X10
 	p = obj.Appendp(p, newprog)
 	p.As = AMOV
@@ -733,6 +789,12 @@ func stacksplit(ctxt *obj.Link, p *obj.Prog, cursym *obj.LSym, newprog obj.ProgA
 	}
 	p.To.Type = obj.TYPE_REG
 	p.To.Reg = REG_X10
+
+	// Mark the stack bound check and morestack call async nonpreemptible.
+	// If we get preempted here, when resumed the preemption request is
+	// cleared, but we'll still call morestack, which will double the stack
+	// unnecessarily. See issue #35470.
+	p = ctxt.StartUnsafePoint(p, newprog)
 
 	var to_done, to_more *obj.Prog
 
@@ -798,7 +860,7 @@ func stacksplit(ctxt *obj.Link, p *obj.Prog, cursym *obj.LSym, newprog obj.ProgA
 		to_done = p
 	}
 
-	p = ctxt.EmitEntryLiveness(cursym, p, newprog)
+	p = ctxt.EmitEntryStackMap(cursym, p, newprog)
 
 	// CALL runtime.morestack(SB)
 	p = obj.Appendp(p, newprog)
@@ -816,12 +878,14 @@ func stacksplit(ctxt *obj.Link, p *obj.Prog, cursym *obj.LSym, newprog obj.ProgA
 	}
 	jalToSym(ctxt, p, REG_X5)
 
+	p = ctxt.EndUnsafePoint(p, newprog, -1)
+
 	// JMP start
 	p = obj.Appendp(p, newprog)
 	p.As = AJAL
 	p.To = obj.Addr{Type: obj.TYPE_BRANCH}
 	p.From = obj.Addr{Type: obj.TYPE_REG, Reg: REG_ZERO}
-	p.To.SetTarget(cursym.Func().Text.Link)
+	p.To.SetTarget(startPred.Link)
 
 	// placeholder for to_done's jump target
 	p = obj.Appendp(p, newprog)
@@ -1610,7 +1674,8 @@ func instructionsForOpImmediate(p *obj.Prog, as obj.As, rs int16) []*instruction
 	}
 
 	// Split into two additions, if possible.
-	if ins.as == AADDI && ins.imm >= -(1<<12) && ins.imm < 1<<12-1 {
+	// Do not split SP-writing instructions, as otherwise the recorded SP delta may be wrong.
+	if p.Spadj == 0 && ins.as == AADDI && ins.imm >= -(1<<12) && ins.imm < 1<<12-1 {
 		imm0 := ins.imm / 2
 		imm1 := ins.imm - imm0
 

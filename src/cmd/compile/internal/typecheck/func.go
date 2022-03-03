@@ -160,7 +160,12 @@ func ImportedBody(fn *ir.Func) {
 	IncrementalAddrtaken = false
 	defer func() {
 		if DirtyAddrtaken {
-			ComputeAddrtaken(fn.Inl.Body) // compute addrtaken marks once types are available
+			// We do ComputeAddrTaken on function instantiations, but not
+			// generic functions (since we may not yet know if x in &x[i]
+			// is an array or a slice).
+			if !fn.Type().HasTParam() {
+				ComputeAddrtaken(fn.Inl.Body) // compute addrtaken marks once types are available
+			}
 			DirtyAddrtaken = false
 		}
 		IncrementalAddrtaken = true
@@ -297,20 +302,6 @@ func tcFunc(n *ir.Func) {
 	}
 
 	n.Nname = AssignExpr(n.Nname).(*ir.Name)
-	t := n.Nname.Type()
-	if t == nil {
-		return
-	}
-	rcvr := t.Recv()
-	if rcvr != nil && n.Shortname != nil {
-		m := addmethod(n, n.Shortname, t, true, n.Pragma&ir.Nointerface != 0)
-		if m == nil {
-			return
-		}
-
-		n.Nname.SetSym(ir.MethodSym(rcvr.Type, n.Shortname))
-		Declare(n.Nname, ir.PFUNC)
-	}
 }
 
 // tcCall typechecks an OCALL node.

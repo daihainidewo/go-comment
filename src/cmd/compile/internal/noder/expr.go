@@ -114,7 +114,7 @@ func (g *irgen) expr0(typ types2.Type, expr syntax.Expr) ir.Node {
 
 	case *syntax.CallExpr:
 		fun := g.expr(expr.Fun)
-		return Call(pos, g.typ(typ), fun, g.exprs(expr.ArgList), expr.HasDots)
+		return g.callExpr(pos, g.typ(typ), fun, g.exprs(expr.ArgList), expr.HasDots)
 
 	case *syntax.IndexExpr:
 		args := unpackListExpr(expr.Index)
@@ -206,6 +206,53 @@ func (g *irgen) substType(typ *types.Type, tparams *types.Type, targs []ir.Node)
 	return newt
 }
 
+// callExpr creates a call expression (which might be a type conversion, built-in
+// call, or a regular call) and does standard transforms, unless we are in a generic
+// function.
+func (g *irgen) callExpr(pos src.XPos, typ *types.Type, fun ir.Node, args []ir.Node, dots bool) ir.Node {
+	n := ir.NewCallExpr(pos, ir.OCALL, fun, args)
+	n.IsDDD = dots
+	typed(typ, n)
+
+	if fun.Op() == ir.OTYPE {
+		// Actually a type conversion, not a function call.
+		if !g.delayTransform() {
+			return transformConvCall(n)
+		}
+		return n
+	}
+
+	if fun, ok := fun.(*ir.Name); ok && fun.BuiltinOp != 0 {
+		if !g.delayTransform() {
+			return transformBuiltin(n)
+		}
+		return n
+	}
+
+	// Add information, now that we know that fun is actually being called.
+	switch fun := fun.(type) {
+	case *ir.SelectorExpr:
+		if fun.Op() == ir.OMETHVALUE {
+			op := ir.ODOTMETH
+			if fun.X.Type().IsInterface() {
+				op = ir.ODOTINTER
+			}
+			fun.SetOp(op)
+			// Set the type to include the receiver, since that's what
+			// later parts of the compiler expect
+			fun.SetType(fun.Selection.Type)
+		}
+	}
+
+	// A function instantiation (even if fully concrete) shouldn't be
+	// transformed yet, because we need to add the dictionary during the
+	// transformation.
+	if fun.Op() != ir.OFUNCINST && !g.delayTransform() {
+		transformCall(n)
+	}
+	return n
+}
+
 // selectorExpr resolves the choice of ODOT, ODOTPTR, OMETHVALUE (eventually
 // ODOTMETH & ODOTINTER), and OMETHEXPR and deals with embedded fields here rather
 // than in typecheck.go.
@@ -234,12 +281,6 @@ func (g *irgen) selectorExpr(pos src.XPos, typ types2.Type, expr *syntax.Selecto
 	if kind == types2.FieldVal {
 		return DotField(pos, x, last)
 	}
-
-	// TODO(danscales,mdempsky): Interface method sets are not sorted the
-	// same between types and types2. In particular, using "last" here
-	// without conversion will likely fail if an interface contains
-	// unexported methods from two different packages (due to cross-package
-	// interface embedding).
 
 	var n ir.Node
 	method2 := selinfo.Obj().(*types2.Func)
@@ -272,7 +313,7 @@ func (g *irgen) selectorExpr(pos src.XPos, typ types2.Type, expr *syntax.Selecto
 			if wantPtr {
 				recvType2Base = types2.AsPointer(recvType2).Elem()
 			}
-			if types2.AsNamed(recvType2Base).TypeParams().Len() > 0 {
+			if recvType2Base.(*types2.Named).TypeParams().Len() > 0 {
 				// recvType2 is the original generic type that is
 				// instantiated for this method call.
 				// selinfo.Recv() is the instantiated type
@@ -338,13 +379,13 @@ func (g *irgen) exprs(exprs []syntax.Expr) []ir.Node {
 }
 
 func (g *irgen) compLit(typ types2.Type, lit *syntax.CompositeLit) ir.Node {
-	if ptr, ok := typ.Underlying().(*types2.Pointer); ok {
+	if ptr, ok := types2.CoreType(typ).(*types2.Pointer); ok {
 		n := ir.NewAddrExpr(g.pos(lit), g.compLit(ptr.Elem(), lit))
 		n.SetOp(ir.OPTRLIT)
 		return typed(g.typ(typ), n)
 	}
 
-	_, isStruct := typ.Underlying().(*types2.Struct)
+	_, isStruct := types2.CoreType(typ).(*types2.Struct)
 
 	exprs := make([]ir.Node, len(lit.ElemList))
 	for i, elem := range lit.ElemList {

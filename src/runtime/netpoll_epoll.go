@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build linux
-// +build linux
 
 package runtime
 
@@ -174,11 +173,8 @@ retry:
 		}
 		if mode != 0 {
 			pd := *(**pollDesc)(unsafe.Pointer(&ev.data))
-			pd.everr = false
-			if ev.events == _EPOLLERR {
-				pd.everr = true
-			}
-			netpollready(&toRun, pd, mode) // 将符合的g填充进toRun中
+			pd.setEventErr(ev.events == _EPOLLERR)
+			netpollready(&toRun, pd, mode)
 		}
 	}
 	return toRun

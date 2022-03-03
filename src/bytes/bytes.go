@@ -21,7 +21,7 @@ func Equal(a, b []byte) bool {
 }
 
 // Compare returns an integer comparing two byte slices lexicographically.
-// The result will be 0 if a==b, -1 if a < b, and +1 if a > b.
+// The result will be 0 if a == b, -1 if a < b, and +1 if a > b.
 // A nil argument is equivalent to an empty slice.
 func Compare(a, b []byte) int {
 	return bytealg.Compare(a, b)
@@ -372,6 +372,8 @@ func genSplit(s, sep []byte, sepSave, n int) [][]byte {
 //   n > 0: at most n subslices; the last subslice will be the unsplit remainder.
 //   n == 0: the result is nil (zero subslices)
 //   n < 0: all subslices
+//
+// To split around the first instance of a separator, see Cut.
 func SplitN(s, sep []byte, n int) [][]byte { return genSplit(s, sep, 0, n) }
 
 // SplitAfterN slices s into subslices after each instance of sep and
@@ -389,6 +391,8 @@ func SplitAfterN(s, sep []byte, n int) [][]byte {
 // the subslices between those separators.
 // If sep is empty, Split splits after each UTF-8 sequence.
 // It is equivalent to SplitN with a count of -1.
+//
+// To split around the first instance of a separator, see Cut.
 func Split(s, sep []byte) [][]byte { return genSplit(s, sep, 0, -1) }
 
 // SplitAfter slices s into all subslices after each instance of sep and
@@ -699,7 +703,7 @@ func ToValidUTF8(s, replacement []byte) []byte {
 		if c < utf8.RuneSelf {
 			i++
 			invalid = false
-			b = append(b, byte(c))
+			b = append(b, c)
 			continue
 		}
 		_, wid := utf8.DecodeRune(s[i:])
@@ -746,7 +750,8 @@ func isSeparator(r rune) bool {
 // Title treats s as UTF-8-encoded bytes and returns a copy with all Unicode letters that begin
 // words mapped to their title case.
 //
-// BUG(rsc): The rule Title uses for word boundaries does not handle Unicode punctuation properly.
+// Deprecated: The rule Title uses for word boundaries does not handle Unicode
+// punctuation properly. Use golang.org/x/text/cases instead.
 func Title(s []byte) []byte {
 	// Use a closure here to remember state.
 	// Hackish but effective. Depends on Map scanning in order and calling

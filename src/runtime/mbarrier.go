@@ -186,6 +186,10 @@ func reflect_typedmemmove(typ *_type, dst, src unsafe.Pointer) {
 		msanwrite(dst, typ.size)
 		msanread(src, typ.size)
 	}
+	if asanenabled {
+		asanwrite(dst, typ.size)
+		asanread(src, typ.size)
+	}
 	typedmemmove(typ, dst, src)
 }
 
@@ -196,7 +200,7 @@ func reflectlite_typedmemmove(typ *_type, dst, src unsafe.Pointer) {
 
 // typedmemmovepartial is like typedmemmove but assumes that
 // dst and src point off bytes into the value and only copies size bytes.
-// off must be a multiple of sys.PtrSize.
+// off must be a multiple of goarch.PtrSize.
 //go:linkname reflect_typedmemmovepartial reflect.typedmemmovepartial
 func reflect_typedmemmovepartial(typ *_type, dst, src unsafe.Pointer, off, size uintptr) {
 	if writeBarrier.needed && typ.ptrdata > off && size >= goarch.PtrSize {
@@ -263,6 +267,10 @@ func typedslicecopy(typ *_type, dstPtr unsafe.Pointer, dstLen int, srcPtr unsafe
 	if msanenabled {
 		msanwrite(dstPtr, uintptr(n)*typ.size)
 		msanread(srcPtr, uintptr(n)*typ.size)
+	}
+	if asanenabled {
+		asanwrite(dstPtr, uintptr(n)*typ.size)
+		asanread(srcPtr, uintptr(n)*typ.size)
 	}
 
 	if writeBarrier.cgo {

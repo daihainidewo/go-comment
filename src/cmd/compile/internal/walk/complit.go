@@ -419,7 +419,7 @@ func maplit(n *ir.CompLitExpr, m ir.Node, init *ir.Nodes) {
 	// make the map var
 	a := ir.NewCallExpr(base.Pos, ir.OMAKE, nil, nil)
 	a.SetEsc(n.Esc())
-	a.Args = []ir.Node{ir.TypeNode(n.Type()), ir.NewInt(int64(len(n.List)))}
+	a.Args = []ir.Node{ir.TypeNode(n.Type()), ir.NewInt(n.Len + int64(len(n.List)))}
 	litas(m, a, init)
 
 	entries := n.List
@@ -482,7 +482,7 @@ func maplit(n *ir.CompLitExpr, m ir.Node, init *ir.Nodes) {
 
 		loop := ir.NewForStmt(base.Pos, nil, cond, incr, nil)
 		loop.Body = []ir.Node{body}
-		*loop.PtrInit() = []ir.Node{zero}
+		loop.SetInit([]ir.Node{zero})
 
 		appendWalkStmt(init, loop)
 		return

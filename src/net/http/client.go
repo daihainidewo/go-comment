@@ -1011,7 +1011,6 @@ func (b *cancelTimerBody) Read(p []byte) (n int, err error) {
 	if err == nil {
 		return n, nil
 	}
-	b.stop()
 	if err == io.EOF {
 		return n, err
 	}

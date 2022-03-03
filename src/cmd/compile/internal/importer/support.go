@@ -7,11 +7,16 @@
 package importer
 
 import (
+	"cmd/compile/internal/base"
 	"cmd/compile/internal/types2"
 	"fmt"
 	"go/token"
 	"sync"
 )
+
+func assert(p bool) {
+	base.Assert(p)
+}
 
 func errorf(format string, args ...interface{}) {
 	panic(fmt.Sprintf(format, args...))
@@ -118,13 +123,27 @@ var predeclared = []types2.Type{
 	types2.Typ[types2.Invalid], // only appears in packages with errors
 
 	// used internally by gc; never used by this package or in .a files
+	// not to be confused with the universe any
 	anyType{},
 
 	// comparable
 	types2.Universe.Lookup("comparable").Type(),
+
+	// any
+	types2.Universe.Lookup("any").Type(),
 }
 
 type anyType struct{}
 
 func (t anyType) Underlying() types2.Type { return t }
 func (t anyType) String() string          { return "any" }
+
+type derivedInfo struct {
+	idx    int
+	needed bool
+}
+
+type typeInfo struct {
+	idx     int
+	derived bool
+}

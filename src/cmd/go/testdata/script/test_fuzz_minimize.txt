@@ -1,6 +1,4 @@
-# TODO(jayconrod): support shared memory on more platforms.
-[!darwin] [!linux] [!windows] skip
-
+[!fuzz] skip
 [short] skip
 
 # We clean the fuzz cache during this test. Don't clean the user's cache.
@@ -69,7 +67,7 @@ rm testdata
 ! go test -fuzz=FuzzMinimizerNonrecoverable -run=FuzzMinimizerNonrecoverable -fuzztime=10000x .
 ! stdout '^ok'
 ! stdout 'minimizing'
-stdout -count=1 'fuzzing process terminated unexpectedly: exit status 99'
+stdout -count=1 '^\s+fuzzing process hung or terminated unexpectedly: exit status 99'
 stdout FAIL
 
 # Check that re-running the value causes a crash.

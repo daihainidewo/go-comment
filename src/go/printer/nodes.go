@@ -367,18 +367,46 @@ func (p *printer) parameters(fields *ast.FieldList, isTypeParam bool) {
 			p.expr(stripParensAlways(par.Type))
 			prevLine = parLineEnd
 		}
+
 		// if the closing ")" is on a separate line from the last parameter,
 		// print an additional "," and line break
 		if closing := p.lineFor(fields.Closing); 0 < prevLine && prevLine < closing {
 			p.print(token.COMMA)
 			p.linebreak(closing, 0, ignore, true)
+		} else if isTypeParam && fields.NumFields() == 1 {
+			// Otherwise, if we are in a type parameter list that could be confused
+			// with the constant array length expression [P*C], print a comma so that
+			// parsing is unambiguous.
+			//
+			// Note that while ParenExprs can also be ambiguous (issue #49482), the
+			// printed type is never parenthesized (stripParensAlways is used above).
+			if t, _ := fields.List[0].Type.(*ast.StarExpr); t != nil && !isTypeLit(t.X) {
+				p.print(token.COMMA)
+			}
 		}
+
 		// unindent if we indented
 		if ws == ignore {
 			p.print(unindent)
 		}
 	}
+
 	p.print(fields.Closing, closeTok)
+}
+
+// isTypeLit reports whether x is a (possibly parenthesized) type literal.
+func isTypeLit(x ast.Expr) bool {
+	switch x := x.(type) {
+	case *ast.ArrayType, *ast.StructType, *ast.FuncType, *ast.InterfaceType, *ast.MapType, *ast.ChanType:
+		return true
+	case *ast.StarExpr:
+		// *T may be a pointer dereferenciation.
+		// Only consider *T as type literal if T is a type literal.
+		return isTypeLit(x.X)
+	case *ast.ParenExpr:
+		return isTypeLit(x.X)
+	}
+	return false
 }
 
 func (p *printer) signature(sig *ast.FuncType) {
@@ -471,17 +499,9 @@ func (p *printer) fieldList(fields *ast.FieldList, isStruct, isIncomplete bool) 
 				p.expr(f.Type)
 			} else { // interface
 				if len(f.Names) > 0 {
-					// type list type or method
-					name := f.Names[0] // "type" or method name
+					name := f.Names[0] // method name
 					p.expr(name)
-					if name.Name == "type" {
-						// type list type
-						p.print(blank)
-						p.expr(f.Type)
-					} else {
-						// method
-						p.signature(f.Type.(*ast.FuncType)) // don't print "func"
-					}
+					p.signature(f.Type.(*ast.FuncType)) // don't print "func"
 				} else {
 					// embedded interface
 					p.expr(f.Type)
@@ -568,24 +588,10 @@ func (p *printer) fieldList(fields *ast.FieldList, isStruct, isIncomplete bool) 
 			p.setComment(f.Doc)
 			p.recordLine(&line)
 			if name != nil {
-				// type list type or method
-				if name.Name == "type" {
-					// type list type
-					if name == prev {
-						// type is part of a list of types
-						p.print(token.COMMA, blank)
-					} else {
-						// type starts a new list of types
-						p.print(name, blank)
-					}
-					p.expr(f.Type)
-					prev = name
-				} else {
-					// method
-					p.expr(name)
-					p.signature(f.Type.(*ast.FuncType)) // don't print "func"
-					prev = nil
-				}
+				// method
+				p.expr(name)
+				p.signature(f.Type.(*ast.FuncType)) // don't print "func"
+				prev = nil
 			} else {
 				// embedded interface
 				p.expr(f.Type)

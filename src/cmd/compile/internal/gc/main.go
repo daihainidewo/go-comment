@@ -32,21 +32,20 @@ import (
 	"log"
 	"os"
 	"runtime"
-	"sort"
 )
 
-func hidePanic() {
-	if base.Debug.Panic == 0 && base.Errors() > 0 {
-		// If we've already complained about things
-		// in the program, don't bother complaining
-		// about a panic too; let the user clean up
-		// the code and try again.
-		if err := recover(); err != nil {
-			if err == "-h" {
-				panic(err)
-			}
-			base.ErrorExit()
+// handlePanic ensures that we print out an "internal compiler error" for any panic
+// or runtime exception during front-end compiler processing (unless there have
+// already been some compiler errors). It may also be invoked from the explicit panic in
+// hcrash(), in which case, we pass the panic on through.
+func handlePanic() {
+	if err := recover(); err != nil {
+		if err == "-h" {
+			// Force real panic now with -h option (hcrash) - the error
+			// information will have already been printed.
+			panic(err)
 		}
+		base.Fatalf("panic: %v", err)
 	}
 }
 
@@ -56,7 +55,7 @@ func hidePanic() {
 func Main(archInit func(*ssagen.ArchInfo)) {
 	base.Timer.Start("fe", "init")
 
-	defer hidePanic()
+	defer handlePanic()
 
 	archInit(&ssagen.Arch)
 
@@ -107,7 +106,7 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 	// Record flags that affect the build result. (And don't
 	// record flags that don't, since that would cause spurious
 	// changes in the binary.)
-	dwarfgen.RecordFlags("B", "N", "l", "msan", "race", "shared", "dynlink", "dwarf", "dwarflocationlists", "dwarfbasentries", "smallframes", "spectre")
+	dwarfgen.RecordFlags("B", "N", "l", "msan", "race", "asan", "shared", "dynlink", "dwarf", "dwarflocationlists", "dwarfbasentries", "smallframes", "spectre")
 
 	if !base.EnableTrace && base.Flag.LowerT {
 		log.Fatalf("compiler not built with support for -t")
@@ -149,11 +148,12 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 	if base.Compiling(base.NoInstrumentPkgs) {
 		base.Flag.Race = false
 		base.Flag.MSan = false
+		base.Flag.ASan = false
 	}
 
 	ssagen.Arch.LinkArch.Init(base.Ctxt)
 	startProfile()
-	if base.Flag.Race || base.Flag.MSan {
+	if base.Flag.Race || base.Flag.MSan || base.Flag.ASan {
 		base.Flag.Cfg.Instrumenting = true
 	}
 	if base.Flag.Dwarf {
@@ -204,17 +204,6 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 	// removal can skew the results (e.g., #43444).
 	pkginit.MakeInit()
 
-	// Stability quirk: sort top-level declarations, so we're not
-	// sensitive to the order that functions are added. In particular,
-	// the order that noder+typecheck add function closures is very
-	// subtle, and not important to reproduce.
-	if base.Debug.UnifiedQuirks != 0 {
-		s := typecheck.Target.Decls
-		sort.SliceStable(s, func(i, j int) bool {
-			return s[i].Pos().Before(s[j].Pos())
-		})
-	}
-
 	// Eliminate some obviously dead code.
 	// Must happen after typechecking.
 	for _, n := range typecheck.Target.Decls {
@@ -244,11 +233,6 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 	base.Timer.Start("fe", "inlining")
 	if base.Flag.LowerL != 0 {
 		inline.InlinePackage()
-		// If any new fully-instantiated types were referenced during
-		// inlining, we need to create needed instantiations.
-		if len(typecheck.GetInstTypeList()) > 0 {
-			noder.BuildInstantiations(false)
-		}
 	}
 	noder.MakeWrappers(typecheck.Target) // must happen after inlining
 

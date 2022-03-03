@@ -220,21 +220,6 @@ func tcCompLit(n *ir.CompLitExpr) (res ir.Node) {
 
 	ir.SetPos(n.Ntype)
 
-	// Need to handle [...]T arrays specially.
-	if array, ok := n.Ntype.(*ir.ArrayType); ok && array.Elem != nil && array.Len == nil {
-		array.Elem = typecheckNtype(array.Elem)
-		elemType := array.Elem.Type()
-		if elemType == nil {
-			n.SetType(nil)
-			return n
-		}
-		length := typecheckarraylit(elemType, -1, n.List, "array literal")
-		n.SetOp(ir.OARRAYLIT)
-		n.SetType(types.NewArray(elemType, length))
-		n.Ntype = nil
-		return n
-	}
-
 	n.Ntype = typecheckNtype(n.Ntype)
 	t := n.Ntype.Type()
 	if t == nil {
@@ -375,13 +360,7 @@ func tcCompLit(n *ir.CompLitExpr) (res ir.Node) {
 func tcStructLitKey(typ *types.Type, kv *ir.KeyExpr) *ir.StructKeyExpr {
 	key := kv.Key
 
-	// Sym might have resolved to name in other top-level
-	// package, because of import dot. Redirect to correct sym
-	// before we do the lookup.
 	sym := key.Sym()
-	if id, ok := key.(*ir.Ident); ok && DotImportRefs[id] != nil {
-		sym = Lookup(sym.Name)
-	}
 
 	// An OXDOT uses the Sym field to hold
 	// the field to the right of the dot,
@@ -466,6 +445,27 @@ func tcConv(n *ir.ConvExpr) ir.Node {
 		if n.X.Op() == ir.OLITERAL {
 			return stringtoruneslit(n)
 		}
+
+	case ir.OBYTES2STR:
+		if t.Elem() != types.ByteType && t.Elem() != types.Types[types.TUINT8] {
+			// If t is a slice of a user-defined byte type B (not uint8
+			// or byte), then add an extra CONVNOP from []B to []byte, so
+			// that the call to slicebytetostring() added in walk will
+			// typecheck correctly.
+			n.X = ir.NewConvExpr(n.X.Pos(), ir.OCONVNOP, types.NewSlice(types.ByteType), n.X)
+			n.X.SetTypecheck(1)
+		}
+
+	case ir.ORUNES2STR:
+		if t.Elem() != types.RuneType && t.Elem() != types.Types[types.TINT32] {
+			// If t is a slice of a user-defined rune type B (not uint32
+			// or rune), then add an extra CONVNOP from []B to []rune, so
+			// that the call to slicerunetostring() added in walk will
+			// typecheck correctly.
+			n.X = ir.NewConvExpr(n.X.Pos(), ir.OCONVNOP, types.NewSlice(types.RuneType), n.X)
+			n.X.SetTypecheck(1)
+		}
+
 	}
 	return n
 }

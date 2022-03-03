@@ -657,7 +657,7 @@ func TestWriterAppend(t *testing.T) {
 		}
 
 		// While not recommended, it is valid to append to a shifted buffer.
-		// This forces Write to copy the the input.
+		// This forces Write to copy the input.
 		if rn.Intn(8) == 0 && cap(b) > 0 {
 			b = b[1:1:cap(b)]
 		}
@@ -1520,7 +1520,7 @@ func TestReaderDiscard(t *testing.T) {
 			wantBuffered: 0,
 		},
 		// Any error from filling shouldn't show up until we
-		// get past the valid bytes. Here we return we return 5 valid bytes at the same time
+		// get past the valid bytes. Here we return 5 valid bytes at the same time
 		// as an error, but test that we don't see the error from Discard.
 		{
 			name: "fill error, discard less",

@@ -118,7 +118,6 @@ const (
 	// Also used for a qualified package identifier that hasn't been resolved yet.
 	ONONAME
 	OTYPE    // type name
-	OPACK    // import
 	OLITERAL // literal
 	ONIL     // nil
 
@@ -291,15 +290,10 @@ const (
 	OFUNCINST // instantiation of a generic function
 
 	// types
-	OTCHAN   // chan int
-	OTMAP    // map[string]int
-	OTSTRUCT // struct{}
-	OTINTER  // interface{}
 	// OTFUNC: func() - Recv is receiver field, Params is list of param fields, Results is
 	// list of result fields.
+	// TODO(mdempsky): Remove.
 	OTFUNC
-	OTARRAY // [8]int or [...]int
-	OTSLICE // []int
 
 	// misc
 	// intermediate representation of an inlined call.  Uses Init (assignments
@@ -471,7 +465,7 @@ const (
 	UintptrEscapes              // pointers converted to uintptr escape
 
 	// Runtime-only func pragmas.
-	// See ../../../../runtime/README.md for detailed descriptions.
+	// See ../../../../runtime/HACKING.md for detailed descriptions.
 	Systemstack        // func must run on system stack
 	Nowritebarrier     // emit compiler error instead of write barrier
 	Nowritebarrierrec  // error on write barrier in this or recursive callees
@@ -533,7 +527,7 @@ func HasNamedResults(fn *Func) bool {
 // their usage position.
 func HasUniquePos(n Node) bool {
 	switch n.Op() {
-	case ONAME, OPACK:
+	case ONAME:
 		return false
 	case OLITERAL, ONIL, OTYPE:
 		if n.Sym() != nil {
@@ -584,7 +578,7 @@ func OuterValue(n Node) Node {
 	for {
 		switch nn := n; nn.Op() {
 		case OXDOT:
-			base.FatalfAt(n.Pos(), "OXDOT in walk: %v", n)
+			base.FatalfAt(n.Pos(), "OXDOT in OuterValue: %v", n)
 		case ODOT:
 			nn := nn.(*SelectorExpr)
 			n = nn.X

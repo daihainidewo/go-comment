@@ -6,7 +6,6 @@ package noder
 
 import (
 	"fmt"
-	"os"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/dwarfgen"
@@ -77,10 +76,6 @@ func checkFiles(noders []*noder) (posMap, *types2.Package, *types2.Info) {
 func check2(noders []*noder) {
 	m, pkg, info := checkFiles(noders)
 
-	if base.Flag.G < 2 {
-		os.Exit(0)
-	}
-
 	g := irgen{
 		target: typecheck.Target,
 		self:   pkg,
@@ -90,10 +85,17 @@ func check2(noders []*noder) {
 		typs:   make(map[types2.Type]*types.Type),
 	}
 	g.generate(noders)
+}
 
-	if base.Flag.G < 3 {
-		os.Exit(0)
-	}
+// Information about sub-dictionary entries in a dictionary
+type subDictInfo struct {
+	// Call or XDOT node that requires a dictionary.
+	callNode ir.Node
+	// Saved CallExpr.X node (*ir.SelectorExpr or *InstExpr node) for a generic
+	// method or function call, since this node will get dropped when the generic
+	// method/function call is transformed to a call on the instantiated shape
+	// function. Nil for other kinds of calls or XDOTs.
+	savedXNode ir.Node
 }
 
 // dictInfo is the dictionary format for an instantiation of a generic function with
@@ -108,7 +110,7 @@ type dictInfo struct {
 	// Nodes in the instantiation that requires a subdictionary. Includes
 	// method and function calls (OCALL), function values (OFUNCINST), method
 	// values/expressions (OXDOT).
-	subDictCalls []ir.Node
+	subDictCalls []subDictInfo
 	// Nodes in the instantiation that are a conversion from a typeparam/derived
 	// type to a specific interface.
 	itabConvs []ir.Node
@@ -317,7 +319,7 @@ Outer:
 
 	// Create any needed instantiations of generic functions and transform
 	// existing and new functions to use those instantiations.
-	BuildInstantiations(true)
+	BuildInstantiations()
 
 	// Remove all generic functions from g.target.Decl, since they have been
 	// used for stenciling, but don't compile. Generic functions will already

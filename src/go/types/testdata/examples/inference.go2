@@ -78,7 +78,7 @@ func _() {
 	related1(si, "foo" /* ERROR cannot use "foo" */ )
 }
 
-func related2[Elem any, Slice interface{~[]Elem}](e Elem, s Slice) {}
+func related2[Elem any, Slice interface{[]Elem}](e Elem, s Slice) {}
 
 func _() {
 	// related2 can be called with explicit instantiation.
@@ -97,5 +97,20 @@ func _() {
 	// last.
 	related2(1.2, []float64{})
 	related2(1.0, []int{})
-	related2 /* ERROR does not satisfy */ (float64(1.0), []int{})
+	related2 /* ERROR does not implement */ (float64(1.0), []int{}) // TODO(gri) fix error position
+}
+
+type List[P any] []P
+
+func related3[Elem any, Slice []Elem | List[Elem]]() Slice { return nil }
+
+func _() {
+	// related3 can be instantiated explicitly
+	related3[int, []int]()
+	related3[byte, List[byte]]()
+
+	// The 2nd type argument cannot be inferred from the first
+	// one because there's two possible choices: []Elem and
+	// List[Elem].
+	related3 /* ERROR cannot infer Slice */ [int]()
 }

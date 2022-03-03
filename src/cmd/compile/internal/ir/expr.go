@@ -202,7 +202,10 @@ type CompLitExpr struct {
 	Ntype    Ntype
 	List     Nodes // initialized values
 	Prealloc *Name
-	Len      int64 // backing array length for OSLICELIT
+	// For OSLICELIT, Len is the backing array length.
+	// For OMAPLIT, Len is the number of entries that we've removed from List and
+	// generated explicit mapassign calls for. This is used to inform the map alloc hint.
+	Len int64
 }
 
 func NewCompLitExpr(pos src.XPos, op Op, typ Ntype, list []Node) *CompLitExpr {
@@ -250,7 +253,8 @@ func (n *ConstExpr) Val() constant.Value { return n.val }
 // It may end up being a value or a type.
 type ConvExpr struct {
 	miniExpr
-	X Node
+	X           Node
+	NonEscaping bool // The allocation needed for the conversion to interface is known not to escape
 }
 
 func NewConvExpr(pos src.XPos, op Op, typ *types.Type, x Node) *ConvExpr {

@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"internal/godebug"
 	"io"
 	"log"
 	"net"
@@ -24,7 +25,6 @@ import (
 	"net/http/internal/ascii"
 	"net/textproto"
 	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -41,16 +41,16 @@ import (
 // as directed by the $HTTP_PROXY and $NO_PROXY (or $http_proxy and
 // $no_proxy) environment variables.
 var DefaultTransport RoundTripper = &Transport{
-	Proxy: ProxyFromEnvironment, // http代理
-	DialContext: (&net.Dialer{
-		Timeout:   30 * time.Second, // 拨号超时
-		KeepAlive: 30 * time.Second, // 心跳
-	}).DialContext,                          // 拨号函数
-	ForceAttemptHTTP2:     true,             // 优先使用http2
-	MaxIdleConns:          100,              // 最大空闲连接
-	IdleConnTimeout:       90 * time.Second, // 空闲连接超时
-	TLSHandshakeTimeout:   10 * time.Second, // TLS握手超时
-	ExpectContinueTimeout: 1 * time.Second,  // 连接升级超时
+	Proxy: ProxyFromEnvironment,
+	DialContext: defaultTransportDialContext(&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}),
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          100,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
 }
 
 // DefaultMaxIdleConnsPerHost is the default value of Transport's
@@ -386,7 +386,7 @@ func (t *Transport) hasCustomTLSDialer() bool {
 // It must be called via t.nextProtoOnce.Do.
 func (t *Transport) onceSetNextProtoDefaults() {
 	t.tlsNextProtoWasNil = (t.TLSNextProto == nil)
-	if strings.Contains(os.Getenv("GODEBUG"), "http2client=0") {
+	if godebug.Get("http2client") == "0" {
 		return
 	}
 
@@ -650,6 +650,9 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 			// 不需要重试 直接返回err
 			// Issue 16465: return underlying net.Conn.Read error from peek,
 			// as we've historically done.
+			if e, ok := err.(nothingWrittenError); ok {
+				err = e.error
+			}
 			if e, ok := err.(transportReadFromServerError); ok {
 				err = e.err
 			}
@@ -2169,6 +2172,9 @@ func (pc *persistConn) mapRoundTripError(req *transportRequest, startBytesWritte
 	}
 
 	if _, ok := err.(transportReadFromServerError); ok {
+		if pc.nwrite == startBytesWritten {
+			return nothingWrittenError{err}
+		}
 		// Don't decorate
 		return err
 	}
@@ -2648,8 +2654,8 @@ type requestAndChan struct {
 	callerGone <-chan struct{} // 当 roundTrip 调用者返回时关闭 closed when roundTrip caller has returned
 }
 
+// A writeRequest is sent by the caller's goroutine to the
 // writeRequest 当读循环同时等待写的响应和服务器响应时读
-// A writeRequest is sent by the readLoop's goroutine to the
 // writeLoop's goroutine to write a request while the read loop
 // concurrently waits on both the write response and the server's
 // reply.
@@ -2839,8 +2845,8 @@ func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err err
 // a t.Logf func. See export_test.go's Request.WithT method.
 type tLogKey struct{}
 
-func (tr *transportRequest) logf(format string, args ...interface{}) {
-	if logf, ok := tr.Request.Context().Value(tLogKey{}).(func(string, ...interface{})); ok {
+func (tr *transportRequest) logf(format string, args ...any) {
+	if logf, ok := tr.Request.Context().Value(tLogKey{}).(func(string, ...any)); ok {
 		logf(time.Now().Format(time.RFC3339Nano)+": "+format, args...)
 	}
 }

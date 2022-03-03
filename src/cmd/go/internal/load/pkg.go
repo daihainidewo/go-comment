@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -37,9 +38,9 @@ import (
 	"cmd/go/internal/modload"
 	"cmd/go/internal/par"
 	"cmd/go/internal/search"
+	"cmd/go/internal/str"
 	"cmd/go/internal/trace"
 	"cmd/go/internal/vcs"
-	"cmd/internal/str"
 	"cmd/internal/sys"
 
 	"golang.org/x/mod/modfile"
@@ -497,7 +498,7 @@ type importError struct {
 	err        error // created with fmt.Errorf
 }
 
-func ImportErrorf(path, format string, args ...interface{}) ImportPathError {
+func ImportErrorf(path, format string, args ...any) ImportPathError {
 	err := &importError{importPath: path, err: fmt.Errorf(format, args...)}
 	if errStr := err.Error(); !strings.Contains(errStr, path) {
 		panic(fmt.Sprintf("path %q not in error %q", path, errStr))
@@ -588,10 +589,10 @@ func ClearPackageCachePartial(args []string) {
 			delete(packageCache, arg)
 		}
 	}
-	resolvedImportCache.DeleteIf(func(key interface{}) bool {
+	resolvedImportCache.DeleteIf(func(key any) bool {
 		return shouldDelete[key.(importSpec).path]
 	})
-	packageDataCache.DeleteIf(func(key interface{}) bool {
+	packageDataCache.DeleteIf(func(key any) bool {
 		return shouldDelete[key.(string)]
 	})
 }
@@ -604,7 +605,7 @@ func ReloadPackageNoFlags(arg string, stk *ImportStack) *Package {
 	p := packageCache[arg]
 	if p != nil {
 		delete(packageCache, arg)
-		resolvedImportCache.DeleteIf(func(key interface{}) bool {
+		resolvedImportCache.DeleteIf(func(key any) bool {
 			return key.(importSpec).path == p.ImportPath
 		})
 		packageDataCache.Delete(p.ImportPath)
@@ -816,13 +817,13 @@ func loadPackageData(ctx context.Context, path, parentPath, parentDir, parentRoo
 		parentIsStd: parentIsStd,
 		mode:        mode,
 	}
-	r := resolvedImportCache.Do(importKey, func() interface{} {
+	r := resolvedImportCache.Do(importKey, func() any {
 		var r resolvedImport
-		if build.IsLocalImport(path) {
+		if cfg.ModulesEnabled {
+			r.dir, r.path, r.err = modload.Lookup(parentPath, parentIsStd, path)
+		} else if build.IsLocalImport(path) {
 			r.dir = filepath.Join(parentDir, path)
 			r.path = dirToImportPath(r.dir)
-		} else if cfg.ModulesEnabled {
-			r.dir, r.path, r.err = modload.Lookup(parentPath, parentIsStd, path)
 		} else if mode&ResolveImport != 0 {
 			// We do our own path resolution, because we want to
 			// find out the key to use in packageCache without the
@@ -843,7 +844,7 @@ func loadPackageData(ctx context.Context, path, parentPath, parentDir, parentRoo
 
 	// Load the package from its directory. If we already found the package's
 	// directory when resolving its import path, use that.
-	data := packageDataCache.Do(r.path, func() interface{} {
+	data := packageDataCache.Do(r.path, func() any {
 		loaded = true
 		var data packageData
 		if r.dir != "" {
@@ -1062,7 +1063,7 @@ func cleanImport(path string) string {
 var isDirCache par.Cache
 
 func isDir(path string) bool {
-	return isDirCache.Do(path, func() interface{} {
+	return isDirCache.Do(path, func() any {
 		fi, err := fsys.Stat(path)
 		return err == nil && fi.IsDir()
 	}).(bool)
@@ -1112,6 +1113,7 @@ func dirAndRoot(path string, dir, root string) (string, string) {
 	}
 
 	if !str.HasFilePathPrefix(dir, root) || len(dir) <= len(root) || dir[len(root)] != filepath.Separator || path != "command-line-arguments" && !build.IsLocalImport(path) && filepath.Join(root, path) != dir {
+		debug.PrintStack()
 		base.Fatalf("unexpected directory layout:\n"+
 			"	import path: %s\n"+
 			"	root: %s\n"+
@@ -1190,7 +1192,7 @@ var (
 
 // goModPath returns the module path in the go.mod in dir, if any.
 func goModPath(dir string) (path string) {
-	return goModPathCache.Do(dir, func() interface{} {
+	return goModPathCache.Do(dir, func() any {
 		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 		if err != nil {
 			return ""
@@ -1625,6 +1627,7 @@ var cgoSyscallExclude = map[string]bool{
 	"runtime/cgo":  true,
 	"runtime/race": true,
 	"runtime/msan": true,
+	"runtime/asan": true,
 }
 
 var foldPath = make(map[string]string)
@@ -2015,13 +2018,18 @@ func resolveEmbed(pkgdir string, patterns []string) (files []string, pmap map[st
 	for _, pattern = range patterns {
 		pid++
 
+		glob := pattern
+		all := strings.HasPrefix(pattern, "all:")
+		if all {
+			glob = pattern[len("all:"):]
+		}
 		// Check pattern is valid for //go:embed.
-		if _, err := path.Match(pattern, ""); err != nil || !validEmbedPattern(pattern) {
+		if _, err := path.Match(glob, ""); err != nil || !validEmbedPattern(glob) {
 			return nil, nil, fmt.Errorf("invalid pattern syntax")
 		}
 
 		// Glob to find matches.
-		match, err := fsys.Glob(pkgdir + string(filepath.Separator) + filepath.FromSlash(pattern))
+		match, err := fsys.Glob(pkgdir + string(filepath.Separator) + filepath.FromSlash(glob))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -2084,7 +2092,7 @@ func resolveEmbed(pkgdir string, patterns []string) (files []string, pmap map[st
 					}
 					rel := filepath.ToSlash(path[len(pkgdir)+1:])
 					name := info.Name()
-					if path != file && (isBadEmbedName(name) || name[0] == '.' || name[0] == '_') {
+					if path != file && (isBadEmbedName(name) || ((name[0] == '.' || name[0] == '_') && !all)) {
 						// Ignore bad names, assuming they won't go into modules.
 						// Also avoid hidden files that user may not know about.
 						// See golang.org/issue/42328.
@@ -2196,6 +2204,10 @@ func (p *Package) collectDeps() {
 	}
 }
 
+// vcsStatusCache maps repository directories (string)
+// to their VCS information (vcsStatusError).
+var vcsStatusCache par.Cache
+
 // setBuildInfo gathers build information, formats it as a string to be
 // embedded in the binary, then sets p.Internal.BuildInfo to that string.
 // setBuildInfo should only be called on a main package with no errors.
@@ -2210,7 +2222,7 @@ func (p *Package) setBuildInfo() {
 	// executables always appear stale unless the user sets the same flags.
 	// Perhaps it's safe to omit those flags when GO_GCFLAGS and GO_LDFLAGS
 	// are not set?
-	setPkgErrorf := func(format string, args ...interface{}) {
+	setPkgErrorf := func(format string, args ...any) {
 		if p.Error == nil {
 			p.Error = &PackageError{Err: fmt.Errorf(format, args...)}
 		}
@@ -2218,13 +2230,17 @@ func (p *Package) setBuildInfo() {
 
 	var debugModFromModinfo func(*modinfo.ModulePublic) *debug.Module
 	debugModFromModinfo = func(mi *modinfo.ModulePublic) *debug.Module {
+		version := mi.Version
+		if version == "" {
+			version = "(devel)"
+		}
 		dm := &debug.Module{
 			Path:    mi.Path,
-			Version: mi.Version,
+			Version: version,
 		}
 		if mi.Replace != nil {
 			dm.Replace = debugModFromModinfo(mi.Replace)
-		} else {
+		} else if mi.Version != "" {
 			dm.Sum = modfetch.Sum(module.Version{Path: mi.Path, Version: mi.Version})
 		}
 		return dm
@@ -2274,32 +2290,56 @@ func (p *Package) setBuildInfo() {
 		Deps: deps,
 	}
 	appendSetting := func(key, value string) {
+		value = strings.ReplaceAll(value, "\n", " ") // make value safe
 		info.Settings = append(info.Settings, debug.BuildSetting{Key: key, Value: value})
 	}
 
 	// Add command-line flags relevant to the build.
 	// This is informational, not an exhaustive list.
-	if cfg.BuildBuildinfo && !p.Standard {
-		appendSetting("compiler", cfg.BuildContext.Compiler)
+	// Please keep the list sorted.
+	if !p.Standard {
+		if cfg.BuildASan {
+			appendSetting("-asan", "true")
+		}
 		if BuildAsmflags.present {
-			appendSetting("asmflags", BuildAsmflags.String())
+			appendSetting("-asmflags", BuildAsmflags.String())
+		}
+		appendSetting("-compiler", cfg.BuildContext.Compiler)
+		if BuildGccgoflags.present && cfg.BuildContext.Compiler == "gccgo" {
+			appendSetting("-gccgoflags", BuildGccgoflags.String())
 		}
 		if BuildGcflags.present && cfg.BuildContext.Compiler == "gc" {
-			appendSetting("gcflags", BuildGcflags.String())
-		}
-		if BuildGccgoflags.present && cfg.BuildContext.Compiler == "gccgo" {
-			appendSetting("gccgoflags", BuildGccgoflags.String())
+			appendSetting("-gcflags", BuildGcflags.String())
 		}
 		if BuildLdflags.present {
-			appendSetting("ldflags", BuildLdflags.String())
+			appendSetting("-ldflags", BuildLdflags.String())
 		}
-		tags := append(cfg.BuildContext.BuildTags, cfg.BuildContext.ToolTags...)
-		appendSetting("tags", strings.Join(tags, ","))
-		appendSetting("CGO_ENABLED", strconv.FormatBool(cfg.BuildContext.CgoEnabled))
+		if cfg.BuildMSan {
+			appendSetting("-msan", "true")
+		}
+		if cfg.BuildRace {
+			appendSetting("-race", "true")
+		}
+		if tags := cfg.BuildContext.BuildTags; len(tags) > 0 {
+			appendSetting("-tags", strings.Join(tags, ","))
+		}
+		cgo := "0"
 		if cfg.BuildContext.CgoEnabled {
-			for _, name := range []string{"CGO_CPPFLAGS", "CGO_CFLAGS", "CGO_CXXFLAGS", "CGO_LDFLAGS"} {
+			cgo = "1"
+		}
+		appendSetting("CGO_ENABLED", cgo)
+		if cfg.BuildContext.CgoEnabled {
+			for _, name := range []string{"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_LDFLAGS"} {
 				appendSetting(name, cfg.Getenv(name))
 			}
+		}
+		appendSetting("GOARCH", cfg.BuildContext.GOARCH)
+		if cfg.GOEXPERIMENT != "" {
+			appendSetting("GOEXPERIMENT", cfg.GOEXPERIMENT)
+		}
+		appendSetting("GOOS", cfg.BuildContext.GOOS)
+		if key, val := cfg.GetArchEnv(); key != "" && val != "" {
+			appendSetting(key, val)
 		}
 	}
 
@@ -2358,23 +2398,32 @@ func (p *Package) setBuildInfo() {
 			return
 		}
 
-		st, err := vcsCmd.Status(vcsCmd, repoDir)
-		if err != nil {
+		type vcsStatusError struct {
+			Status vcs.Status
+			Err    error
+		}
+		cached := vcsStatusCache.Do(repoDir, func() any {
+			st, err := vcsCmd.Status(vcsCmd, repoDir)
+			return vcsStatusError{st, err}
+		}).(vcsStatusError)
+		if err := cached.Err; err != nil {
 			setVCSError(err)
 			return
 		}
-		info.Settings = append(info.Settings, []debug.BuildSetting{
-			{Key: vcsCmd.Cmd + "revision", Value: st.Revision},
-			{Key: vcsCmd.Cmd + "uncommitted", Value: strconv.FormatBool(st.Uncommitted)},
-		}...)
+		st := cached.Status
+
+		appendSetting("vcs", vcsCmd.Cmd)
+		if st.Revision != "" {
+			appendSetting("vcs.revision", st.Revision)
+		}
+		if !st.CommitTime.IsZero() {
+			stamp := st.CommitTime.UTC().Format(time.RFC3339Nano)
+			appendSetting("vcs.time", stamp)
+		}
+		appendSetting("vcs.modified", strconv.FormatBool(st.Uncommitted))
 	}
 
-	text, err := info.MarshalText()
-	if err != nil {
-		setPkgErrorf("error formatting build info: %v", err)
-		return
-	}
-	p.Internal.BuildInfo = string(text)
+	p.Internal.BuildInfo = info.String()
 }
 
 // SafeArg reports whether arg is a "safe" command-line argument,
@@ -2414,6 +2463,10 @@ func LinkerDeps(p *Package) []string {
 	// Using memory sanitizer forces an import of runtime/msan.
 	if cfg.BuildMSan {
 		deps = append(deps, "runtime/msan")
+	}
+	// Using address sanitizer forces an import of runtime/asan.
+	if cfg.BuildASan {
+		deps = append(deps, "runtime/asan")
 	}
 
 	return deps

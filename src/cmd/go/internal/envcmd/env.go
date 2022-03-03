@@ -26,7 +26,7 @@ import (
 	"cmd/go/internal/load"
 	"cmd/go/internal/modload"
 	"cmd/go/internal/work"
-	"cmd/internal/str"
+	"cmd/internal/quoted"
 )
 
 var CmdEnv = &base.Command{
@@ -154,6 +154,10 @@ func ExtraEnvVars() []cfg.EnvVar {
 	}
 	modload.InitWorkfile()
 	gowork := modload.WorkFilePath()
+	// As a special case, if a user set off explicitly, report that in GOWORK.
+	if cfg.Getenv("GOWORK") == "off" {
+		gowork = "off"
+	}
 	return []cfg.EnvVar{
 		{Name: "GOMOD", Value: gomod},
 		{Name: "GOWORK", Value: gowork},
@@ -470,7 +474,7 @@ func checkEnvWrite(key, val string) error {
 		if val == "" {
 			break
 		}
-		args, err := str.SplitQuotedFields(val)
+		args, err := quoted.Split(val)
 		if err != nil {
 			return fmt.Errorf("invalid %s: %v", key, err)
 		}

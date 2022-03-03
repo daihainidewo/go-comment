@@ -42,11 +42,11 @@
 // successive submatches of the expression. Submatches are matches of
 // parenthesized subexpressions (also known as capturing groups) within the
 // regular expression, numbered from left to right in order of opening
-// parenthesis. Submatch 0 is the match of the entire expression, submatch 1
+// parenthesis. Submatch 0 is the match of the entire expression, submatch 1 is
 // the match of the first parenthesized subexpression, and so on.
 //
 // If 'Index' is present, matches and submatches are identified by byte index
-// pairs within the input string: result[2*n:2*n+1] identifies the indexes of
+// pairs within the input string: result[2*n:2*n+2] identifies the indexes of
 // the nth submatch. The pair for n==0 identifies the match of the entire
 // expression. If 'Index' is not present, the match is identified by the text
 // of the match/submatch. If an index is negative or text is nil, it means that

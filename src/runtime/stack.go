@@ -147,6 +147,9 @@ const (
 	// Force a stack movement. Used for debugging.
 	// 0xfffffeed in hex.
 	stackForceMove = uintptrMask & -275
+
+	// stackPoisonMin is the lowest allowed stack poison value.
+	stackPoisonMin = uintptrMask & -4096
 )
 
 // stackpool 全局栈空闲池
@@ -435,6 +438,9 @@ func stackalloc(n uint32) stack {
 	if msanenabled {
 		msanmalloc(v, uintptr(n))
 	}
+	if asanenabled {
+		asanunpoison(v, uintptr(n))
+	}
 	if stackDebug >= 1 {
 		print("  allocated ", v, "\n")
 	}
@@ -471,6 +477,9 @@ func stackfree(stk stack) {
 	}
 	if msanenabled {
 		msanfree(v, n)
+	}
+	if asanenabled {
+		asanpoison(v, n)
 	}
 	if n < _FixedStack<<_NumStackOrders && n < _StackCacheSize {
 		order := uint8(0)
@@ -863,7 +872,12 @@ func copystack(gp *g, newsize uintptr) {
 	if old.lo == 0 {
 		throw("nil stackbase")
 	}
-	used := old.hi - gp.sched.sp // 使用大小
+	used := old.hi - gp.sched.sp
+	// Add just the difference to gcController.addScannableStack.
+	// g0 stacks never move, so this will never account for them.
+	// It's also fine if we have no P, addScannableStack can deal with
+	// that case.
+	gcController.addScannableStack(getg().m.p.ptr(), int64(newsize)-int64(old.hi-old.lo))
 
 	// allocate new stack
 	new := stackalloc(uint32(newsize))
@@ -1004,8 +1018,7 @@ func newstack() {
 	// NOTE: stackguard0 may change underfoot, if another thread
 	// is about to try to preempt gp. Read it just once and use that same
 	// value now and below.
-	// 判断是否抢占触发的栈扩张
-	preempt := atomic.Loaduintptr(&gp.stackguard0) == stackPreempt
+	stackguard0 := atomic.Loaduintptr(&gp.stackguard0)
 
 	// Be conservative about where we preempt.
 	// We are interested in preempting user Go code, not runtime code.
@@ -1019,6 +1032,7 @@ func newstack() {
 	// If the GC is in some way dependent on this goroutine (for example,
 	// it needs a lock held by the goroutine), that small preemption turns
 	// into a real deadlock.
+	preempt := stackguard0 == stackPreempt
 	if preempt {
 		// 只抢占用户代码，不抢占运行时代码
 		if !canPreemptM(thisg.m) { // 如果m不能被抢占
@@ -1091,7 +1105,7 @@ func newstack() {
 		}
 	}
 
-	if gp.stackguard0 == stackForceMove {
+	if stackguard0 == stackForceMove {
 		// Forced stack movement used for debugging.
 		// Don't double the stack (or we may quickly run out
 		// if this is done repeatedly).
@@ -1374,7 +1388,7 @@ func getStackMap(frame *stkframe, cache *pcvalueCache, debug bool) (locals, args
 var methodValueCallFrameObjs [1]stackObjectRecord // initialized in stackobjectinit
 
 func stkobjinit() {
-	var abiRegArgsEface interface{} = abi.RegArgs{}
+	var abiRegArgsEface any = abi.RegArgs{}
 	abiRegArgsType := efaceOf(&abiRegArgsEface)._type
 	if abiRegArgsType.kind&kindGCProg != 0 {
 		throw("abiRegArgsType needs GC Prog, update methodValueCallFrameObjs")

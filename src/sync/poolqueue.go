@@ -92,7 +92,7 @@ func (d *poolDequeue) pack(head, tail uint32) uint64 {
 // pushHead 添加val到环形队列中，返回false表示队列已满，只能由单一生产者调用，没有加锁
 // pushHead adds val at the head of the queue. It returns false if the
 // queue is full. It must only be called by a single producer.
-func (d *poolDequeue) pushHead(val interface{}) bool {
+func (d *poolDequeue) pushHead(val any) bool {
 	ptrs := atomic.LoadUint64(&d.headTail)
 	head, tail := d.unpack(ptrs)
 	if (tail+uint32(len(d.vals)))&(1<<dequeueBits-1) == head {
@@ -117,7 +117,7 @@ func (d *poolDequeue) pushHead(val interface{}) bool {
 	if val == nil {
 		val = dequeueNil(nil)
 	}
-	*(*interface{})(unsafe.Pointer(slot)) = val
+	*(*any)(unsafe.Pointer(slot)) = val
 
     // 原子加头位置，给slot添加写屏障
 	// Increment head. This passes ownership of slot to popTail
@@ -130,7 +130,7 @@ func (d *poolDequeue) pushHead(val interface{}) bool {
 // popHead removes and returns the element at the head of the queue.
 // It returns false if the queue is empty. It must only be called by a
 // single producer.
-func (d *poolDequeue) popHead() (interface{}, bool) {
+func (d *poolDequeue) popHead() (any, bool) {
 	var slot *eface
 	for {
 		ptrs := atomic.LoadUint64(&d.headTail)
@@ -153,7 +153,7 @@ func (d *poolDequeue) popHead() (interface{}, bool) {
 		}
 	}
 
-	val := *(*interface{})(unsafe.Pointer(slot))
+	val := *(*any)(unsafe.Pointer(slot))
 	if val == dequeueNil(nil) {
         // 表示存储的是空对象
 		val = nil
@@ -169,7 +169,7 @@ func (d *poolDequeue) popHead() (interface{}, bool) {
 // popTail removes and returns the element at the tail of the queue.
 // It returns false if the queue is empty. It may be called by any
 // number of consumers.
-func (d *poolDequeue) popTail() (interface{}, bool) {
+func (d *poolDequeue) popTail() (any, bool) {
 	var slot *eface
 	for {
 		ptrs := atomic.LoadUint64(&d.headTail)
@@ -191,7 +191,7 @@ func (d *poolDequeue) popTail() (interface{}, bool) {
 	}
 
 	// We now own slot.
-	val := *(*interface{})(unsafe.Pointer(slot))
+	val := *(*any)(unsafe.Pointer(slot))
 	if val == dequeueNil(nil) {
 		val = nil
 	}
@@ -261,7 +261,7 @@ func loadPoolChainElt(pp **poolChainElt) *poolChainElt {
 	return (*poolChainElt)(atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(pp))))
 }
 
-func (c *poolChain) pushHead(val interface{}) {
+func (c *poolChain) pushHead(val any) {
 	d := c.head
 	if d == nil {
         // 没有就初始化池链节点，并修改头尾节点
@@ -295,7 +295,7 @@ func (c *poolChain) pushHead(val interface{}) {
 	d2.pushHead(val)
 }
 
-func (c *poolChain) popHead() (interface{}, bool) {
+func (c *poolChain) popHead() (any, bool) {
 	d := c.head
 	for d != nil {
 		if val, ok := d.popHead(); ok {
@@ -309,7 +309,7 @@ func (c *poolChain) popHead() (interface{}, bool) {
 	return nil, false
 }
 
-func (c *poolChain) popTail() (interface{}, bool) {
+func (c *poolChain) popTail() (any, bool) {
 	d := loadPoolChainElt(&c.tail)
 	if d == nil {
 		return nil, false
