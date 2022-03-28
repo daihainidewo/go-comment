@@ -18,10 +18,7 @@ func (check *Checker) funcBody(decl *declInfo, name string, sig *Signature, body
 	}
 
 	if check.conf.Trace {
-		check.trace(body.Pos(), "--- %s: %s", name, sig)
-		defer func() {
-			check.trace(syntax.EndPos(body), "--- <end>")
-		}()
+		check.trace(body.Pos(), "-- %s: %s", name, sig)
 	}
 
 	// set function scope extent
@@ -95,6 +92,7 @@ const (
 
 	// additional context information
 	finalSwitchCase
+	inTypeSwitch
 )
 
 func (check *Checker) simpleStmt(s syntax.Stmt) {
@@ -370,7 +368,9 @@ func (check *Checker) stmt(ctxt stmtContext, s syntax.Stmt) {
 	// process collected function literals before scope changes
 	defer check.processDelayed(len(check.delayed))
 
-	inner := ctxt &^ (fallthroughOk | finalSwitchCase)
+	// reset context for statements of inner blocks
+	inner := ctxt &^ (fallthroughOk | finalSwitchCase | inTypeSwitch)
+
 	switch s := s.(type) {
 	case *syntax.EmptyStmt:
 		// ignore
@@ -523,9 +523,14 @@ func (check *Checker) stmt(ctxt stmtContext, s syntax.Stmt) {
 			}
 		case syntax.Fallthrough:
 			if ctxt&fallthroughOk == 0 {
-				msg := "fallthrough statement out of place"
-				if ctxt&finalSwitchCase != 0 {
+				var msg string
+				switch {
+				case ctxt&finalSwitchCase != 0:
 					msg = "cannot fallthrough final case in switch"
+				case ctxt&inTypeSwitch != 0:
+					msg = "cannot fallthrough in type switch"
+				default:
+					msg = "fallthrough statement out of place"
 				}
 				check.error(s, msg)
 			}
@@ -572,7 +577,7 @@ func (check *Checker) stmt(ctxt stmtContext, s syntax.Stmt) {
 		check.simpleStmt(s.Init)
 
 		if g, _ := s.Tag.(*syntax.TypeSwitchGuard); g != nil {
-			check.typeSwitchStmt(inner, s, g)
+			check.typeSwitchStmt(inner|inTypeSwitch, s, g)
 		} else {
 			check.switchStmt(inner, s)
 		}
@@ -626,13 +631,14 @@ func (check *Checker) stmt(ctxt stmtContext, s syntax.Stmt) {
 
 	case *syntax.ForStmt:
 		inner |= breakOk | continueOk
-		check.openScope(s, "for")
-		defer check.closeScope()
 
 		if rclause, _ := s.Init.(*syntax.RangeClause); rclause != nil {
 			check.rangeStmt(inner, s, rclause)
 			break
 		}
+
+		check.openScope(s, "for")
+		defer check.closeScope()
 
 		check.simpleStmt(s.Init)
 		if s.Cond != nil {
@@ -809,8 +815,6 @@ func (check *Checker) typeSwitchStmt(inner stmtContext, s *syntax.SwitchStmt, gu
 }
 
 func (check *Checker) rangeStmt(inner stmtContext, s *syntax.ForStmt, rclause *syntax.RangeClause) {
-	// scope already opened
-
 	// determine lhs, if any
 	sKey := rclause.Lhs // possibly nil
 	var sValue, sExtra syntax.Expr
@@ -866,6 +870,11 @@ func (check *Checker) rangeStmt(inner stmtContext, s *syntax.ForStmt, rclause *s
 		}
 	}
 
+	// Open the for-statement block scope now, after the range clause.
+	// Iteration variables declared with := need to go in this scope (was issue #51437).
+	check.openScope(s, "range")
+	defer check.closeScope()
+
 	// check assignment to/declaration of iteration variables
 	// (irregular assignment, cannot easily map to existing assignment checks)
 
@@ -874,9 +883,7 @@ func (check *Checker) rangeStmt(inner stmtContext, s *syntax.ForStmt, rclause *s
 	rhs := [2]Type{key, val} // key, val may be nil
 
 	if rclause.Def {
-		// short variable declaration; variable scope starts after the range clause
-		// (the for loop opens a new scope, so variables on the lhs never redeclare
-		// previously declared variables)
+		// short variable declaration
 		var vars []*Var
 		for i, lhs := range lhs {
 			if lhs == nil {
@@ -913,12 +920,8 @@ func (check *Checker) rangeStmt(inner stmtContext, s *syntax.ForStmt, rclause *s
 
 		// declare variables
 		if len(vars) > 0 {
-			scopePos := syntax.EndPos(rclause.X) // TODO(gri) should this just be s.Body.Pos (spec clarification)?
+			scopePos := s.Body.Pos()
 			for _, obj := range vars {
-				// spec: "The scope of a constant or variable identifier declared inside
-				// a function begins at the end of the ConstSpec or VarSpec (ShortVarDecl
-				// for short variable declarations) and ends at the end of the innermost
-				// containing block."
 				check.declare(check.scope, nil /* recordDef already called */, obj, scopePos)
 			}
 		} else {

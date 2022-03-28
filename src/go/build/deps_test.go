@@ -212,8 +212,7 @@ var depsRules = `
 
 	# Misc packages needing only FMT.
 	FMT
-	< flag,
-	  html,
+	< html,
 	  mime/quotedprintable,
 	  net/internal/socktest,
 	  net/url,
@@ -229,6 +228,8 @@ var depsRules = `
 	encoding, reflect
 	< encoding/binary
 	< encoding/base32, encoding/base64;
+
+	FMT, encoding < flag;
 
 	fmt !< encoding/base32, encoding/base64;
 
@@ -552,6 +553,9 @@ var depsRules = `
 
 	FMT, container/heap, math/rand
 	< internal/trace;
+
+	FMT
+	< internal/diff, internal/txtar;
 `
 
 // listStdPkgs returns the same list of packages as "go list std".
@@ -621,21 +625,6 @@ func TestDependencies(t *testing.T) {
 		if bad != nil {
 			t.Errorf("unexpected dependency: %s imports %v", pkg, bad)
 		}
-	}
-
-	// depPath returns the path between the given from and to packages.
-	// It returns the empty string if there's no dependency path.
-	var depPath func(string, string) string
-	depPath = func(from, to string) string {
-		if sawImport[from][to] {
-			return from + " => " + to
-		}
-		for pkg := range sawImport[from] {
-			if p := depPath(pkg, to); p != "" {
-				return from + " => " + p
-			}
-		}
-		return ""
 	}
 }
 

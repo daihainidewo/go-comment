@@ -19,10 +19,7 @@ func (check *Checker) funcBody(decl *declInfo, name string, sig *Signature, body
 	}
 
 	if trace {
-		check.trace(body.Pos(), "--- %s: %s", name, sig)
-		defer func() {
-			check.trace(body.End(), "--- <end>")
-		}()
+		check.trace(body.Pos(), "-- %s: %s", name, sig)
 	}
 
 	// set function scope extent
@@ -96,6 +93,7 @@ const (
 
 	// additional context information
 	finalSwitchCase
+	inTypeSwitch
 )
 
 func (check *Checker) simpleStmt(s ast.Stmt) {
@@ -375,7 +373,9 @@ func (check *Checker) stmt(ctxt stmtContext, s ast.Stmt) {
 	// process collected function literals before scope changes
 	defer check.processDelayed(len(check.delayed))
 
-	inner := ctxt &^ (fallthroughOk | finalSwitchCase)
+	// reset context for statements of inner blocks
+	inner := ctxt &^ (fallthroughOk | finalSwitchCase | inTypeSwitch)
+
 	switch s := s.(type) {
 	case *ast.BadStmt, *ast.EmptyStmt:
 		// ignore
@@ -541,12 +541,16 @@ func (check *Checker) stmt(ctxt stmtContext, s ast.Stmt) {
 			}
 		case token.FALLTHROUGH:
 			if ctxt&fallthroughOk == 0 {
-				msg := "fallthrough statement out of place"
-				code := _MisplacedFallthrough
-				if ctxt&finalSwitchCase != 0 {
+				var msg string
+				switch {
+				case ctxt&finalSwitchCase != 0:
 					msg = "cannot fallthrough final case in switch"
+				case ctxt&inTypeSwitch != 0:
+					msg = "cannot fallthrough in type switch"
+				default:
+					msg = "fallthrough statement out of place"
 				}
-				check.error(s, code, msg)
+				check.error(s, _MisplacedFallthrough, msg)
 			}
 		default:
 			check.invalidAST(s, "branch statement: %s", s.Tok)
@@ -627,7 +631,7 @@ func (check *Checker) stmt(ctxt stmtContext, s ast.Stmt) {
 		}
 
 	case *ast.TypeSwitchStmt:
-		inner |= breakOk
+		inner |= breakOk | inTypeSwitch
 		check.openScope(s, "type switch")
 		defer check.closeScope()
 
@@ -821,8 +825,6 @@ func (check *Checker) stmt(ctxt stmtContext, s ast.Stmt) {
 
 	case *ast.RangeStmt:
 		inner |= breakOk | continueOk
-		check.openScope(s, "for")
-		defer check.closeScope()
 
 		// check expression to iterate over
 		var x operand
@@ -857,6 +859,11 @@ func (check *Checker) stmt(ctxt stmtContext, s ast.Stmt) {
 			}
 		}
 
+		// Open the for-statement block scope now, after the range clause.
+		// Iteration variables declared with := need to go in this scope (was issue #51437).
+		check.openScope(s, "range")
+		defer check.closeScope()
+
 		// check assignment to/declaration of iteration variables
 		// (irregular assignment, cannot easily map to existing assignment checks)
 
@@ -865,9 +872,7 @@ func (check *Checker) stmt(ctxt stmtContext, s ast.Stmt) {
 		rhs := [2]Type{key, val} // key, val may be nil
 
 		if s.Tok == token.DEFINE {
-			// short variable declaration; variable scope starts after the range clause
-			// (the for loop opens a new scope, so variables on the lhs never redeclare
-			// previously declared variables)
+			// short variable declaration
 			var vars []*Var
 			for i, lhs := range lhs {
 				if lhs == nil {
@@ -904,12 +909,8 @@ func (check *Checker) stmt(ctxt stmtContext, s ast.Stmt) {
 
 			// declare variables
 			if len(vars) > 0 {
-				scopePos := s.X.End()
+				scopePos := s.Body.Pos()
 				for _, obj := range vars {
-					// spec: "The scope of a constant or variable identifier declared inside
-					// a function begins at the end of the ConstSpec or VarSpec (ShortVarDecl
-					// for short variable declarations) and ends at the end of the innermost
-					// containing block."
 					check.declare(check.scope, nil /* recordDef already called */, obj, scopePos)
 				}
 			} else {
