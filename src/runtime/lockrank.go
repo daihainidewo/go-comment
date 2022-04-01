@@ -24,6 +24,7 @@
 
 package runtime
 
+// 锁排名
 type lockRank int
 
 // 运行时中与体系无关的锁的等级常量，低等级的锁必须在高等级锁之前拿走
@@ -186,6 +187,8 @@ func (rank lockRank) String() string {
 	return lockNames[rank]
 }
 
+// lockPartialOrder 表示 锁的排序
+// 前者为锁 后者为排名更高的锁
 // lockPartialOrder is a partial order among the various lock types, listing the
 // immediate ordering that has actually been observed in the runtime. Each entry
 // (which corresponds to a particular lock rank) specifies the list of locks

@@ -415,6 +415,7 @@ func blocksampled(cycles, rate int64) bool {
 	return true
 }
 
+// 记录阻塞事件
 func saveblockevent(cycles, rate int64, skip int, which bucketType) {
 	gp := getg()
 	var nstk int

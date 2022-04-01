@@ -734,10 +734,11 @@ CALLFN(·call268435456, 268435456)
 CALLFN(·call536870912, 536870912)
 CALLFN(·call1073741824, 1073741824)
 
+// 执行 cycles 次 PAUSE
 TEXT runtime·procyield(SB),NOSPLIT,$0-0
 	MOVL	cycles+0(FP), AX
 again:
-	PAUSE
+	PAUSE // 空跑CPU
 	SUBL	$1, AX
 	JNZ	again
 	RET

@@ -530,6 +530,7 @@ TEXT runtime·madvise(SB),NOSPLIT,$0
 	MOVL	AX, ret+24(FP)
 	RET
 
+// 调用 futex 锁住
 // int64 futex(int32 *uaddr, int32 op, int32 val,
 //	struct timespec *timeout, int32 *uaddr2, int32 val2);
 TEXT runtime·futex(SB),NOSPLIT,$0
@@ -646,6 +647,7 @@ TEXT runtime·settls(SB),NOSPLIT,$32
 	MOVL	$0xf1, 0xf1  // crash
 	RET
 
+// 调用 sched_yield 切换线程
 TEXT runtime·osyield(SB),NOSPLIT,$0
 	MOVL	$SYS_sched_yield, AX
 	SYSCALL

@@ -331,7 +331,7 @@ func goschedguarded() {
 	mcall(goschedguarded_m)
 }
 
-// gopark 休眠当前m
+// gopark 解绑当前g 开启下次调度
 // Puts the current goroutine into a waiting state and calls unlockf on the
 // system stack.
 //
@@ -382,7 +382,7 @@ func goready(gp *g, traceskip int) {
 	})
 }
 
-// acquireSudog 获取sudog
+// acquireSudog 获取空的sudog
 //go:nosplit
 func acquireSudog() *sudog {
 	// Delicate dance: the semaphore implementation calls
@@ -721,8 +721,8 @@ func schedinit() {
 	worldStopped()
 
 	moduledataverify()
-	stackinit()  // 初始化空闲栈池
-	mallocinit() // 初始化内存池
+	stackinit()    // 初始化空闲栈池
+	mallocinit()   // 初始化内存池
 	cpuinit()      // must run before alginit
 	alginit()      // maps, hash, fastrand must not be used before this call
 	fastrandinit() // must run before mcommoninit
@@ -3542,6 +3542,7 @@ func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
 }
 
 // park_m 在g0上继续执行 gopark 操作
+// 解绑当前g 开启下次调度
 // park continuation on g0.
 func park_m(gp *g) {
 	_g_ := getg()

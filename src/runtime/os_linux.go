@@ -33,6 +33,7 @@ type mOS struct {
 	needPerThreadSyscall atomic.Uint8
 }
 
+// 调用系统调用 futex 锁住
 //go:noescape
 func futex(addr unsafe.Pointer, op int32, val uint32, ts, addr2 unsafe.Pointer, val3 uint32) int32
 
@@ -46,8 +47,16 @@ func futex(addr unsafe.Pointer, op int32, val uint32, ts, addr2 unsafe.Pointer, 
 // Futexsleep is allowed to wake up spuriously.
 
 const (
+	// 进程私有标志位 不与另外进程共享
 	_FUTEX_PRIVATE_FLAG = 128
+	// 检测锁地址的值是否仍为val
+	// 如果是则等待wake唤醒
+	// 如果不是则返回 EAGAIN
+	// 此操作为内存原子操作
 	_FUTEX_WAIT_PRIVATE = 0 | _FUTEX_PRIVATE_FLAG
+	// 唤醒被WAIT的锁
+	// 通常 1 唤醒单个等待者 INT_MAX 唤醒所有等待者
+	// 不保证唤醒顺序
 	_FUTEX_WAKE_PRIVATE = 1 | _FUTEX_PRIVATE_FLAG
 )
 
@@ -63,10 +72,12 @@ func futexsleep(addr *uint32, val uint32, ns int64) {
 	// here, and so can we: as it says a few lines up,
 	// spurious wakeups are allowed.
 	if ns < 0 {
+		// 一直等待
 		futex(unsafe.Pointer(addr), _FUTEX_WAIT_PRIVATE, val, nil, nil, 0)
 		return
 	}
 
+	// 设置等待超时
 	var ts timespec
 	ts.setNsec(ns)
 	futex(unsafe.Pointer(addr), _FUTEX_WAIT_PRIVATE, val, unsafe.Pointer(&ts), nil, 0)
@@ -77,9 +88,11 @@ func futexsleep(addr *uint32, val uint32, ns int64) {
 func futexwakeup(addr *uint32, cnt uint32) {
 	ret := futex(unsafe.Pointer(addr), _FUTEX_WAKE_PRIVATE, cnt, nil, nil, 0)
 	if ret >= 0 {
+		// ret 唤醒个数 表示唤醒成功
 		return
 	}
 
+	// 发生错误
 	// I don't know that futex wakeup can return
 	// EAGAIN or EINTR, but if it does, it would be
 	// safe to loop and call futex again.
@@ -87,6 +100,7 @@ func futexwakeup(addr *uint32, cnt uint32) {
 		print("futexwakeup addr=", addr, " returned ", ret, "\n")
 	})
 
+	// ？？？
 	*(*int32)(unsafe.Pointer(uintptr(0x1006))) = 0x1006
 }
 
@@ -146,8 +160,8 @@ const (
 	// In non-QEMU environments CLONE_SYSVSEM is inconsequential as we do not
 	// use System V semaphores.
 
-    // 新建线程标志：共享虚拟内存，共享文件映射表，共享信号处理，共享systemV的信号量撤消列表，添加进线程组
-    // https://man7.org/linux/man-pages/man2/clone.2.html
+	// 新建线程标志：共享虚拟内存，共享文件映射表，共享信号处理，共享systemV的信号量撤消列表，添加进线程组
+	// https://man7.org/linux/man-pages/man2/clone.2.html
 	cloneFlags = _CLONE_VM | /* share memory */
 		_CLONE_FS | /* share cwd, etc */
 		_CLONE_FILES | /* share fd table */
@@ -393,7 +407,7 @@ func gettid() uint32
 func minit() {
 	minitSignals()
 
-    // CGO和bootstrap创建的m缺少procid，用于异步抢占和调试器
+	// CGO和bootstrap创建的m缺少procid，用于异步抢占和调试器
 	// Cgo-created threads and the bootstrap m are missing a
 	// procid. We need this for asynchronous preemption and it's
 	// useful in debuggers.
@@ -411,9 +425,9 @@ func unminit() {
 func mdestroy(mp *m) {
 }
 
-//#ifdef GOARCH_386
-//#define sa_handler k_sa_handler
-//#endif
+// #ifdef GOARCH_386
+// #define sa_handler k_sa_handler
+// #endif
 
 func sigreturn()
 func sigtramp() // Called via C ABI

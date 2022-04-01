@@ -75,6 +75,7 @@ func (c *Cond) Broadcast() {
 	runtime_notifyListNotifyAll(&c.notify)
 }
 
+// 检测是否变量是否被拷贝过
 // copyChecker holds back pointer to itself to detect object copying.
 type copyChecker uintptr
 

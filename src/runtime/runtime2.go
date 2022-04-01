@@ -363,8 +363,9 @@ type sudog struct {
 
 	g *g // 关联的G
 
-	next *sudog         // 链表前驱
-	prev *sudog         // 链表后继
+	next *sudog // 链表前驱
+	prev *sudog // 链表后继
+	// 元素地址 可表示锁地址 可能指向栈
 	elem unsafe.Pointer // data element (may point to stack)
 
 	// The following fields are never accessed concurrently.
@@ -372,9 +373,9 @@ type sudog struct {
 	// For semaphores, all fields (including the ones above)
 	// are only accessed when holding a semaRoot lock.
 
-	acquiretime int64 // 获取时间
-	releasetime int64 // 释放时间
-	ticket      uint32
+	acquiretime int64  // 获取时间
+	releasetime int64  // 释放时间
+	ticket      uint32 // 票据 类似当前 sudog 的唯一id
 
 	// isSelect 是否在等待 select 信号
 	// isSelect indicates g is participating in a select, so
@@ -387,6 +388,9 @@ type sudog struct {
 	// because c was closed.
 	success bool
 
+	// 信号量等待
+	// parent next prev 形成 treap
+	// waitlink waittail 相同 elem 的开链的头节点和尾节点
 	parent   *sudog // semaRoot binary tree
 	waitlink *sudog // g.waiting list or semaRoot
 	waittail *sudog // semaRoot
@@ -449,12 +453,13 @@ type g struct {
 	// 3. By debugCallWrap to pass parameters to a new goroutine because allocating a
 	//    closure in the runtime is forbidden.
 	param        unsafe.Pointer
-	atomicstatus uint32     // g 的原子状态
-	stackLock    uint32     // sigprof/scang lock; TODO: fold in to atomicstatus
-	goid         int64      // goroutine的编号
-	schedlink    guintptr   // 调度链接下一个g，gFree
-	waitsince    int64      // approx time when the g become blocked
-	waitreason   waitReason // if status==Gwaiting
+	atomicstatus uint32   // g 的原子状态
+	stackLock    uint32   // sigprof/scang lock; TODO: fold in to atomicstatus
+	goid         int64    // goroutine的编号
+	schedlink    guintptr // 调度链接下一个g，gFree
+	waitsince    int64    // approx time when the g become blocked
+	// 等待缘由
+	waitreason waitReason // if status==Gwaiting
 
 	preempt       bool // 抢占标志位 preemption signal, duplicates stackguard0 = stackpreempt
 	preemptStop   bool // transition to _Gpreempted on preemption; otherwise, just deschedule
@@ -554,9 +559,9 @@ type m struct {
 	blocked       bool  // 是否被note阻塞
 	newSigstack   bool  // minit on C thread called sigaltstack
 	printlock     int8
-	incgo         bool      // 是否执行cgo调用 m is executing a cgo call
-	freeWait      uint32    // 为0表示可以释放当前m if == 0, safe to free g0 and delete m (atomic)
-	fastrand      uint64 	// 随机数种子
+	incgo         bool   // 是否执行cgo调用 m is executing a cgo call
+	freeWait      uint32 // 为0表示可以释放当前m if == 0, safe to free g0 and delete m (atomic)
+	fastrand      uint64 // 随机数种子
 	needextram    bool
 	traceback     uint8
 	ncgocall      uint64      // number of cgo calls in total
@@ -571,6 +576,7 @@ type m struct {
 	lockedExt     uint32      // tracking for external LockOSThread
 	lockedInt     uint32      // tracking for internal lockOSThread
 	nextwaitm     muintptr    // next m waiting for lock
+	// 锁相关 解锁函数 锁地址 事件 跳数
 	waitunlockf   func(*g, unsafe.Pointer) bool
 	waitlock      unsafe.Pointer
 	waittraceev   byte
@@ -601,7 +607,7 @@ type m struct {
 
 	dlogPerM
 
-	mOS
+	mOS // 线程锁和条件变量
 
 	// m最多持有10个lock，由锁排序代码维护
 	// Up to 10 locks held by this m, maintained by the lock ranking code.

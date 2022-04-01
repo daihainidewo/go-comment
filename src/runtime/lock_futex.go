@@ -24,7 +24,9 @@ import (
 
 const (
 	mutex_unlocked = 0
-	mutex_locked   = 1
+	// 内存原子锁
+	mutex_locked = 1
+	// futex 锁
 	mutex_sleeping = 2
 
 	active_spin     = 4
@@ -48,7 +50,7 @@ func lock(l *mutex) {
 	lockWithRank(l, getLockRank(l))
 }
 
-// lock2 锁住l 阻塞锁住
+// lock2 锁住l
 func lock2(l *mutex) {
 	gp := getg()
 
@@ -61,6 +63,7 @@ func lock2(l *mutex) {
 	// Speculative grab for lock.
 	v := atomic.Xchg(key32(&l.key), mutex_locked)
 	if v == mutex_unlocked {
+		// 从unlock变lock 表示获得锁
 		return
 	}
 
@@ -77,6 +80,7 @@ func lock2(l *mutex) {
 	// On multiprocessors, spin for ACTIVE_SPIN attempts.
 	spin := 0
 	if ncpu > 1 {
+		// 多核 启动自旋
 		spin = active_spin
 	}
 	for {
@@ -84,10 +88,12 @@ func lock2(l *mutex) {
 		// Try for lock, spinning.
 		for i := 0; i < spin; i++ {
 			for l.key == mutex_unlocked {
+				// 未锁状态 尝试锁住
 				if atomic.Cas(key32(&l.key), mutex_unlocked, wait) {
 					return
 				}
 			}
+			// 调用 PAUSE
 			procyield(active_spin_cnt)
 		}
 
@@ -99,17 +105,18 @@ func lock2(l *mutex) {
 					return
 				}
 			}
+			// 拿不到锁 就切换线程
 			osyield()
 		}
 
-		// 休眠
 		// Sleep.
 		v = atomic.Xchg(key32(&l.key), mutex_sleeping)
 		if v == mutex_unlocked {
+			// 切换线程后 再次尝试获取锁
 			return
 		}
 		wait = mutex_sleeping
-		futexsleep(key32(&l.key), mutex_sleeping, -1) // 一直锁
+		futexsleep(key32(&l.key), mutex_sleeping, -1)
 	}
 }
 
@@ -123,6 +130,7 @@ func unlock2(l *mutex) {
 		throw("unlock of unlocked lock")
 	}
 	if v == mutex_sleeping {
+		// 解锁 futex
 		futexwakeup(key32(&l.key), 1)
 	}
 
@@ -132,6 +140,8 @@ func unlock2(l *mutex) {
 		throw("runtime·unlock: lock count")
 	}
 	if gp.m.locks == 0 && gp.preempt { // restore the preemption request in case we've cleared it in newstack
+		// m没有锁定的g 且 g可被抢占
+		// 则标记g可抢占
 		gp.stackguard0 = stackPreempt
 	}
 }

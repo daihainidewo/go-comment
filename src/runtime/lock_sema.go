@@ -44,6 +44,7 @@ func lock2(l *mutex) {
 	gp.m.locks++
 
 	// Speculative grab for lock.
+	// 快速抢锁
 	if atomic.Casuintptr(&l.key, 0, locked) {
 		return
 	}
@@ -53,6 +54,7 @@ func lock2(l *mutex) {
 	// On multiprocessors, spin for ACTIVE_SPIN attempts.
 	spin := 0
 	if ncpu > 1 {
+		// 多核才会自旋
 		spin = active_spin
 	}
 Loop:
@@ -66,10 +68,13 @@ Loop:
 			i = 0
 		}
 		if i < spin {
+			// 等待CPU空跑 active_spin_cnt 次 PAUSE
 			procyield(active_spin_cnt)
 		} else if i < spin+passive_spin {
+			// 切换线程
 			osyield()
 		} else {
+			// 自旋次数过多
 			// Someone else has it.
 			// l->waitm points to a linked list of M's waiting
 			// for this lock, chained through m->nextwaitm.
@@ -77,15 +82,18 @@ Loop:
 			for {
 				gp.m.nextwaitm = muintptr(v &^ locked)
 				if atomic.Casuintptr(&l.key, v, uintptr(unsafe.Pointer(gp.m))|locked) {
+					// 成功锁住就跳出循环
 					break
 				}
 				v = atomic.Loaduintptr(&l.key)
 				if v&locked == 0 {
+					// 被修改就重试
 					continue Loop
 				}
 			}
 			if v&locked != 0 {
 				// Queued. Wait.
+				// 排队等待唤醒
 				semasleep(-1)
 				i = 0
 			}

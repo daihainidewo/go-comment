@@ -38,14 +38,18 @@ import (
 // before we introduced the second level of list, and test/locklinear.go
 // for a test that exercises this.
 type semaRoot struct {
-	lock  mutex
+	lock mutex
+	// 平衡树 存等待的g tree-heap
 	treap *sudog // root of balanced tree of unique waiters.
+	// 等待者的个数
 	nwait uint32 // Number of waiters. Read w/o the lock.
 }
 
 // Prime to not correlate with any user patterns.
+// 为啥是251
 const semTabSize = 251
 
+// 信号表 固定大小
 var semtable [semTabSize]struct {
 	root semaRoot
 	pad  [cpu.CacheLinePadSize - unsafe.Sizeof(semaRoot{})]byte
@@ -76,6 +80,7 @@ func poll_runtime_Semrelease(addr *uint32) {
 	semrelease(addr)
 }
 
+// 唤醒sudog
 func readyWithTime(s *sudog, traceskip int) {
 	if s.releasetime != 0 {
 		s.releasetime = cputicks()
@@ -95,6 +100,7 @@ func semacquire(addr *uint32) {
 	semacquire1(addr, false, 0, 0)
 }
 
+// 信号量处理 等待被唤醒
 func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes int) {
 	gp := getg()
 	if gp != gp.m.curg {
@@ -103,6 +109,7 @@ func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes i
 
 	// Easy case.
 	if cansemacquire(addr) {
+		// 原子检测是否可持有
 		return
 	}
 
@@ -129,18 +136,23 @@ func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes i
 		s.acquiretime = t0
 	}
 	for {
+		// 锁住
 		lockWithRank(&root.lock, lockRankRoot)
 		// Add ourselves to nwait to disable "easy case" in semrelease.
+		// 添加root的等待者
 		atomic.Xadd(&root.nwait, 1)
 		// Check cansemacquire to avoid missed wakeup.
 		if cansemacquire(addr) {
+			// addr的值为1 直接解锁返回
 			atomic.Xadd(&root.nwait, -1)
 			unlock(&root.lock)
 			break
 		}
+		// 入队 休眠
 		// Any semrelease after the cansemacquire knows we're waiting
 		// (we set nwait above), so go to sleep.
 		root.queue(addr, s, lifo)
+		// 等待被唤醒
 		goparkunlock(&root.lock, waitReasonSemacquire, traceEvGoBlockSync, 4+skipframes)
 		if s.ticket != 0 || cansemacquire(addr) {
 			break
@@ -218,6 +230,7 @@ func semroot(addr *uint32) *semaRoot {
 	return &semtable[(uintptr(unsafe.Pointer(addr))>>3)%semTabSize].root
 }
 
+// 检测锁是否可获取
 func cansemacquire(addr *uint32) bool {
 	for {
 		v := atomic.Load(addr)
@@ -225,11 +238,13 @@ func cansemacquire(addr *uint32) bool {
 			return false
 		}
 		if atomic.Cas(addr, v, v-1) {
+			// 锁原始值为1 改成0
 			return true
 		}
 	}
 }
 
+// 将当期的 s 入队
 // queue adds s to the blocked goroutines in semaRoot.
 func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 	s.g = getg()
@@ -237,14 +252,19 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 	s.next = nil
 	s.prev = nil
 
+	// 先查找有没有相同锁地址 有就按规则插入后返回
 	var last *sudog
+	// var pt **sudog
 	pt := &root.treap
 	for t := *pt; t != nil; t = *pt {
 		if t.elem == unsafe.Pointer(addr) {
 			// Already have addr in list.
 			if lifo {
+				// 插入队首
 				// Substitute s in t's place in treap.
+				// 赋值pt
 				*pt = s
+				// 交接二叉树链接信息
 				s.ticket = t.ticket
 				s.acquiretime = t.acquiretime
 				s.parent = t.parent
@@ -256,17 +276,20 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 				if s.next != nil {
 					s.next.parent = s
 				}
+				// 交接链表信息
 				// Add t first in s's wait list.
 				s.waitlink = t
 				s.waittail = t.waittail
 				if s.waittail == nil {
 					s.waittail = t
 				}
+				// 清空原树节点 树相关信息
 				t.parent = nil
 				t.prev = nil
 				t.next = nil
 				t.waittail = nil
 			} else {
+				// 直接插入队尾
 				// Add s to end of t's wait list.
 				if t.waittail == nil {
 					t.waitlink = s
@@ -278,6 +301,7 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 			}
 			return
 		}
+		// 向下个节点偏移 根据地址 决定向前向后
 		last = t
 		if uintptr(unsafe.Pointer(addr)) < uintptr(t.elem) {
 			pt = &t.prev
@@ -286,6 +310,8 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 		}
 	}
 
+	// 新的锁就新建一个二叉树节点
+	// ticket 有与0作比较 所以必须大于0
 	// Add s as new leaf in tree of unique addrs.
 	// The balanced tree is a treap using ticket as the random heap priority.
 	// That is, it is a binary tree ordered according to the elem addresses,
@@ -298,12 +324,15 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 	// s.ticket compared with zero in couple of places, therefore set lowest bit.
 	// It will not affect treap's quality noticeably.
 	s.ticket = fastrand() | 1
+	// last 作为新叶子节点的父节点
 	s.parent = last
+	// pt 后面没用 为啥要赋值?
 	*pt = s
 
 	// Rotate up into tree according to ticket (priority).
 	for s.parent != nil && s.parent.ticket > s.ticket {
 		if s.parent.prev == s {
+			//
 			root.rotateRight(s.parent)
 		} else {
 			if s.parent.next != s {
@@ -314,6 +343,7 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 	}
 }
 
+// 出队单个sudog
 // dequeue searches for and finds the first goroutine
 // in semaRoot blocked on addr.
 // If the sudog was being profiled, dequeue returns the time
@@ -323,6 +353,7 @@ func (root *semaRoot) dequeue(addr *uint32) (found *sudog, now int64) {
 	s := *ps
 	for ; s != nil; s = *ps {
 		if s.elem == unsafe.Pointer(addr) {
+			// 找到才执行出队操作
 			goto Found
 		}
 		if uintptr(unsafe.Pointer(addr)) < uintptr(s.elem) {
@@ -331,6 +362,7 @@ func (root *semaRoot) dequeue(addr *uint32) (found *sudog, now int64) {
 			ps = &s.next
 		}
 	}
+	// 找不到直接返回
 	return nil, 0
 
 Found:
@@ -339,7 +371,9 @@ Found:
 		now = cputicks()
 	}
 	if t := s.waitlink; t != nil {
+		// 有链表元素 直接移除队首元素 不用删树节点
 		// Substitute t, also waiting on addr, for s in root tree of unique addrs.
+		// ps 没有用为啥赋值
 		*ps = t
 		t.ticket = s.ticket
 		t.parent = s.parent
@@ -360,6 +394,7 @@ Found:
 		s.waitlink = nil
 		s.waittail = nil
 	} else {
+		// 没有链表元素 需要删除树节点 进行树的再平衡
 		// Rotate s down to be leaf of tree for removal, respecting priorities.
 		for s.next != nil || s.prev != nil {
 			if s.next == nil || s.prev != nil && s.prev.ticket < s.next.ticket {
@@ -379,6 +414,7 @@ Found:
 			root.treap = nil
 		}
 	}
+	// 清理 s 无关数据
 	s.parent = nil
 	s.elem = nil
 	s.next = nil
@@ -386,6 +422,16 @@ Found:
 	s.ticket = 0
 	return s, now
 }
+
+/*
+
+  x                  y
+ / \                / \
+a   y      -->     x   c
+   / \            / \
+  b   c          a   b
+
+*/
 
 // rotateLeft rotates the tree rooted at node x.
 // turning (x a (y b c)) into (y (x a b) c).
@@ -415,6 +461,15 @@ func (root *semaRoot) rotateLeft(x *sudog) {
 	}
 }
 
+/*
+
+    y              x
+   / \            / \
+  x   c    -->   a   y
+ / \                / \
+a   b              b   c
+
+*/
 // rotateRight rotates the tree rooted at node y.
 // turning (y (x a b) c) into (x a (y b c)).
 func (root *semaRoot) rotateRight(y *sudog) {
@@ -443,14 +498,20 @@ func (root *semaRoot) rotateRight(y *sudog) {
 	}
 }
 
+// 用于 sync.Cond 的通知列表
+// wait 为下一个等待者序号
+// notify 为已经通知过的等待者序号
 // notifyList is a ticket-based notification list used to implement sync.Cond.
 //
 // It must be kept in sync with the sync package.
 type notifyList struct {
+	// 下一个等待者的序号
 	// wait is the ticket number of the next waiter. It is atomically
 	// incremented outside the lock.
 	wait uint32
 
+	// 下一个被通知的等待者序号 可以不用锁读但是必须锁写
+	// wait 和 notify 可能会重复 但目前不太可能
 	// notify is the ticket number of the next waiter to be notified. It can
 	// be read outside the lock, but is only written to with lock held.
 	//
@@ -466,12 +527,14 @@ type notifyList struct {
 	tail *sudog
 }
 
+// 防止溢出
 // less checks if a < b, considering a & b running counts that may overflow the
 // 32-bit range, and that their "unwrapped" difference is always less than 2^31.
 func less(a, b uint32) bool {
 	return int32(a-b) < 0
 }
 
+// 返回当前的等待者id
 // notifyListAdd adds the caller to a notify list such that it can receive
 // notifications. The caller must eventually call notifyListWait to wait for
 // such a notification, passing the returned ticket number.
@@ -482,12 +545,14 @@ func notifyListAdd(l *notifyList) uint32 {
 	return atomic.Xadd(&l.wait, 1) - 1
 }
 
+// 添加进等待队列
 // notifyListWait waits for a notification. If one has been sent since
 // notifyListAdd was called, it returns immediately. Otherwise, it blocks.
 //go:linkname notifyListWait sync.runtime_notifyListWait
 func notifyListWait(l *notifyList, t uint32) {
 	lockWithRank(&l.lock, lockRankNotifyList)
 
+	// 如果 t 小于 notify 表示已经通知过了 直接返回
 	// Return right away if this ticket has already been notified.
 	if less(t, l.notify) {
 		unlock(&l.lock)
@@ -510,6 +575,7 @@ func notifyListWait(l *notifyList, t uint32) {
 		l.tail.next = s
 	}
 	l.tail = s
+	// 等待唤醒通知
 	goparkunlock(&l.lock, waitReasonSyncCondWait, traceEvGoBlockCond, 3)
 	if t0 != 0 {
 		blockevent(s.releasetime-t0, 2)
@@ -517,15 +583,18 @@ func notifyListWait(l *notifyList, t uint32) {
 	releaseSudog(s)
 }
 
+// 唤醒所有等待者
 // notifyListNotifyAll notifies all entries in the list.
 //go:linkname notifyListNotifyAll sync.runtime_notifyListNotifyAll
 func notifyListNotifyAll(l *notifyList) {
+	// 已经唤醒过 直接返回
 	// Fast-path: if there are no new waiters since the last notification
 	// we don't need to acquire the lock.
 	if atomic.Load(&l.wait) == atomic.Load(&l.notify) {
 		return
 	}
 
+	// 获取锁 拷贝 l.head 减少占用锁时间 置处理标记 解锁
 	// Pull the list out into a local variable, waiters will be readied
 	// outside the lock.
 	lockWithRank(&l.lock, lockRankNotifyList)
@@ -533,6 +602,7 @@ func notifyListNotifyAll(l *notifyList) {
 	l.head = nil
 	l.tail = nil
 
+	// 将notify置为wait
 	// Update the next ticket to be notified. We can set it to the current
 	// value of wait because any previous waiters are already in the list
 	// or will notice that they have already been notified when trying to
@@ -540,6 +610,7 @@ func notifyListNotifyAll(l *notifyList) {
 	atomic.Store(&l.notify, atomic.Load(&l.wait))
 	unlock(&l.lock)
 
+	// 唤醒所有的等待者
 	// Go through the local list and ready all waiters.
 	for s != nil {
 		next := s.next
@@ -549,9 +620,11 @@ func notifyListNotifyAll(l *notifyList) {
 	}
 }
 
+// 唤醒一个等待者
 // notifyListNotifyOne notifies one entry in the list.
 //go:linkname notifyListNotifyOne sync.runtime_notifyListNotifyOne
 func notifyListNotifyOne(l *notifyList) {
+	// 已经唤醒过 直接返回
 	// Fast-path: if there are no new waiters since the last notification
 	// we don't need to acquire the lock at all.
 	if atomic.Load(&l.wait) == atomic.Load(&l.notify) {
@@ -560,6 +633,7 @@ func notifyListNotifyOne(l *notifyList) {
 
 	lockWithRank(&l.lock, lockRankNotifyList)
 
+	// 二次校验是否已经唤醒过
 	// Re-check under the lock if we need to do anything.
 	t := l.notify
 	if t == atomic.Load(&l.wait) {
@@ -567,9 +641,13 @@ func notifyListNotifyOne(l *notifyList) {
 		return
 	}
 
+	// 增加唤醒标记
 	// Update the next notify ticket number.
 	atomic.Store(&l.notify, t+1)
 
+	// 尝试查找需要唤醒的 sudog
+	// 如果来不及插入此列表就被唤醒 则遍历 sudog 列表不会触发唤醒 但是在插入的时候会直接唤醒
+	// 不存在表示被唤醒过
 	// Try to find the g that needs to be notified.
 	// If it hasn't made it to the list yet we won't find it,
 	// but it won't park itself once it sees the new notify number.
@@ -596,6 +674,7 @@ func notifyListNotifyOne(l *notifyList) {
 			}
 			unlock(&l.lock)
 			s.next = nil
+			// 找到了 唤醒s
 			readyWithTime(s, 4)
 			return
 		}

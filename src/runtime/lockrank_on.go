@@ -48,6 +48,7 @@ func getLockRank(l *mutex) lockRank {
 // even though l is not actually locked yet.
 func lockWithRank(l *mutex, rank lockRank) {
 	if l == &debuglock || l == &paniclk {
+		// 这两个锁不需要rank
 		// debuglock is only used for println/printlock(). Don't do lock
 		// rank recording for it, since print/println are used when
 		// printing out a lock ordering problem below.
@@ -68,6 +69,7 @@ func lockWithRank(l *mutex, rank lockRank) {
 	systemstack(func() {
 		i := gp.m.locksHeldLen
 		if i >= len(gp.m.locksHeld) {
+			// 最多装10个带有排名的锁
 			throw("too many locks held concurrently for rank checking")
 		}
 		gp.m.locksHeld[i].rank = rank
@@ -118,6 +120,7 @@ func acquireLockRank(rank lockRank) {
 	})
 }
 
+// 检测锁的排序 新加的锁的排名不能高于上一个锁
 // checkRanks checks if goroutine g, which has mostly recently acquired a lock
 // with rank 'prevRank', can now acquire a lock with rank 'rank'.
 //

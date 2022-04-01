@@ -21,6 +21,7 @@ func unimplemented(name string) {
 	*(*int)(unsafe.Pointer(uintptr(1231))) = 1231
 }
 
+// 初始化锁和条件变量
 //go:nosplit
 func semacreate(mp *m) {
 	if mp.initialized {
@@ -358,7 +359,7 @@ const (
 	_SS_DISABLE  = 4
 )
 
-//extern SigTabTT runtime·sigtab[];
+// extern SigTabTT runtime·sigtab[];
 
 type sigset uint32
 
