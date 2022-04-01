@@ -422,12 +422,7 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (Conn
 		primaries = addrs
 	}
 
-	var c Conn
-	if len(fallbacks) > 0 {
-		c, err = sd.dialParallel(ctx, primaries, fallbacks)
-	} else {
-		c, err = sd.dialSerial(ctx, primaries)
-	}
+	c, err := sd.dialParallel(ctx, primaries, fallbacks)
 	if err != nil {
 		return nil, err
 	}
