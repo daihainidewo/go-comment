@@ -303,7 +303,9 @@ func (b *Builder) buildActionID(a *Action) cache.ActionID {
 			fmt.Fprintf(h, "fuzz %q\n", fuzzFlags)
 		}
 	}
-	fmt.Fprintf(h, "modinfo %q\n", p.Internal.BuildInfo)
+	if p.Internal.BuildInfo != "" {
+		fmt.Fprintf(h, "modinfo %q\n", p.Internal.BuildInfo)
+	}
 
 	// Configuration specific to compiler toolchain.
 	switch cfg.BuildToolchainName {
@@ -1948,7 +1950,6 @@ func mayberemovefile(s string) {
 //
 //	fmtcmd replaces the name of the current directory with dot (.)
 //	but only when it is at the beginning of a space-separated token.
-//
 func (b *Builder) fmtcmd(dir string, format string, args ...any) string {
 	cmd := fmt.Sprintf(format, args...)
 	if dir != "" && dir != "/" {
@@ -2005,7 +2006,6 @@ func (b *Builder) Showcmd(dir string, format string, args ...any) {
 //
 // If a is not nil and a.output is not nil, showOutput appends to that slice instead of
 // printing to b.Print.
-//
 func (b *Builder) showOutput(a *Action, dir, desc, out string) {
 	prefix := "# " + desc
 	suffix := "\n" + out

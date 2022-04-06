@@ -453,7 +453,7 @@ func (v Value) call(op string, in []Value) []Value {
 	var regArgs abi.RegArgs
 
 	// Compute frame type.
-	frametype, framePool, abi := funcLayout(t, rcvrtype)
+	frametype, framePool, abid := funcLayout(t, rcvrtype)
 
 	// Allocate a chunk of memory for frame if needed.
 	var stackArgs unsafe.Pointer
@@ -470,7 +470,7 @@ func (v Value) call(op string, in []Value) []Value {
 
 	if debugReflectCall {
 		println("reflect.call", t.String())
-		abi.dump()
+		abid.dump()
 	}
 
 	// Copy inputs into args.
@@ -481,7 +481,7 @@ func (v Value) call(op string, in []Value) []Value {
 		// Guaranteed to only be one word in size,
 		// so it will only take up exactly 1 abiStep (either
 		// in a register or on the stack).
-		switch st := abi.call.steps[0]; st.kind {
+		switch st := abid.call.steps[0]; st.kind {
 		case abiStepStack:
 			storeRcvr(rcvr, stackArgs)
 		case abiStepIntReg, abiStepPointer:
@@ -507,7 +507,7 @@ func (v Value) call(op string, in []Value) []Value {
 		// was possible to use space in the argument frame.
 		v = v.assignTo("reflect.Value.Call", targ, nil)
 	stepsLoop:
-		for _, st := range abi.call.stepsForValue(i + inStart) {
+		for _, st := range abid.call.stepsForValue(i + inStart) {
 			switch st.kind {
 			case abiStepStack:
 				// Copy values to the "stack."
@@ -552,10 +552,10 @@ func (v Value) call(op string, in []Value) []Value {
 	// TODO(mknyszek): Remove this when we no longer have
 	// caller reserved spill space.
 	frameSize = align(frameSize, goarch.PtrSize)
-	frameSize += abi.spill
+	frameSize += abid.spill
 
 	// Mark pointers in registers for the return path.
-	regArgs.ReturnIsPtr = abi.outRegPtrs
+	regArgs.ReturnIsPtr = abid.outRegPtrs
 
 	if debugReflectCall {
 		regArgs.Dump()
@@ -567,7 +567,7 @@ func (v Value) call(op string, in []Value) []Value {
 	}
 
 	// Call.
-	call(frametype, fn, stackArgs, uint32(frametype.size), uint32(abi.retOffset), uint32(frameSize), &regArgs)
+	call(frametype, fn, stackArgs, uint32(frametype.size), uint32(abid.retOffset), uint32(frameSize), &regArgs)
 
 	// For testing; see TestCallMethodJump.
 	if callGC {
@@ -585,7 +585,7 @@ func (v Value) call(op string, in []Value) []Value {
 			// Zero the now unused input area of args,
 			// because the Values returned by this function contain pointers to the args object,
 			// and will thus keep the args object alive indefinitely.
-			typedmemclrpartial(frametype, stackArgs, 0, abi.retOffset)
+			typedmemclrpartial(frametype, stackArgs, 0, abid.retOffset)
 		}
 
 		// Wrap Values around return values in args.
@@ -598,7 +598,7 @@ func (v Value) call(op string, in []Value) []Value {
 				ret[i] = Zero(tv)
 				continue
 			}
-			steps := abi.ret.stepsForValue(i)
+			steps := abid.ret.stepsForValue(i)
 			if st := steps[0]; st.kind == abiStepStack {
 				// This value is on the stack. If part of a value is stack
 				// allocated, the entire value is according to the ABI. So
@@ -690,7 +690,7 @@ func callReflect(ctxt *makeFuncImpl, frame unsafe.Pointer, retValid *bool, regs 
 	ftyp := ctxt.ftyp
 	f := ctxt.fn
 
-	_, _, abi := funcLayout(ftyp, nil)
+	_, _, abid := funcLayout(ftyp, nil)
 
 	// Copy arguments into Values.
 	ptr := frame
@@ -701,7 +701,7 @@ func callReflect(ctxt *makeFuncImpl, frame unsafe.Pointer, retValid *bool, regs 
 			continue
 		}
 		v := Value{typ, nil, flag(typ.Kind())}
-		steps := abi.call.stepsForValue(i)
+		steps := abid.call.stepsForValue(i)
 		if st := steps[0]; st.kind == abiStepStack {
 			if ifaceIndir(typ) {
 				// value cannot be inlined in interface data.
@@ -791,7 +791,7 @@ func callReflect(ctxt *makeFuncImpl, frame unsafe.Pointer, retValid *bool, regs 
 			// target location used as scratch space. See issue 39541.
 			v = v.assignTo("reflect.MakeFunc", typ, nil)
 		stepsLoop:
-			for _, st := range abi.ret.stepsForValue(i) {
+			for _, st := range abid.ret.stepsForValue(i) {
 				switch st.kind {
 				case abiStepStack:
 					// Copy values to the "stack."
@@ -1830,7 +1830,6 @@ func (iter *MapIter) Reset(v Value) {
 //		v := iter.Value()
 //		...
 //	}
-//
 func (v Value) MapRange() *MapIter {
 	v.mustBe(Map)
 	return &MapIter{m: v}
@@ -1869,7 +1868,11 @@ func (v Value) Method(i int) Value {
 	return Value{v.typ, v.ptr, fl}
 }
 
-// NumMethod returns the number of exported methods in the value's method set.
+// NumMethod returns the number of methods in the value's method set.
+//
+// For a non-interface type, it returns the number of exported methods.
+//
+// For an interface type, it returns the number of exported and unexported methods.
 func (v Value) NumMethod() int {
 	if v.typ == nil {
 		panic(&ValueError{"reflect.Value.NumMethod", Invalid})
@@ -2754,6 +2757,7 @@ type runtimeSelect struct {
 // If the case was a receive, val is filled in with the received value.
 // The conventional OK bool indicates whether the receive corresponds
 // to a sent value.
+//
 //go:noescape
 func rselect([]runtimeSelect) (chosen int, recvOK bool)
 
@@ -2785,7 +2789,6 @@ const (
 // Normally Chan's underlying value must be a channel and Send must be a zero Value.
 // If Chan is a zero Value, then the case is ignored, but Send must still be a zero Value.
 // When a receive operation is selected, the received Value is returned by Select.
-//
 type SelectCase struct {
 	Dir  SelectDir // direction of case
 	Chan Value     // channel to use (for send or receive)
@@ -3491,6 +3494,7 @@ func maplen(m unsafe.Pointer) int
 // Arguments passed through to call do not escape. The type is used only in a
 // very limited callee of call, the stackArgs are copied, and regArgs is only
 // used in the call frame.
+//
 //go:noescape
 //go:linkname call runtime.reflectcall
 func call(stackArgsType *rtype, f, stackArgs unsafe.Pointer, stackArgsSize, stackRetOffset, frameSize uint32, regArgs *abi.RegArgs)
@@ -3498,29 +3502,35 @@ func call(stackArgsType *rtype, f, stackArgs unsafe.Pointer, stackArgsSize, stac
 func ifaceE2I(t *rtype, src any, dst unsafe.Pointer)
 
 // memmove copies size bytes to dst from src. No write barriers are used.
+//
 //go:noescape
 func memmove(dst, src unsafe.Pointer, size uintptr)
 
 // typedmemmove copies a value of type t to dst from src.
+//
 //go:noescape
 func typedmemmove(t *rtype, dst, src unsafe.Pointer)
 
 // typedmemmovepartial is like typedmemmove but assumes that
 // dst and src point off bytes into the value and only copies size bytes.
+//
 //go:noescape
 func typedmemmovepartial(t *rtype, dst, src unsafe.Pointer, off, size uintptr)
 
 // typedmemclr zeros the value at ptr of type t.
+//
 //go:noescape
 func typedmemclr(t *rtype, ptr unsafe.Pointer)
 
 // typedmemclrpartial is like typedmemclr but assumes that
 // dst points off bytes into the value and only clears size bytes.
+//
 //go:noescape
 func typedmemclrpartial(t *rtype, ptr unsafe.Pointer, off, size uintptr)
 
 // typedslicecopy copies a slice of elemType values from src to dst,
 // returning the number of elements copied.
+//
 //go:noescape
 func typedslicecopy(elemType *rtype, dst, src unsafeheader.Slice) int
 

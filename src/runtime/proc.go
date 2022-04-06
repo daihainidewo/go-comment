@@ -283,6 +283,7 @@ func main() {
 }
 
 // os_beforeExit is called from os.Exit(0).
+//
 //go:linkname os_beforeExit os.runtime_beforeExit
 func os_beforeExit() {
 	if raceenabled {
@@ -326,6 +327,7 @@ func Gosched() {
 
 // goschedguarded yields the processor like gosched, but also checks
 // for forbidden states and opts out of the yield in those cases.
+//
 //go:nosplit
 func goschedguarded() {
 	mcall(goschedguarded_m)
@@ -946,6 +948,7 @@ func freezetheworld() {
 // 所有对gp状态的读写需要通过 readgstatus casgstatus castogscanstatus casfrom_Gscanstatus 函数操作
 // All reads and writes of g's status go through readgstatus, casgstatus
 // castogscanstatus, casfrom_Gscanstatus.
+//
 //go:nosplit
 func readgstatus(gp *g) uint32 {
 	return atomic.Load(&gp.atomicstatus)
@@ -1010,6 +1013,7 @@ func castogscanstatus(gp *g, oldval, newval uint32) bool {
 // and casfrom_Gscanstatus instead.
 // casgstatus will loop if the g->atomicstatus is in a Gscan status until the routine that
 // put it in the Gscan state is finished.
+//
 //go:nosplit
 func casgstatus(gp *g, oldval, newval uint32) {
 	if (oldval&_Gscan != 0) || (newval&_Gscan != 0) || oldval == newval {
@@ -1084,6 +1088,7 @@ func casgstatus(gp *g, oldval, newval uint32) {
 // async wakeup that might come in from netpoll. If we see Gwaiting from the readgstatus,
 // it might have become Grunnable by the time we get to the cas. If we called casgstatus,
 // it would loop waiting for the status to go back to Gwaiting, which it never will.
+//
 //go:nosplit
 func casgcopystack(gp *g) uint32 {
 	for {
@@ -1479,6 +1484,7 @@ func mstart0() {
 // mstart1 启动m
 // The go:noinline is to guarantee the getcallerpc/getcallersp below are safe,
 // so that we can set up g0.sched to return to the call of mstart1 above.
+//
 //go:noinline
 func mstart1() {
 	_g_ := getg()
@@ -1544,6 +1550,7 @@ func mstartm0() {
 }
 
 // mPark causes a thread to park itself, returning once woken.
+//
 //go:nosplit
 func mPark() {
 	gp := getg()
@@ -1911,6 +1918,7 @@ func allocm(_p_ *p, fn func(), id int64) *m {
 //
 // When the callback is done with the m, it calls dropm to
 // put the m back on the list.
+//
 //go:nosplit
 func needm() {
 	if (iscgo || GOOS == "windows") && !cgoHasExtraM {
@@ -2124,6 +2132,7 @@ var extraMWaiters uint32
 // to extram. If nilokay is true, then lockextra will
 // return a nil list head if that's what it finds. If nilokay is false,
 // lockextra will keep waiting until the list head is no longer nil.
+//
 //go:nosplit
 func lockextra(nilokay bool) *m {
 	const locked = 1
@@ -2198,6 +2207,7 @@ var newmHandoff struct {
 // May run with m.p==nil, so write barriers are not allowed.
 //
 // id is optional pre-allocated m ID. Omit by passing -1.
+//
 //go:nowritebarrierrec
 func newm(fn func(), _p_ *p, id int64) {
 	// allocm adds a new M to allm, but they do not start until created by
@@ -2378,6 +2388,7 @@ func mspinning() {
 // comment on acquirem below.
 //
 // Must not have write barriers because this may be called without a P.
+//
 //go:nowritebarrierrec
 func startm(_p_ *p, spinning bool) {
 	// Disable preemption.
@@ -2468,6 +2479,7 @@ func startm(_p_ *p, spinning bool) {
 // 新建m去绑定p，执行
 // Hands off P from syscall or locked M.
 // Always runs without a P, so write barriers are not allowed.
+//
 //go:nowritebarrierrec
 func handoffp(_p_ *p) {
 	// handoffp must start an M in any situation where
@@ -2583,6 +2595,7 @@ func stoplockedm() {
 // startlockedm 调度锁定的m去执行锁定的gp
 // Schedules the locked m to run the locked gp.
 // May run during STW, so write barriers are not allowed.
+//
 //go:nowritebarrierrec
 func startlockedm(gp *g) {
 	_g_ := getg()
@@ -3457,6 +3470,7 @@ func dropg() {
 // If the time when the next timer should run is not 0,
 // it is always larger than the returned time.
 // We pass now in and out to avoid extra calls of nanotime.
+//
 //go:yeswritebarrierrec
 func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	// If it's not yet time for the first timer, or the first adjusted
@@ -3927,6 +3941,7 @@ func entersyscall_gcwait() {
 }
 
 // The same as entersyscall(), but with a hint that the syscall is blocking.
+//
 //go:nosplit
 func entersyscallblock() {
 	_g_ := getg()
@@ -4194,6 +4209,7 @@ func exitsyscall0(gp *g) {
 }
 
 // Called from syscall package before fork.
+//
 //go:linkname syscall_runtime_BeforeFork syscall.runtime_BeforeFork
 //go:nosplit
 func syscall_runtime_BeforeFork() {
@@ -4214,6 +4230,7 @@ func syscall_runtime_BeforeFork() {
 }
 
 // Called from syscall package after fork in parent.
+//
 //go:linkname syscall_runtime_AfterFork syscall.runtime_AfterFork
 //go:nosplit
 func syscall_runtime_AfterFork() {
@@ -4264,6 +4281,7 @@ func syscall_runtime_AfterForkInChild() {
 var pendingPreemptSignals uint32
 
 // Called from syscall package before Exec.
+//
 //go:linkname syscall_runtime_BeforeExec syscall.runtime_BeforeExec
 func syscall_runtime_BeforeExec() {
 	// Prevent thread creation during exec.
@@ -4279,6 +4297,7 @@ func syscall_runtime_BeforeExec() {
 }
 
 // Called from syscall package after Exec.
+//
 //go:linkname syscall_runtime_AfterExec syscall.runtime_AfterExec
 func syscall_runtime_AfterExec() {
 	execLock.unlock()
@@ -4581,6 +4600,7 @@ func Breakpoint() {
 // dolockOSThread is called by LockOSThread and lockOSThread below
 // after they modify m.locked. Do not allow preemption during this call,
 // or else the m might be different in this function than in the caller.
+//
 //go:nosplit
 func dolockOSThread() {
 	if GOARCH == "wasm" {
@@ -4641,6 +4661,7 @@ func lockOSThread() {
 // dounlockOSThread is called by UnlockOSThread and unlockOSThread below
 // after they update m->locked. Do not allow preemption during this call,
 // or else the m might be in different in this function than in the caller.
+//
 //go:nosplit
 func dounlockOSThread() {
 	if GOARCH == "wasm" {
@@ -4732,6 +4753,7 @@ func _VDSO()                      { _VDSO() }
 // sigprof 收到 SIGPROF 信号时调用，由于是处理信号，所以可以在STW期间运行
 // Called if we receive a SIGPROF signal.
 // Called by the signal handler, may run during STW.
+//
 //go:nowritebarrierrec
 func sigprof(pc, sp, lr uintptr, gp *g, mp *m) {
 	if prof.hz == 0 {
@@ -5830,6 +5852,7 @@ func schedEnabled(gp *g) bool {
 // Put mp on midle list.
 // sched.lock must be held.
 // May run during STW, so write barriers are not allowed.
+//
 //go:nowritebarrierrec
 func mput(mp *m) {
 	assertLockHeld(&sched.lock)
@@ -5844,6 +5867,7 @@ func mput(mp *m) {
 // Try to get an m from midle list.
 // sched.lock must be held.
 // May run during STW, so write barriers are not allowed.
+//
 //go:nowritebarrierrec
 func mget() *m {
 	assertLockHeld(&sched.lock)
@@ -5860,6 +5884,7 @@ func mget() *m {
 // Put gp on the global runnable queue.
 // sched.lock must be held.
 // May run during STW, so write barriers are not allowed.
+//
 //go:nowritebarrierrec
 func globrunqput(gp *g) {
 	assertLockHeld(&sched.lock)
@@ -5872,6 +5897,7 @@ func globrunqput(gp *g) {
 // Put gp at the head of the global runnable queue.
 // sched.lock must be held.
 // May run during STW, so write barriers are not allowed.
+//
 //go:nowritebarrierrec
 func globrunqputhead(gp *g) {
 	assertLockHeld(&sched.lock)
@@ -5885,6 +5911,7 @@ func globrunqputhead(gp *g) {
 // This clears *batch.
 // sched.lock must be held.
 // May run during STW, so write barriers are not allowed.
+//
 //go:nowritebarrierrec
 func globrunqputbatch(batch *gQueue, n int32) {
 	assertLockHeld(&sched.lock)
@@ -5964,11 +5991,11 @@ func (p pMask) clear(id int32) {
 //
 // Thus, we get the following effects on timer-stealing in findrunnable:
 //
-// * Idle Ps with no timers when they go idle are never checked in findrunnable
-//   (for work- or timer-stealing; this is the ideal case).
-// * Running Ps must always be checked.
-// * Idle Ps whose timers are stolen must continue to be checked until they run
-//   again, even after timer expiration.
+//  * Idle Ps with no timers when they go idle are never checked in findrunnable
+//    (for work- or timer-stealing; this is the ideal case).
+//  * Running Ps must always be checked.
+//  * Idle Ps whose timers are stolen must continue to be checked until they run
+//    again, even after timer expiration.
 //
 // When the P starts running again, the mask should be set, as a timer may be
 // added at any time.
@@ -6000,6 +6027,7 @@ func updateTimerPMask(pp *p) {
 // sched.lock must be held.
 //
 // May run during STW, so write barriers are not allowed.
+//
 //go:nowritebarrierrec
 func pidleput(_p_ *p) {
 	assertLockHeld(&sched.lock)
@@ -6021,6 +6049,7 @@ func pidleput(_p_ *p) {
 // sched.lock must be held.
 //
 // May run during STW, so write barriers are not allowed.
+//
 //go:nowritebarrierrec
 func pidleget() *p {
 	assertLockHeld(&sched.lock)
@@ -6513,6 +6542,7 @@ func sync_atomic_runtime_procUnpin() {
 }
 
 // Active spinning for sync.Mutex.
+//
 //go:linkname sync_runtime_canSpin sync.runtime_canSpin
 //go:nosplit
 func sync_runtime_canSpin(i int) bool {
