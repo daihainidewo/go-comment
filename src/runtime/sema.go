@@ -332,12 +332,13 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 	// Rotate up into tree according to ticket (priority).
 	for s.parent != nil && s.parent.ticket > s.ticket {
 		if s.parent.prev == s {
-			//
+			// s 是左子树 就右旋
 			root.rotateRight(s.parent)
 		} else {
 			if s.parent.next != s {
 				panic("semaRoot queue")
 			}
+			// s 是右子树 就左旋
 			root.rotateLeft(s.parent)
 		}
 	}
