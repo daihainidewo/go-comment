@@ -6498,7 +6498,7 @@ func setMaxThreads(in int) (out int) {
 	return
 }
 
-// procPin 标记当前g不可抢占
+// procPin 标记当前 g 不可抢占 返回 p 的id
 //go:nosplit
 func procPin() int {
 	_g_ := getg()

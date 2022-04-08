@@ -53,6 +53,8 @@ func (o *Once) Do(f func()) {
 	// This is why the slow path falls back to a mutex, and why
 	// the atomic.StoreUint32 must be delayed until after f returns.
 
+	// cas 不能保证 f 执行完毕
+	// 所以这里用锁
 	if atomic.LoadUint32(&o.done) == 0 {
 		// Outlined slow-path to allow inlining of the fast-path.
 		o.doSlow(f)

@@ -168,27 +168,34 @@ func semrelease(addr *uint32) {
 	semrelease1(addr, false, 0)
 }
 
+// 解锁单个 addr 的等待 g 并唤醒该 g
 func semrelease1(addr *uint32, handoff bool, skipframes int) {
+	// 取根结点
 	root := semroot(addr)
 	atomic.Xadd(addr, 1)
 
+	// 检测操作必须在 xadd 后面
 	// Easy case: no waiters?
 	// This check must happen after the xadd, to avoid a missed wakeup
 	// (see loop in semacquire).
 	if atomic.Load(&root.nwait) == 0 {
+		// 没有等待的g直接返回去
 		return
 	}
 
 	// Harder case: search for a waiter and wake it.
 	lockWithRank(&root.lock, lockRankRoot)
 	if atomic.Load(&root.nwait) == 0 {
+		// 二次检测
 		// The count is already consumed by another goroutine,
 		// so no need to wake up another goroutine.
 		unlock(&root.lock)
 		return
 	}
+	// 从树中弹出一个 sudog
 	s, t0 := root.dequeue(addr)
 	if s != nil {
+		// 弹出有效
 		atomic.Xadd(&root.nwait, -1)
 	}
 	unlock(&root.lock)
@@ -201,10 +208,14 @@ func semrelease1(addr *uint32, handoff bool, skipframes int) {
 			throw("corrupted semaphore ticket")
 		}
 		if handoff && cansemacquire(addr) {
+			// 标记下次执行 并且 可以add还可以被获取
 			s.ticket = 1
 		}
+		// 唤醒s
 		readyWithTime(s, 5+skipframes)
 		if s.ticket == 1 && getg().m.locks == 0 {
+			// 标记为1 并且 m 没有被其他 g 锁住
+			// 让出 m 等待下次调度
 			// Direct G handoff
 			// readyWithTime has added the waiter G as runnext in the
 			// current P; we now call the scheduler so that we start running
@@ -547,7 +558,7 @@ func notifyListAdd(l *notifyList) uint32 {
 	return atomic.Xadd(&l.wait, 1) - 1
 }
 
-// 添加进等待队列
+// 添加进等待队列 l 中
 // notifyListWait waits for a notification. If one has been sent since
 // notifyListAdd was called, it returns immediately. Otherwise, it blocks.
 //
@@ -586,7 +597,7 @@ func notifyListWait(l *notifyList, t uint32) {
 	releaseSudog(s)
 }
 
-// 唤醒所有等待者
+// 唤醒 l 中所有等待者
 // notifyListNotifyAll notifies all entries in the list.
 //
 //go:linkname notifyListNotifyAll sync.runtime_notifyListNotifyAll
@@ -624,7 +635,7 @@ func notifyListNotifyAll(l *notifyList) {
 	}
 }
 
-// 唤醒一个等待者
+// 唤醒 l 第一个等待者
 // notifyListNotifyOne notifies one entry in the list.
 //
 //go:linkname notifyListNotifyOne sync.runtime_notifyListNotifyOne

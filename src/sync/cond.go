@@ -24,6 +24,7 @@ type Cond struct {
 	// L is held while observing or changing the condition
 	L Locker
 
+	// 等待者列表
 	notify  notifyList
 	checker copyChecker
 }
@@ -50,8 +51,10 @@ func NewCond(l Locker) *Cond {
 //    c.L.Unlock()
 func (c *Cond) Wait() {
 	c.checker.check()
+	// 获取等待者id
 	t := runtime_notifyListAdd(&c.notify)
 	c.L.Unlock()
+	// 添加进等待列表
 	runtime_notifyListWait(&c.notify, t)
 	c.L.Lock()
 }
@@ -62,6 +65,7 @@ func (c *Cond) Wait() {
 // during the call.
 func (c *Cond) Signal() {
 	c.checker.check()
+	// 唤醒单个 g
 	runtime_notifyListNotifyOne(&c.notify)
 }
 
@@ -71,6 +75,7 @@ func (c *Cond) Signal() {
 // during the call.
 func (c *Cond) Broadcast() {
 	c.checker.check()
+	// 唤醒所有等待的 g
 	runtime_notifyListNotifyAll(&c.notify)
 }
 

@@ -197,6 +197,7 @@ func Sizeof(x ArbitraryType) uintptr
 // The return value of Offsetof is a Go constant.
 func Offsetof(x ArbitraryType) uintptr
 
+// Alignof 返回 x 的字节对齐值
 // Alignof takes an expression x of any type and returns the required alignment
 // of a hypothetical variable v as if v was declared via var v = x.
 // It is the largest value m such that the address of v is always zero mod m.
