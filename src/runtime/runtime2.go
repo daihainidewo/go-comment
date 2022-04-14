@@ -154,6 +154,7 @@ const (
 )
 
 // mutex 互斥锁，在没有竞争的情况下和自旋锁一样快，在竞争情况下会休眠于内核，不需要初始化每个锁
+// 锁住的是 g
 // Mutual exclusion locks.  In the uncontended case,
 // as fast as spin locks (just a few user-level instructions),
 // but on the contention path they sleep in the kernel.
@@ -176,6 +177,7 @@ type mutex struct {
 // notetsleep 是只休眠指定纳秒后返回，但不能立即调用 noteclear
 // notesleep / notetsleep 通常在g0上调用
 // notetsleepg 和 notetsleep 类似，在用户g上调用
+// 锁住的是 m
 // sleep and wakeup on one-time events.
 // before any calls to notesleep or notewakeup,
 // must call noteclear to initialize the Note.
@@ -570,8 +572,8 @@ type m struct {
 	ncgo          int32       // number of cgo calls currently in progress
 	cgoCallersUse uint32      // if non-zero, cgoCallers in use temporarily
 	cgoCallers    *cgoCallers // cgo traceback if crashing in cgo call
-	park          note
-	alllink       *m // on allm
+	park          note        // 休眠的标记
+	alllink       *m          // on allm
 	schedlink     muintptr
 	lockedg       guintptr
 	createstack   [32]uintptr // stack that created this thread.
@@ -611,7 +613,7 @@ type m struct {
 
 	mOS // 线程锁和条件变量
 
-	// m最多持有10个lock，由锁排序代码维护
+	// m最多持有10个排序锁，由锁排序代码维护
 	// Up to 10 locks held by this m, maintained by the lock ranking code.
 	locksHeldLen int
 	locksHeld    [10]heldLockInfo

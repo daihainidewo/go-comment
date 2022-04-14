@@ -6,6 +6,7 @@
 
 package sort
 
+// 简单插入排序
 // insertionSort sorts data[a:b] using insertion sort.
 func insertionSort(data Interface, a, b int) {
 	for i := a + 1; i < b; i++ {
@@ -15,6 +16,7 @@ func insertionSort(data Interface, a, b int) {
 	}
 }
 
+// 向下调整
 // siftDown implements the heap property on data[lo:hi].
 // first is an offset into the array where the root of the heap lies.
 func siftDown(data Interface, lo, hi, first int) {
@@ -35,6 +37,7 @@ func siftDown(data Interface, lo, hi, first int) {
 	}
 }
 
+// 堆排
 func heapSort(data Interface, a, b int) {
 	first := a
 	lo := 0
@@ -55,6 +58,7 @@ func heapSort(data Interface, a, b int) {
 // Quicksort, loosely following Bentley and McIlroy,
 // "Engineering a Sort Function" SP&E November 1993.
 
+// 三数取中
 // medianOfThree moves the median of the three values data[m0], data[m1], data[m2] into data[m1].
 func medianOfThree(data Interface, m1, m0, m2 int) {
 	// sort 3 elements
@@ -72,6 +76,7 @@ func medianOfThree(data Interface, m1, m0, m2 int) {
 	// now data[m0] <= data[m1] <= data[m2]
 }
 
+// 交换 a和b n个数据
 func swapRange(data Interface, a, b, n int) {
 	for i := 0; i < n; i++ {
 		data.Swap(a+i, b+i)
@@ -165,6 +170,7 @@ func doPivot(data Interface, lo, hi int) (midlo, midhi int) {
 	return b - 1, c
 }
 
+// 快排
 func quickSort(data Interface, a, b, maxDepth int) {
 	for b-a > 12 { // Use ShellSort for slices <= 12 elements
 		if maxDepth == 0 {
@@ -184,6 +190,7 @@ func quickSort(data Interface, a, b, maxDepth int) {
 		}
 	}
 	if b-a > 1 {
+		// 先用希尔排序操作一遍 再用直接插入排序
 		// Do ShellSort pass with gap 6
 		// It could be written in this simplified form cause b-a <= 12
 		for i := a + 6; i < b; i++ {
@@ -198,6 +205,8 @@ func quickSort(data Interface, a, b, maxDepth int) {
 func stable(data Interface, n int) {
 	blockSize := 20 // must be > 0
 	a, b := 0, blockSize
+	// 以20个元素为一个区间
+	// 先使区间有序
 	for b <= n {
 		insertionSort(data, a, b)
 		a = b
@@ -205,6 +214,7 @@ func stable(data Interface, n int) {
 	}
 	insertionSort(data, a, n)
 
+	// 在使用归并排序
 	for blockSize < n {
 		a, b = 0, 2*blockSize
 		for b <= n {
@@ -320,6 +330,9 @@ func symMerge(data Interface, a, m, b int) {
 	}
 }
 
+// 切换
+// u = data[a:m] and v = data[m:b]
+// 'x u v y' is changed to 'x v u y'
 // rotate rotates two consecutive blocks u = data[a:m] and v = data[m:b] in data:
 // Data of the form 'x u v y' is changed to 'x v u y'.
 // rotate performs at most b-a many calls to data.Swap,

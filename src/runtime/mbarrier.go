@@ -160,7 +160,7 @@ func typedmemmove(typ *_type, dst, src unsafe.Pointer) {
 		return
 	}
 	if writeBarrier.needed && typ.ptrdata != 0 {
-        // 开启写屏障并类型中有指针数据，为内存空间批量添加写屏障
+		// 开启写屏障并类型中有指针数据，为内存空间批量添加写屏障
 		bulkBarrierPreWrite(uintptr(dst), uintptr(src), typ.ptrdata)
 	}
 	// There's a race here: if some other goroutine can write to
@@ -334,6 +334,9 @@ func reflect_typedmemclrpartial(typ *_type, ptr unsafe.Pointer, off, size uintpt
 	memclrNoHeapPointers(ptr, size)
 }
 
+// 清理 ptr 开始的 n 个字节
+// 调用者必须确保 ptr 中包含指针 通常检测 typ.ptrdata
+// ptr 不需要指向申请地址的开始
 // memclrHasPointers clears n bytes of typed memory starting at ptr.
 // The caller must ensure that the type of the object at ptr has
 // pointers, usually by checking typ.ptrdata. However, ptr

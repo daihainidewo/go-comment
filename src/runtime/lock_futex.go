@@ -152,6 +152,7 @@ func noteclear(n *note) { // 置空
 	n.key = 0
 }
 
+// 唤醒 note
 func notewakeup(n *note) {
 	old := atomic.Xchg(key32(&n.key), 1)
 	if old != 0 { // wakeup 时 n.key 必须是0
@@ -161,6 +162,7 @@ func notewakeup(n *note) {
 	futexwakeup(key32(&n.key), 1)
 }
 
+// 休眠 note
 func notesleep(n *note) {
 	gp := getg()
 	if gp != gp.m.g0 { // 必须是g0
