@@ -155,7 +155,9 @@ const (
 // stackpool 全局栈空闲池
 // Global pool of spans that have free stacks.
 // Stacks are assigned an order according to size.
-//     order = log_2(size/FixedStack)
+//
+//	order = log_2(size/FixedStack)
+//
 // There is a free list for each order.
 var stackpool [_NumStackOrders]struct {
 	item stackpoolItem

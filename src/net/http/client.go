@@ -446,11 +446,11 @@ func basicAuth(username, password string) string {
 // the following redirect codes, Get follows the redirect, up to a
 // maximum of 10 redirects:
 //
-//    301 (Moved Permanently)
-//    302 (Found)
-//    303 (See Other)
-//    307 (Temporary Redirect)
-//    308 (Permanent Redirect)
+//	301 (Moved Permanently)
+//	302 (Found)
+//	303 (See Other)
+//	307 (Temporary Redirect)
+//	308 (Permanent Redirect)
 //
 // An error is returned if there were too many redirects or if there
 // was an HTTP protocol error. A non-2xx response doesn't cause an
@@ -475,11 +475,11 @@ func Get(url string) (resp *Response, err error) {
 // following redirect codes, Get follows the redirect after calling the
 // Client's CheckRedirect function:
 //
-//    301 (Moved Permanently)
-//    302 (Found)
-//    303 (See Other)
-//    307 (Temporary Redirect)
-//    308 (Permanent Redirect)
+//	301 (Moved Permanently)
+//	302 (Found)
+//	303 (See Other)
+//	307 (Temporary Redirect)
+//	308 (Permanent Redirect)
 //
 // An error is returned if the Client's CheckRedirect function fails
 // or if there was an HTTP protocol error. A non-2xx response doesn't
@@ -931,13 +931,13 @@ func (c *Client) PostForm(url string, data url.Values) (resp *Response, err erro
 // the following redirect codes, Head follows the redirect, up to a
 // maximum of 10 redirects:
 //
-//    301 (Moved Permanently)
-//    302 (Found)
-//    303 (See Other)
-//    307 (Temporary Redirect)
-//    308 (Permanent Redirect)
+//	301 (Moved Permanently)
+//	302 (Found)
+//	303 (See Other)
+//	307 (Temporary Redirect)
+//	308 (Permanent Redirect)
 //
-// Head is a wrapper around DefaultClient.Head
+// # Head is a wrapper around DefaultClient.Head
 //
 // To make a request with a specified context.Context, use NewRequestWithContext
 // and DefaultClient.Do.
@@ -949,11 +949,11 @@ func Head(url string) (resp *Response, err error) {
 // following redirect codes, Head follows the redirect after calling the
 // Client's CheckRedirect function:
 //
-//    301 (Moved Permanently)
-//    302 (Found)
-//    303 (See Other)
-//    307 (Temporary Redirect)
-//    308 (Permanent Redirect)
+//	301 (Moved Permanently)
+//	302 (Found)
+//	303 (See Other)
+//	307 (Temporary Redirect)
+//	308 (Permanent Redirect)
 //
 // To make a request with a specified context.Context, use NewRequestWithContext
 // and Client.Do.
@@ -986,8 +986,8 @@ func (c *Client) CloseIdleConnections() {
 // 1) 读取错误或关闭时，将调用停止函数
 // 2) 读取失败时，如果reqDidTimeout为true，则将错误包装并标记为net.Error，达到超时
 // cancelTimerBody is an io.ReadCloser that wraps rc with two features:
-//  1) On Read error or close, the stop func is called.
-//  2) On Read failure, if reqDidTimeout is true, the error is wrapped and
+//  1. On Read error or close, the stop func is called.
+//  2. On Read failure, if reqDidTimeout is true, the error is wrapped and
 //     marked as net.Error that hit its timeout.
 type cancelTimerBody struct {
 	stop          func() // stops the time.Timer waiting to cancel the request

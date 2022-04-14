@@ -495,8 +495,9 @@ type response struct {
 // prior to the headers being written. If the set of trailers is fixed
 // or known before the header is written, the normal Go trailers mechanism
 // is preferred:
-//    https://pkg.go.dev/net/http#ResponseWriter
-//    https://pkg.go.dev/net/http#example-ResponseWriter-Trailers
+//
+//	https://pkg.go.dev/net/http#ResponseWriter
+//	https://pkg.go.dev/net/http#example-ResponseWriter-Trailers
 const TrailerPrefix = "Trailer:"
 
 // finalTrailers is called after the Handler exits and returns a non-nil
@@ -1725,7 +1726,7 @@ type closeWriter interface {
 var _ closeWriter = (*net.TCPConn)(nil)
 
 // closeWrite flushes any outstanding data and sends a FIN packet (if
-// client is connected via TCP), signalling that we're done. We then
+// client is connected via TCP), signaling that we're done. We then
 // pause for a bit, hoping the client processes it before any
 // subsequent RST.
 //
