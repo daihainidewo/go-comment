@@ -84,6 +84,7 @@ func (ctxt *Link) LookupABI(name string, abi ABI) *LSym {
 	return ctxt.LookupABIInit(name, abi, nil)
 }
 
+// LookupABIInit 查找符合 abi 的名字为 name 的连接符号
 // LookupABI looks up a symbol with the given ABI.
 // If it does not exist, it creates it and
 // passes it to init for one-time initialization.

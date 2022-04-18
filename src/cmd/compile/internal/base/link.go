@@ -29,6 +29,7 @@ func Linkname(name string, abi obj.ABI) *obj.LSym {
 	return linksym("_", name, abi)
 }
 
+// linksym 是用于实现上述导出 API 的内部辅助函数
 // linksym is an internal helper function for implementing the above
 // exported APIs.
 func linksym(pkg, name string, abi obj.ABI) *obj.LSym {

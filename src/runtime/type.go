@@ -23,9 +23,9 @@ import (
 type tflag uint8
 
 const (
-	tflagUncommon      tflag = 1 << 0
-	tflagExtraStar     tflag = 1 << 1
-	tflagNamed         tflag = 1 << 2
+	tflagUncommon      tflag = 1 << 0 // 是否自定义类型
+	tflagExtraStar     tflag = 1 << 1 // 有无 *
+	tflagNamed         tflag = 1 << 2 // 有无名字
 	tflagRegularMemory tflag = 1 << 3 // equal and hash can treat values of this type as a single region of t.size bytes
 )
 
@@ -36,7 +36,7 @@ const (
 // ../internal/reflectlite/type.go:/^type.rtype.
 type _type struct {
 	size       uintptr // 类型占用内存大小
-	ptrdata    uintptr // size of memory prefix holding all pointers
+	ptrdata    uintptr // size of memory prefix holding all pointers 类型在 ptrdata 后面的字节都不包含指针
 	hash       uint32  // 类型哈希值
 	tflag      tflag   // 类型标志位
 	align      uint8   // 类型对齐
@@ -53,15 +53,18 @@ type _type struct {
 	ptrToThis typeOff
 }
 
+// 获取类型名字 详细名字
 func (t *_type) string() string {
 	s := t.nameOff(t.str).name()
 	if t.tflag&tflagExtraStar != 0 {
+		// 去掉 *
 		return s[1:]
 	}
 	return s
 }
 
-// 返回内置类型结构
+// 返回非内置类型结构
+// 在内置类型后面追加 uncommontype
 func (t *_type) uncommon() *uncommontype {
 	if t.tflag&tflagUncommon == 0 {
 		// 不是内置类型 返回 nil
@@ -125,6 +128,7 @@ func (t *_type) uncommon() *uncommontype {
 	}
 }
 
+// 获取类型名中 [] 包含的值
 func (t *_type) name() string {
 	if t.tflag&tflagNamed == 0 {
 		return ""
@@ -150,8 +154,10 @@ func (t *_type) name() string {
 // types, not just named types.
 func (t *_type) pkgpath() string {
 	if u := t.uncommon(); u != nil {
+		// 如果是非内置类型 通过查表返回包名
 		return t.nameOff(u.pkgpath).name()
 	}
+	// 内置类型 只有 struct 和 interface 有 pkgpath
 	switch t.kind & kindMask {
 	case kindStruct:
 		st := (*structtype)(unsafe.Pointer(t))
@@ -339,6 +345,7 @@ type nameOff int32
 type typeOff int32
 type textOff int32
 
+// 成员函数
 type method struct {
 	name nameOff
 	mtyp typeOff
@@ -346,6 +353,7 @@ type method struct {
 	tfn  textOff
 }
 
+// 自定义类型额外数据
 type uncommontype struct {
 	// 包路径偏移量
 	pkgpath nameOff
@@ -355,11 +363,13 @@ type uncommontype struct {
 	_       uint32 // unused
 }
 
+// 接口函数
 type imethod struct {
 	name nameOff
 	ityp typeOff
 }
 
+// 接口类型
 type interfacetype struct {
 	typ     _type
 	pkgpath name

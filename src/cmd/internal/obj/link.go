@@ -450,6 +450,7 @@ const (
 	AMask          = AllowedOpCodes - 1 // AND with this to use the opcode as an array index.
 )
 
+// LSym 写入对象文件的符号
 // An LSym is the sort of symbol that is written to an object file.
 // It represents Go symbols in a flat pkg+"."+name namespace.
 type LSym struct {

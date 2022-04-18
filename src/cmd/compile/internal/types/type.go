@@ -29,6 +29,7 @@ type TypeObject interface {
 
 //go:generate stringer -type Kind -trimprefix T type.go
 
+// Kind 描述类型种类
 // Kind describes a kind of type.
 type Kind uint8
 
@@ -165,6 +166,7 @@ type Type struct {
 	// TUNION: *Union
 	extra interface{}
 
+	// 类型的字节大小
 	// width is the width of this Type in bytes.
 	width int64 // valid if Align > 0
 
@@ -187,6 +189,8 @@ type Type struct {
 	sym    *Sym  // symbol containing name, for named types
 	vargen int32 // unique name for OTYPE/ONAME
 
+	// 类型的种类和对齐字节
+	// 对齐字节为 0 表示还没有计算类型大小和字节对齐
 	kind  Kind  // kind of type
 	align uint8 // the required alignment of this type, in bytes (0 means Width and Align have not yet been computed)
 
@@ -1100,8 +1104,10 @@ func (t *Type) ArgWidth() int64 {
 	return t.extra.(*Func).Argwid
 }
 
+// Size 返回类型内存大小
 func (t *Type) Size() int64 {
 	if t.kind == TSSA {
+		// 是内部类型
 		if t == TypeInt128 {
 			return 16
 		}
@@ -1536,6 +1542,8 @@ func (t *Type) IsTypeParam() bool {
 	return t.kind == TTYPEPARAM
 }
 
+// IsEmptyInterface 是否是空接口
+// 没有方法列表的接口
 // IsEmptyInterface reports whether t is an empty interface type.
 func (t *Type) IsEmptyInterface() bool {
 	return t.IsInterface() && t.AllMethods().Len() == 0

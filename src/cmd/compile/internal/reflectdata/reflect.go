@@ -75,6 +75,7 @@ func structfieldSize() int { return 3 * types.PtrSize }       // Sizeof(runtime.
 func imethodSize() int     { return 4 + 4 }                   // Sizeof(runtime.imethod{})
 func commonSize() int      { return 4*types.PtrSize + 8 + 8 } // Sizeof(runtime._type{})
 
+// runtime.uncommontype 对象的字节大小
 func uncommonSize(t *types.Type) int { // Sizeof(runtime.uncommontype{})
 	if t.Sym() == nil && len(methods(t)) == 0 {
 		return 0
@@ -302,6 +303,7 @@ func MapIterType(t *types.Type) *types.Type {
 	return hiter
 }
 
+// 返回 t 的所有方法列表 由名字排序
 // methods returns the methods of the non-interface type t, sorted by name.
 // Generates stub functions as needed.
 func methods(t *types.Type) []*typeSig {
@@ -683,6 +685,7 @@ var (
 	memequalvarlen *obj.LSym
 )
 
+// types.Type 转储成 runtime._type
 // dcommontype dumps the contents of a reflect.rtype (runtime._type).
 func dcommontype(lsym *obj.LSym, t *types.Type) int {
 	types.CalcSize(t)
@@ -723,6 +726,7 @@ func dcommontype(lsym *obj.LSym, t *types.Type) int {
 
 	var tflag uint8
 	if uncommonSize(t) != 0 {
+		// 自定义类型
 		tflag |= tflagUncommon
 	}
 	if t.Sym() != nil && t.Sym().Name != "" {
@@ -810,7 +814,7 @@ func TypeSymPrefix(prefix string, t *types.Type) *types.Sym {
 	NeedRuntimeType(t)
 	signatmu.Unlock()
 
-	//print("algsym: %s -> %+S\n", p, s);
+	// print("algsym: %s -> %+S\n", p, s);
 
 	return s
 }

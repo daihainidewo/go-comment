@@ -226,6 +226,7 @@ func calcStructOffset(errtype *Type, t *Type, o int64, flag int) int64 {
 	return o
 }
 
+// CalcSize 计算并存储 t 的大小和对齐方式
 // CalcSize calculates and stores the size and alignment for t.
 // If CalcSizeDisabled is set, and the size/alignment
 // have not already been calculated, it calls Fatal.
@@ -253,6 +254,7 @@ func CalcSize(t *Type) {
 	}
 
 	if t.widthCalculated() {
+		// 已经计算过了 返回
 		return
 	}
 
@@ -521,6 +523,11 @@ func ResumeCheckSize() {
 	defercalc--
 }
 
+// PtrDataSize 返回包含指针数据的 t 前缀的字节长度
+// 即返回位置到类型结束字节都不包含指针
+// 此偏移量之后的任何内容都是标量数据
+// PtrDataSize 仅针对实际的 Go 类型定义
+// 在编译器内部类型（例如 TSSA、TRESULTS）上使用它是错误的
 // PtrDataSize returns the length in bytes of the prefix of t
 // containing pointer data. Anything after this offset is scalar data.
 //
@@ -561,16 +568,21 @@ func PtrDataSize(t *Type) int64 {
 
 	case TARRAY:
 		if t.NumElem() == 0 {
+			// 无数组元素返回 0
 			return 0
 		}
 		// t.NumElem() > 0
+		// 获取数组单元素的指针偏移
 		size := PtrDataSize(t.Elem())
 		if size == 0 {
+			// 数组元素无指针返回 0
 			return 0
 		}
+		// 元素有指针 返回最后一个元素加上单元素指针偏移
 		return (t.NumElem()-1)*t.Elem().Size() + size
 
 	case TSTRUCT:
+		// 找到最后一个是指针的字段
 		// Find the last field that has pointers, if any.
 		fs := t.Fields().Slice()
 		for i := len(fs) - 1; i >= 0; i-- {

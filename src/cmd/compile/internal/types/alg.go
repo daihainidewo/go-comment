@@ -46,6 +46,7 @@ func AlgType(t *Type) (AlgKind, *Type) {
 
 	switch t.Kind() {
 	case TANY, TFORW:
+		// 稍后定义
 		// will be defined later.
 		return ANOEQ, t
 
@@ -57,6 +58,7 @@ func AlgType(t *Type) (AlgKind, *Type) {
 		return AMEM, nil
 
 	case TFUNC, TMAP:
+		// 没有相等函数类型
 		return ANOEQ, t
 
 	case TFLOAT32:
@@ -76,8 +78,10 @@ func AlgType(t *Type) (AlgKind, *Type) {
 
 	case TINTER:
 		if t.IsEmptyInterface() {
+			// 空接口
 			return ANILINTER, nil
 		}
+		// 非空接口
 		return AINTER, nil
 
 	case TSLICE:

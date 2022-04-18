@@ -210,11 +210,13 @@ type funcval struct {
 	// variable-size, fn-specific data here
 }
 
+// 带方法的接口
 type iface struct {
 	tab  *itab
 	data unsafe.Pointer
 }
 
+// 不带方法的接口
 type eface struct {
 	_type *_type
 	data  unsafe.Pointer

@@ -43,11 +43,13 @@ func eqCanPanic(t *types.Type) bool {
 	}
 }
 
+// AlgType 返回固定宽度的 AMEM 类型
 // AlgType returns the fixed-width AMEMxx variants instead of the general
 // AMEM kind when possible.
 func AlgType(t *types.Type) types.AlgKind {
 	a, _ := types.AlgType(t)
 	if a == types.AMEM {
+		// 如果是 types.AMEM 则按大小具体细分
 		if t.Alignment() < int64(base.Ctxt.Arch.Alignment) && t.Alignment() < t.Size() {
 			// For example, we can't treat [2]int16 as an int32 if int32s require
 			// 4-byte alignment. See issue 46283.
@@ -305,6 +307,8 @@ func hashfor(t *types.Type) ir.Node {
 	return n
 }
 
+// sysClosure 返回一个闭包
+// 它将调用给定的运行时函数 没有封闭变量
 // sysClosure returns a closure which will call the
 // given runtime function (with no closed-over variables).
 func sysClosure(name string) *obj.LSym {
@@ -322,6 +326,8 @@ func sysClosure(name string) *obj.LSym {
 func geneq(t *types.Type) *obj.LSym {
 	switch AlgType(t) {
 	case types.ANOEQ:
+		// 没有判等函数返回 nil
+		// 运行时尝试比较时会 panic
 		// The runtime will panic if it tries to compare
 		// a type with a nil equality function.
 		return nil
