@@ -267,14 +267,17 @@ type Func struct {
 	opaque struct{} // unexported field to disallow conversions
 }
 
+// raw 转换为原始数据
 func (f *Func) raw() *_func {
 	return (*_func)(unsafe.Pointer(f))
 }
 
+// funcInfo 通过 *Func 返回 funcInfo
 func (f *Func) funcInfo() funcInfo {
 	return f.raw().funcInfo()
 }
 
+// funcInfo 通过 *_func 返回 funcInfo
 func (f *_func) funcInfo() funcInfo {
 	// Find the module containing fn. fn is located in the pclntable.
 	// The unsafe.Pointer to uintptr conversions and arithmetic
@@ -287,6 +290,7 @@ func (f *_func) funcInfo() funcInfo {
 		}
 		base := uintptr(unsafe.Pointer(&datap.pclntable[0]))
 		if base <= ptr && ptr < base+uintptr(len(datap.pclntable)) {
+			// 找到了 moduledata
 			mod = datap
 			break
 		}
@@ -413,6 +417,9 @@ type pcHeader struct {
 // moduledata is stored in statically allocated non-pointer memory;
 // none of the pointers here are visible to the garbage collector.
 type moduledata struct {
+	// ftab 函数查找表
+	// minpc pc 最小值
+	// maxpc pc 最大值
 	pcHeader     *pcHeader
 	funcnametab  []byte
 	cutab        []uint32
@@ -423,6 +430,8 @@ type moduledata struct {
 	findfunctab  uintptr
 	minpc, maxpc uintptr
 
+	// text 信息数据基址
+	// gofunc 函数基址
 	text, etext           uintptr
 	noptrdata, enoptrdata uintptr
 	data, edata           uintptr
@@ -572,9 +581,19 @@ type textsect struct {
 	baseaddr uintptr // relocated section address
 }
 
+// minfunc 最小函数大小
+// pcbucketsize 查找表的桶大小
 const minfunc = 16                 // minimum function size
 const pcbucketsize = 256 * minfunc // size of bucket in the pc->func lookup table
 
+// findfuncbucket 查找 func 的桶
+// bucket 代表 4096 字节的文本段
+// subbucket 表示 256 字节的文本段
+// 要通过给定的 pc 找函数
+// 得先找到 pc 对应的 bucket 和 subbucket
+// 将 idx 和 subbucket 相加获取函数的索引
+// 由该索引开始遍历 functab 找到指定的函数
+// 该表每 4096 个字节的代码使用 20 个字节 或约 0.5% 的开销
 // findfunctab is an array of these structures.
 // Each bucket represents 4096 bytes of the text segment.
 // Each subbucket represents 256 bytes of the text segment.
@@ -588,6 +607,7 @@ type findfuncbucket struct {
 	subbuckets [16]byte
 }
 
+// moduledataverify 验证所有的 moduledata
 func moduledataverify() {
 	for datap := &firstmoduledata; datap != nil; datap = datap.next {
 		moduledataverify1(datap)
@@ -596,6 +616,7 @@ func moduledataverify() {
 
 const debugPcln = false
 
+// moduledataverify1 验证 moduledata
 func moduledataverify1(datap *moduledata) {
 	// Check that the pclntab's format is valid.
 	hdr := datap.pcHeader
@@ -644,6 +665,8 @@ func moduledataverify1(datap *moduledata) {
 	}
 }
 
+// textAddr 返回 md.text + off
+// off 是在外部链接器调整 sections 的基地址之前在内部链接时计算的虚拟偏移量
 // textAddr returns md.text + off, with special handling for multiple text sections.
 // off is a (virtual) offset computed at internal linking time,
 // before the external linker adjusts the sections' base addresses.
@@ -681,6 +704,8 @@ func (md *moduledata) textAddr(off32 uint32) uintptr {
 	return res
 }
 
+// textOff 与 textAddr 相反
+// 它将 PC 转换为 md.text 的虚拟偏移量
 // textOff is the opposite of textAddr. It converts a PC to a (virtual) offset
 // to md.text, and returns if the PC is in any Go text section.
 //
@@ -765,6 +790,7 @@ func (f *Func) Entry() uintptr {
 	return fn.funcInfo().entry()
 }
 
+// FileLine 返回函数所在源码的文件和行号
 // FileLine returns the file name and line number of the
 // source code corresponding to the program counter pc.
 // The result will not be accurate if pc is not a program
@@ -781,6 +807,7 @@ func (f *Func) FileLine(pc uintptr) (file string, line int) {
 	return file, int(line32)
 }
 
+// findmoduledatap 遍历所有的 moduledata 直到找到 pc 所属的 moduledata
 // findmoduledatap looks up the moduledata for a PC.
 //
 // It is nosplit because it's part of the isgoexception
@@ -801,19 +828,23 @@ type funcInfo struct {
 	datap *moduledata
 }
 
+// valid 是否合法
 func (f funcInfo) valid() bool {
 	return f._func != nil
 }
 
+// _Func 切换为导出数据结构
 func (f funcInfo) _Func() *Func {
 	return (*Func)(unsafe.Pointer(f._func))
 }
 
+// isInlined 是否是内联函数
 // isInlined reports whether f should be re-interpreted as a *funcinl.
 func (f *_func) isInlined() bool {
 	return f.entryoff == ^uint32(0) // see comment for funcinl.ones
 }
 
+// 返回函数的实体信息
 // entry returns the entry PC for f.
 func (f funcInfo) entry() uintptr {
 	return f.datap.textAddr(f.entryoff)
@@ -827,29 +858,38 @@ func (f funcInfo) entry() uintptr {
 //
 //go:nosplit
 func findfunc(pc uintptr) funcInfo {
+	// 获取 pc 所在的 moduledata
 	datap := findmoduledatap(pc)
 	if datap == nil {
+		// 不存在就返回空结构
 		return funcInfo{}
 	}
+	// 获取 subbuckets 的长度
 	const nsub = uintptr(len(findfuncbucket{}.subbuckets))
 
 	pcOff, ok := datap.textOff(pc)
 	if !ok {
+		// 不存在就返回空结构
 		return funcInfo{}
 	}
 
 	x := uintptr(pcOff) + datap.text - datap.minpc // TODO: are datap.text and datap.minpc always equal?
+	// b 在哪个 bucket
+	// i 在哪个 subbucket
 	b := x / pcbucketsize
 	i := x % pcbucketsize / (pcbucketsize / nsub)
 
+	// 获取 bucket 和 subbucket
 	ffb := (*findfuncbucket)(add(unsafe.Pointer(datap.findfunctab), b*unsafe.Sizeof(findfuncbucket{})))
 	idx := ffb.idx + uint32(ffb.subbuckets[i])
 
 	// Find the ftab entry.
 	for datap.ftab[idx+1].entryoff <= pcOff {
+		// 遍历查找 datap.ftab
 		idx++
 	}
 
+	// 找到了 pc 所在的 func
 	funcoff := datap.ftab[idx].funcoff
 	return funcInfo{(*_func)(unsafe.Pointer(&datap.pclntable[funcoff])), datap}
 }
@@ -858,10 +898,13 @@ type pcvalueCache struct {
 	entries [2][8]pcvalueCacheEnt
 }
 
+// pcvalueCacheEnt pcvalue 缓存单元
 type pcvalueCacheEnt struct {
+	// targetpc 和 off 一起作为缓存的 key
 	// targetpc and off together are the key of this cache entry.
 	targetpc uintptr
 	off      uint32
+	// val 是缓存的 pcvalue
 	// val is the value of this cached pcvalue entry.
 	val int32
 }
@@ -874,6 +917,7 @@ func pcvalueCacheKey(targetpc uintptr) uintptr {
 	return (targetpc / goarch.PtrSize) % uintptr(len(pcvalueCache{}.entries))
 }
 
+// pcvalue 返回 PCData 和该函数的起始 PC
 // Returns the PCData value, and the PC where this value starts.
 // TODO: the start PC is returned only when cache is nil.
 func pcvalue(f funcInfo, off uint32, targetpc uintptr, cache *pcvalueCache, strict bool) (int32, uintptr) {
@@ -903,6 +947,7 @@ func pcvalue(f funcInfo, off uint32, targetpc uintptr, cache *pcvalueCache, stri
 	}
 
 	if !f.valid() {
+		// 函数指针不合法 直接返回
 		if strict && panicking == 0 {
 			println("runtime: no module data for", hex(f.entry()))
 			throw("no module data")
@@ -1047,6 +1092,7 @@ func funcspdelta(f funcInfo, targetpc uintptr, cache *pcvalueCache) int32 {
 	return x
 }
 
+// funcMaxSPDelta 返回 f 最大的 sp 偏移
 // funcMaxSPDelta returns the maximum spdelta at any point in f.
 func funcMaxSPDelta(f funcInfo) int32 {
 	datap := f.datap
@@ -1095,23 +1141,31 @@ func pcdatavalue2(f funcInfo, table uint32, targetpc uintptr) (int32, uintptr) {
 	return pcvalue(f, pcdatastart(f, table), targetpc, nil, true)
 }
 
+// funcdata 返回 f 指向的第 i 个 funcdata
 // funcdata returns a pointer to the ith funcdata for f.
 // funcdata should be kept in sync with cmd/link:writeFuncs.
 func funcdata(f funcInfo, i uint8) unsafe.Pointer {
 	if i < 0 || i >= f.nfuncdata {
+		// 小于或者超出 都直接返回
 		return nil
 	}
+	// 获取函数基址
 	base := f.datap.gofunc // load gofunc address early so that we calculate during cache misses
+	// 获取偏移地址
 	p := uintptr(unsafe.Pointer(&f.nfuncdata)) + unsafe.Sizeof(f.nfuncdata) + uintptr(f.npcdata)*4 + uintptr(i)*4
+	// 获取偏移量
 	off := *(*uint32)(unsafe.Pointer(p))
 	// Return off == ^uint32(0) ? 0 : f.datap.gofunc + uintptr(off), but without branches.
 	// The compiler calculates mask on most architectures using conditional assignment.
 	var mask uintptr
 	if off == ^uint32(0) {
+		// 内联函数 mask 置 1
 		mask = 1
 	}
 	mask--
 	raw := base + uintptr(off)
+	// 内联函数返回空
+	// 实体函数返回 funcdata
 	return unsafe.Pointer(raw & mask)
 }
 
@@ -1140,6 +1194,8 @@ func step(p []byte, pc *uintptr, val *int32, first bool) (newp []byte, ok bool) 
 	return p, true
 }
 
+// readvarint 获取 varint
+// 返回读取字节数和数值
 // readvarint reads a varint from p.
 func readvarint(p []byte) (read uint32, val uint32) {
 	var v, shift, n uint32
@@ -1155,12 +1211,20 @@ func readvarint(p []byte) (read uint32, val uint32) {
 	return n, v
 }
 
+// stackmap 对应函数信息
+// _FUNCDATA_ArgsPointerMaps
+// _FUNCDATA_LocalsPointerMaps
 type stackmap struct {
+	// n 位图数量
+	// nbit 每个位图的位数
+	// bytedata 位图地址
 	n        int32   // number of bitmaps
 	nbit     int32   // number of bits in each bitmap
 	bytedata [1]byte // bitmaps, each starting on a byte boundary
 }
 
+// stackmapdata 将 stkmap 转为 bitvector
+// 将 stkmap.bytedata 向后偏移 stkmap.nbit 向上对齐 8 字节乘 n
 //go:nowritebarrier
 func stackmapdata(stkmap *stackmap, n int32) bitvector {
 	// Check this invariant only when stackDebug is on at all.
@@ -1169,6 +1233,8 @@ func stackmapdata(stkmap *stackmap, n int32) bitvector {
 	if stackDebug > 0 && (n < 0 || n >= stkmap.n) {
 		throw("stackmapdata: index out of range")
 	}
+	// 封装 bitvector
+	// bytedata 需要对 8 字节对齐
 	return bitvector{stkmap.nbit, addb(&stkmap.bytedata[0], uintptr(n*((stkmap.nbit+7)>>3)))}
 }
 

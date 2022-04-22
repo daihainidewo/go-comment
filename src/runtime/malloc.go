@@ -159,9 +159,9 @@ import (
 const (
 	debugMalloc = false
 
-	maxTinySize   = _TinySize       // 16
-	tinySizeClass = _TinySizeClass  // 2
-	maxSmallSize  = _MaxSmallSize   // 32768
+	maxTinySize   = _TinySize      // 16
+	tinySizeClass = _TinySizeClass // 2
+	maxSmallSize  = _MaxSmallSize  // 32768
 
 	pageShift = _PageShift // 13
 	pageSize  = _PageSize  // 8192
@@ -263,7 +263,7 @@ const (
 	// to a 48-bit address space like every other arm64 platform.
 	//
 	// WebAssembly currently has a limit of 4GB linear memory.
-    // value 48
+	// value 48
 	heapAddrBits = (_64bit*(1-goarch.IsWasm)*(1-goos.IsIos*goarch.IsArm64))*48 + (1-_64bit+goarch.IsWasm)*(32-(goarch.IsMips+goarch.IsMipsle)) + 40*goos.IsIos*goarch.IsArm64
 
 	// maxAlloc 理论上可以管理的内存，即地址总线能够标址的内存空间
@@ -309,7 +309,7 @@ const (
 	// logHeapArenaBytes is log_2 of heapArenaBytes. For clarity,
 	// prefer using heapArenaBytes where possible (we need the
 	// constant to compute some other constants).
-    // value 26
+	// value 26
 	logHeapArenaBytes = (6+20)*(_64bit*(1-goos.IsWindows)*(1-goarch.IsWasm)*(1-goos.IsIos*goarch.IsArm64)) + (2+20)*(_64bit*goos.IsWindows) + (2+20)*(1-_64bit) + (2+20)*goarch.IsWasm + (2+20)*goos.IsIos*goarch.IsArm64
 
 	// heapArenaBitmapBytes 表示每个arena的位图
@@ -368,7 +368,7 @@ const (
 	//
 	// On other platforms, the user address space is contiguous
 	// and starts at 0, so no offset is necessary.
-    // value 0xffff800000000000
+	// value 0xffff800000000000
 	arenaBaseOffset = 0xffff800000000000*goarch.IsAmd64 + 0x0a00000000000000*goos.IsAix // 0xffff800000000000
 	// A typed version of this constant that will make it into DWARF (for viewcore).
 	arenaBaseOffsetUintptr = uintptr(arenaBaseOffset) // 0xffff800000000000
@@ -394,7 +394,7 @@ const (
 //
 // This must be set by the OS init code (typically in osinit) before
 // mallocinit.
-var physPageSize uintptr  // 4096
+var physPageSize uintptr // 4096
 
 // physHugePageSize 操作系统huge页，对应用程序不透明 假设为2的幂次
 // physHugePageSize == 1 << physHugePageShift
@@ -414,6 +414,7 @@ var (
 	physHugePageSize  uintptr
 	physHugePageShift uint
 )
+
 // 操作系统内存管理抽象层
 // 运行时管理的地址空间只能是4种状态
 // 1）None，未映射的区域，默认状态
@@ -872,26 +873,33 @@ retry:
 // base address for all 0-byte allocations
 var zerobase uintptr
 
+// nextFreeFast 返回下一个空闲地址
 // nextFreeFast returns the next free object if one is quickly available.
 // Otherwise it returns 0.
 func nextFreeFast(s *mspan) gclinkptr {
 	theBit := sys.Ctz64(s.allocCache) // Is there a free object in the allocCache?
 	if theBit < 64 {
+		// 有空闲对象
 		result := s.freeindex + uintptr(theBit)
 		if result < s.nelems {
+			// 属于 mspan 的对象
 			freeidx := result + 1
 			if freeidx%64 == 0 && freeidx != s.nelems {
+				// 当前 mspan 已分配完
 				return 0
 			}
+			// 更新 allocCache 位图和空闲地址基址
 			s.allocCache >>= uint(theBit + 1)
 			s.freeindex = freeidx
 			s.allocCount++
+			// 返回标记位置的地址
 			return gclinkptr(result*s.elemsize + s.base())
 		}
 	}
 	return 0
 }
 
+// nextFree
 // nextFree returns the next free object from the cached span if one is available.
 // Otherwise it refills the cache with a span with an available object and
 // returns that object along with a flag indicating that this was a heavy
@@ -942,6 +950,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	}
 
 	if size == 0 {
+		// 返回大小为 0 的对象地址
 		return unsafe.Pointer(&zerobase)
 	}
 	userSize := size
@@ -983,21 +992,24 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		}
 	}
 
-    // 检查g的负债，如果没有开始GC则为nil
+	// 检查 g 的负债 如果没有开始 GC 则为 nil
 	// assistG is the G to charge for this allocation, or nil if
 	// GC is not currently active.
 	var assistG *g
 	if gcBlackenEnabled != 0 {
+		//
 		// Charge the current user G for this allocation.
 		assistG = getg()
 		if assistG.m.curg != nil {
 			assistG = assistG.m.curg
 		}
+		// 标记更新负债
 		// Charge the allocation against the G. We'll account
 		// for internal fragmentation at the end of mallocgc.
 		assistG.gcAssistBytes -= int64(size)
 
 		if assistG.gcAssistBytes < 0 {
+			// 进入负债状态则需要进行还债
 			// This G is in debt. Assist the GC to correct
 			// this before allocating. This must happen
 			// before disabling preemption.
@@ -1013,26 +1025,27 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	if mp.gsignal == getg() {
 		throw("malloc during signal")
 	}
+	// 标记当前 m 正在执行申请内存操作
 	mp.mallocing = 1
 
 	shouldhelpgc := false
 	dataSize := userSize
-    // 获取mcache
+	// 获取 mcache
 	c := getMCache(mp)
 	if c == nil {
 		throw("mallocgc called without a P or outside bootstrapping")
 	}
 	var span *mspan
 	var x unsafe.Pointer
-    // 指向类型是否带有指针
+	// 类型是否带有指针
 	noscan := typ == nil || typ.ptrdata == 0
 	// In some cases block zeroing can profitably (for latency reduction purposes)
 	// be delayed till preemption is possible; delayedZeroing tracks that state.
 	delayedZeroing := false
 	if size <= maxSmallSize {
-        // 小块内存
+		// 小块内存
 		if noscan && size < maxTinySize {
-            // 无指针且小于细小内存则使用tiny分配器
+			// 无指针且小于细小内存则使用tiny分配器
 			// Tiny allocator.
 			//
 			// Tiny allocator combines several tiny allocation requests
@@ -1106,15 +1119,17 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			}
 			size = maxTinySize
 		} else {
-            // 其他小块内存分配
+			// 其他小块内存分配
 			var sizeclass uint8
 			if size <= smallSizeMax-8 {
 				sizeclass = size_to_class8[divRoundUp(size, smallSizeDiv)]
 			} else {
 				sizeclass = size_to_class128[divRoundUp(size-smallSizeMax, largeSizeDiv)]
 			}
+			// 获取尺寸等级
 			size = uintptr(class_to_size[sizeclass])
 			spc := makeSpanClass(sizeclass, noscan)
+			// 通过 mcache 获取指定等级的 mspan
 			span = c.alloc[spc]
 			v := nextFreeFast(span)
 			if v == 0 {
@@ -1126,7 +1141,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			}
 		}
 	} else {
-        // 大块内存分配
+		// 大块内存分配
 		shouldhelpgc = true
 		// For large allocations, keep track of zeroed state so that
 		// bulk zeroing can be happen later in a preemptible context.
@@ -1151,7 +1166,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 
 	var scanSize uintptr
 	if !noscan {
-        // 有指针的块，标记内存与类型
+		// 有指针的块，标记内存与类型
 		heapBitsSetType(uintptr(x), size, dataSize, typ)
 		if dataSize > typ.size {
 			// Array allocation. If there are any
@@ -1174,7 +1189,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// but see uninitialized memory or stale heap bits.
 	publicationBarrier()
 
-    // 如果在GC期间就将当前对象标记为黑
+	// 如果在GC期间就将当前对象标记为黑
 	// Allocate black during GC.
 	// All slots hold nil so no scanning is needed.
 	// This may be racing with GC so do it atomically if there can be
@@ -1404,25 +1419,35 @@ func nextSampleNoFP() uintptr {
 	return 0
 }
 
+// persistentAlloc 持久申请对象
 type persistentAlloc struct {
 	base *notInHeap
 	off  uintptr
 }
 
+// globalAlloc 全局持久化小内存分配器
 var globalAlloc struct {
 	mutex
 	persistentAlloc
 }
 
+// persistentChunkSize 是我们在增长 persistentAlloc 时分配的字节数 256k
 // persistentChunkSize is the number of bytes we allocate when we grow
 // a persistentAlloc.
 const persistentChunkSize = 256 << 10
 
+// persistentChunks 是我们分配的所有持久块的列表
+// 该列表通过持久块中的第一个字节进行维护
+// 这是原子更新的
 // persistentChunks is a list of all the persistent chunks we have
 // allocated. The list is maintained through the first word in the
 // persistent chunk. This is updated atomically.
 var persistentChunks *notInHeap
 
+// persistentalloc 封装 sysAlloc 可以申请小块内存
+// 没有关联的空闲操作
+// 如果 align 是 0 则使用默认的 align 默认为 8
+// 返回的内存总是被清零的
 // Wrapper around sysAlloc that can allocate small chunks.
 // There is no associated free operation.
 // Intended for things like function/type/debug-related persistent data.
@@ -1438,6 +1463,7 @@ func persistentalloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
 	return unsafe.Pointer(p)
 }
 
+// persistentalloc1 返回堆外连续内存分配器
 // Must run on system stack because stack growth can (re)invoke it.
 // See issue 9174.
 //
@@ -1452,9 +1478,11 @@ func persistentalloc1(size, align uintptr, sysStat *sysMemStat) *notInHeap {
 	}
 	if align != 0 {
 		if align&(align-1) != 0 {
+			// 必须是 2 的幂次
 			throw("persistentalloc: align is not a power of 2")
 		}
 		if align > _PageSize {
+			// 不能太大
 			throw("persistentalloc: align is too large")
 		}
 	} else {
@@ -1462,51 +1490,68 @@ func persistentalloc1(size, align uintptr, sysStat *sysMemStat) *notInHeap {
 	}
 
 	if size >= maxBlock {
+		// 大块内存直接申请
 		return (*notInHeap)(sysAlloc(size, sysStat))
 	}
 
+	// 小于 64K 的内存申请
 	mp := acquirem()
 	var persistent *persistentAlloc
 	if mp != nil && mp.p != 0 {
+		// m 有绑定的 p
+		// 获取 p 的本地队列
 		persistent = &mp.p.ptr().palloc
 	} else {
+		// m 没有 p
+		// 获取全局的链表
 		lock(&globalAlloc.mutex)
 		persistent = &globalAlloc.persistentAlloc
 	}
+	// 调整字节对齐
 	persistent.off = alignUp(persistent.off, align)
 	if persistent.off+size > persistentChunkSize || persistent.base == nil {
+		// 超出限制或者没有空间
+		// 重新申请一块内存 大小为 persistentChunkSize
 		persistent.base = (*notInHeap)(sysAlloc(persistentChunkSize, &memstats.other_sys))
 		if persistent.base == nil {
+			// 申请失败
 			if persistent == &globalAlloc.persistentAlloc {
 				unlock(&globalAlloc.mutex)
 			}
 			throw("runtime: cannot allocate memory")
 		}
 
+		// 将新的 persistent.base 添加到 persistentChunks
 		// Add the new chunk to the persistentChunks list.
 		for {
+			// persistent.base = persistentChunks
 			chunks := uintptr(unsafe.Pointer(persistentChunks))
 			*(*uintptr)(unsafe.Pointer(persistent.base)) = chunks
 			if atomic.Casuintptr((*uintptr)(unsafe.Pointer(&persistentChunks)), chunks, uintptr(unsafe.Pointer(persistent.base))) {
+				// 确保 cas 更改成功
 				break
 			}
 		}
+		// 设置偏移量
 		persistent.off = alignUp(goarch.PtrSize, align)
 	}
 	p := persistent.base.add(persistent.off)
 	persistent.off += size
 	releasem(mp)
 	if persistent == &globalAlloc.persistentAlloc {
+		// 如果是全局申请器 解锁
 		unlock(&globalAlloc.mutex)
 	}
 
 	if sysStat != &memstats.other_sys {
+		// 添加记录信息
 		sysStat.add(int64(size))
 		memstats.other_sys.add(-int64(size))
 	}
 	return p
 }
 
+// inPersistentAlloc 判断 p 指向内存是否是 persistentalloc 分配的
 // inPersistentAlloc reports whether p points to memory allocated by
 // persistentalloc. This must be nosplit because it is called by the
 // cgo checker code, which is called by the write barrier code.
@@ -1531,12 +1576,17 @@ func inPersistentAlloc(p uintptr) bool {
 //
 // The caller is responsible for locking.
 type linearAlloc struct {
-	next   uintptr // 下一个空闲字节 // next free byte
-	mapped uintptr // 映射空间的最后一个字节 // one byte past end of mapped space
-	end    uintptr // 保留空间的最后一个字节 // end of reserved space
-    mapMemory bool // 如果为true 表示内存从保留状态转到准备状态 // transition memory from Reserved to Ready if true
+	// next      下一个空闲字节
+	// mapped    映射空间的最后一个字节
+	// end       保留空间的最后一个字节
+	// mapMemory 如果为true 表示内存从保留状态转到准备状态
+	next      uintptr // next free byte
+	mapped    uintptr // one byte past end of mapped space
+	end       uintptr // end of reserved space
+	mapMemory bool    // transition memory from Reserved to Ready if true
 }
 
+// init 初始化线性分配器
 func (l *linearAlloc) init(base, size uintptr, mapMemory bool) {
 	if base+size < base {
 		// Chop off the last byte. The runtime isn't prepared
@@ -1552,18 +1602,18 @@ func (l *linearAlloc) init(base, size uintptr, mapMemory bool) {
 
 // alloc 申请内存，并标记使用
 func (l *linearAlloc) alloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
-	p := alignUp(l.next, align)// 字节对齐
+	p := alignUp(l.next, align) // 字节对齐
 	if p+size > l.end {
-	    // 超限 返回空
+		// 超限 返回空
 		return nil
 	}
 	l.next = p + size
 	// 向上对齐物理页大小
 	if pEnd := alignUp(l.next-1, physPageSize); pEnd > l.mapped {
 		if l.mapMemory {
-            // Transition from Reserved to Prepared to Ready.
-            sysMap(unsafe.Pointer(l.mapped), pEnd-l.mapped, sysStat) // 映射物理内存
-            sysUsed(unsafe.Pointer(l.mapped), pEnd-l.mapped)         // madvise 操作 让操作系统加载这块内存
+			// Transition from Reserved to Prepared to Ready.
+			sysMap(unsafe.Pointer(l.mapped), pEnd-l.mapped, sysStat) // 映射物理内存
+			sysUsed(unsafe.Pointer(l.mapped), pEnd-l.mapped)         // madvise 操作 让操作系统加载这块内存
 		}
 		l.mapped = pEnd
 	}
@@ -1583,6 +1633,7 @@ func (l *linearAlloc) alloc(size, align uintptr, sysStat *sysMemStat) unsafe.Poi
 //go:notinheap
 type notInHeap struct{}
 
+// add 基于 p 偏移 bytes 字节的指针数据
 func (p *notInHeap) add(bytes uintptr) *notInHeap {
 	return (*notInHeap)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) + bytes))
 }

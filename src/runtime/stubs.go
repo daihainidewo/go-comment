@@ -197,7 +197,7 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 // pointer-declared arguments.
 func cgocallback(fn, frame, ctxt uintptr)
 
-func gogo(buf *gobuf)   // 切换到buf
+func gogo(buf *gobuf) // 切换到buf
 
 // asminit amd64架构不需要汇编初始化
 func asminit()
@@ -393,6 +393,7 @@ func alignDown(n, a uintptr) uintptr {
 	return n &^ (a - 1)
 }
 
+// divRoundUp 向上取整 n/a
 // divRoundUp returns ceil(n / a).
 func divRoundUp(n, a uintptr) uintptr {
 	// a is generally a power of two. This will get inlined and
@@ -405,6 +406,9 @@ func checkASM() bool
 
 func memequal_varlen(a, b unsafe.Pointer) bool
 
+// bool2int bool 转 int
+// ture 返回 1
+// false 返回 0
 // bool2int returns 0 if x is false or 1 if x is true.
 func bool2int(x bool) int {
 	// Avoid branches. In the SSA compiler, this compiles to

@@ -397,6 +397,7 @@ func markrootSpans(gcw *gcWork, shard int) {
 	}
 }
 
+// gcAssistAlloc 让 gp 进行 GC 工作以还债
 // gcAssistAlloc performs GC work to make gp's assist debt positive.
 // gp must be the calling user goroutine.
 //

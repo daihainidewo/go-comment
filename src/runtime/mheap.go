@@ -57,6 +57,8 @@ const (
 	physPageAlignedStacks = GOOS == "openbsd"
 )
 
+// mheap 内存管理单元
+// 所占用内存为堆外内存
 // Main malloc heap.
 // The heap itself is the "free" and "scav" treaps,
 // but all the other global data is here too.
@@ -88,6 +90,9 @@ type mheap struct {
 
 	// _ uint32 // align uint64 fields on 32-bit for atomics
 
+	// 比例扫描
+	// pagesSweptBasis 扫描原点
+	// sweepPagesPerByte 标记是否完成或者是否开启
 	// Proportional sweep
 	//
 	// These parameters represent a linear function from gcController.heapLive
@@ -203,6 +208,9 @@ type mheap struct {
 
 	_ uint32 // ensure 64-bit alignment of central
 
+	// central 每个尺寸的空闲列表
+	// pad 填充 确保每个 central 都可以完整占用 cacheline
+	// central 由尺寸等级索引
 	// central free lists for small size classes.
 	// the padding makes sure that the mcentrals are
 	// spaced CacheLinePadSize bytes apart, so that each mcentral.lock
@@ -213,6 +221,10 @@ type mheap struct {
 		pad      [cpu.CacheLinePadSize - unsafe.Sizeof(mcentral{})%cpu.CacheLinePadSize]byte
 	}
 
+	// 各种分配器
+	// spanalloc mspan 分配器
+	// cachealloc mcache 分配器
+	// arenaHintAlloc arenaHint 分配器
 	spanalloc             fixalloc // allocator for span*
 	cachealloc            fixalloc // allocator for mcache*
 	specialfinalizeralloc fixalloc // allocator for specialfinalizer*
@@ -228,16 +240,23 @@ type mheap struct {
 var mheap_ mheap
 
 // heapArena 管理Go堆内存
+// page 大小 8K
+// 单个 heapArena 有 8K page
 // A heapArena stores metadata for a heap arena. heapArenas are stored
 // outside of the Go heap and accessed via the mheap_.arenas index.
 //
 //go:notinheap
 type heapArena struct {
+	// bitmap 存储指针和非指针的位图
 	// bitmap stores the pointer/scalar bitmap for the words in
 	// this arena. See mbitmap.go for a description. Use the
 	// heapBits type to access this.
 	bitmap [heapArenaBitmapBytes]byte
 
+	// spans 基于虚拟地址的页ID对应 mspan 的映射
+	// 对于已经分配的 mspan 它们的页映射它们自己
+	// 对于空闲的 mspan 只有最低和最高的页映射他们自己
+	// 内部的 mspan 可以指向任意 mspan
 	// spans maps from virtual address page ID within this arena to *mspan.
 	// For allocated spans, their pages map to the span itself.
 	// For free spans, only the lowest and highest pages map to the span itself.
@@ -251,6 +270,7 @@ type heapArena struct {
 	// address is live and looking it up in the spans array.
 	spans [pagesPerArena]*mspan
 
+	// 标记哪些 mspan 被使用
 	// pageInUse is a bitmap that indicates which spans are in
 	// state mSpanInUse. This bitmap is indexed by page number,
 	// but only the bit corresponding to the first page in each
@@ -288,6 +308,9 @@ type heapArena struct {
 	// used if debug.gccheckmark > 0.
 	checkmarks *checkmarksMap
 
+	// 标记当前 heapArena 未使用的基址偏移
+	// 单调递增 直到为 heapArenaBytes
+	// 使用原子读和 cas 写
 	// zeroedBase marks the first byte of the first page in this
 	// arena which hasn't been used yet and is therefore already
 	// zero. zeroedBase is relative to the arena base.
@@ -312,6 +335,14 @@ type arenaHint struct {
 	next *arenaHint
 }
 
+// mspan 管理多个 page
+// 当 mspan 在空闲树堆中 状态为 mSpanFree
+// 并且第一个和最后一个 page 指向 mspan
+// 当 mspan 在扫描树堆中 scavenged == true 其他情况都是 false
+// 当 mspan 被申请 状态为 mSpanInUse 或 mSpanManual
+// 并且区间内所有 page 都指向 mspan
+// 每个 mspan 都在一个双向链表中
+// 要么在 mheap 的 busy list 或者 m central 的 span list
 // An mspan is a run of pages.
 //
 // When a mspan is in the heap free treap, state == mSpanFree
@@ -324,6 +355,17 @@ type arenaHint struct {
 
 // Every mspan is in one doubly-linked list, either in the mheap's
 // busy list or one of the mcentral's span lists.
+
+// mspan 的状态转换
+// - 在任何 GC 阶段 mspan
+// 		可能会从 free 过渡到 in-use 或 manual
+// - 在 GC 清扫阶段 gcphase == _GCoff
+// 		mspan 可能被清扫由 in-use 转为 free
+// 		也可能是释放栈内存由 manual 转为 free
+// - 在 GC 阶段 gcphase != _GCoff
+// 		mspan 不能从 manual 或 in-use 转为 free
+// 		因为并发 GC 可能会读取一个指针然后查找它的 span
+// 		所以 span 状态必须稳定的
 
 // An mspan representing actual memory has state mSpanInUse,
 // mSpanManual, or mSpanFree. Transitions between these states are
@@ -349,6 +391,7 @@ type arenaHint struct {
 // such pointers may race with a span being allocated.
 type mSpanState uint8
 
+// mspan 的状态
 const (
 	mSpanDead   mSpanState = iota
 	mSpanInUse             // allocated for garbage collected heap
@@ -364,6 +407,7 @@ var mSpanStateNames = []string{
 	"mSpanFree",
 }
 
+// mSpanStateBox 提供原子操作 mSpanState 的结构盒子
 // mSpanStateBox holds an mSpanState and provides atomic operations on
 // it. This is a separate type to disallow accidental comparison or
 // assignment with mSpanState.
@@ -379,6 +423,7 @@ func (b *mSpanStateBox) get() mSpanState {
 	return mSpanState(atomic.Load8((*uint8)(&b.s)))
 }
 
+// mSpanList mspan 链表的头结点
 // mSpanList heads a linked list of spans.
 //
 //go:notinheap
@@ -389,15 +434,31 @@ type mSpanList struct {
 
 //go:notinheap
 type mspan struct {
+	// mspan 链表的前后指针和链表头节点
 	next *mspan     // next span in list, or nil if none
 	prev *mspan     // previous span in list, or nil if none
 	list *mSpanList // For debugging. TODO: Remove.
 
-	startAddr uintptr // 基址地址 // address of first byte of span aka s.base()
-	npages    uintptr // 页数 // number of pages in span
+	// startAddr span 第一个位置的地址
+	// npages span 占用的页数
+	startAddr uintptr // address of first byte of span aka s.base()
+	npages    uintptr // number of pages in span
 
-	manualFreeList gclinkptr // 栈内存的空闲span链表 // list of free objects in mSpanManual spans
+	// 需要手动管理内存的链表 一般是栈内存
+	manualFreeList gclinkptr // list of free objects in mSpanManual spans
 
+	// 标记下一个扫描空闲对象的起始点
+	// freeindex 表示 0 到 nelems 之间槽的索引
+	// 从该索引开始扫描下一个空闲对象
+	// 每个分配都从 freeindex 开始扫描 allocBits
+	// 直到遇到表示空闲对象的 0
+	// 然后调整 freeindex 以便随后的扫描在新发现的空闲对象之后开始
+	// 如果 freeindex == nelem 表示当前 mspan 没有空闲对象
+	// allocBits 是 span 对象的位图
+	// n >= freeindex 并且 allocBits[n/8]&(1<<(n&7)) == 0 表示对象 n 是空闲的
+	// 否则对象 n 被申请出去了
+	// 以 nelem 开始的位是未定义的 永远不会被引用
+	// 对象 n 的起始地址 n * elemsize + (start << pageShift)
 	// freeindex is the slot index between 0 and nelems at which to begin scanning
 	// for the next free object in this span.
 	// Each allocation scans allocBits starting at freeindex until it encounters a 0
@@ -413,19 +474,34 @@ type mspan struct {
 	// undefined and should never be referenced.
 	//
 	// Object n starts at address n*elemsize + (start << pageShift).
-	freeindex uintptr // 标记下一个扫描空闲对象的起始点
+	freeindex uintptr
+	// span 有多少元素
 	// TODO: Look up nelems from sizeclass and remove this field if it
 	// helps performance.
-	nelems uintptr // span 有多少元素 // number of object in the span.
+	nelems uintptr // number of object in the span.
 
+	// 按位标记是否分配出去了 startAddr 相对的地址
+	// allocBits 的补码 用于快速查找内存中未被使用的内存
+	// allocCache 可能包含超出 s.nelems 的位 调用者必须忽略这些
 	// Cache of the allocBits at freeindex. allocCache is shifted
 	// such that the lowest bit corresponds to the bit freeindex.
 	// allocCache holds the complement of allocBits, thus allowing
 	// ctz (count trailing zero) to use it directly.
 	// allocCache may contain bits beyond s.nelems; the caller must ignore
 	// these.
-	allocCache uint64 // 按位标记是否分配出去了 startAddr 相对的地址
+	allocCache uint64
 
+	// allocBits 和 gcmarkBits 标记内存占用和回收情况
+	// 指针按照 8 字节对齐
+	// - free 不在访问且能被重复使用的脏数据区域
+	// - next 保存要在下一个 GC 使用的信息
+	// - current 当前 GC 中使用的信息
+	// - previous 上一个 GC 中使用的信息
+	// 一个新的 GC 由调用 finishsweep_m 开始
+	// finishsweep_m 将 previous 移到 free
+	// current 移到 previous
+	// next 移到 current
+	// next 由 span 请求内存以保存下一个 GC 周期的 gcmarkBits 以及 allocBits 为新申请的 span 时填充
 	// allocBits and gcmarkBits hold pointers to a span's mark and
 	// allocation bits. The pointers are 8 byte aligned.
 	// There are three arenas where this data is held.
@@ -451,6 +527,13 @@ type mspan struct {
 	allocBits  *gcBits
 	gcmarkBits *gcBits
 
+	// sweepgen 擦除标识
+	// h->sweepgen - 2 	需要被清理
+	// h->sweepgen - 1 	正在被清理
+	// h->sweepgen		已被清理等待被使用
+	// h->sweepgen + 1	扫描开始之前被缓存并且仍然被缓存并且需要清理
+	// h->sweepgen + 3	已被清理并且一直被缓存
+	// h->sweepgen 每次 GC 后 +2
 	// sweep generation:
 	// if sweepgen == h->sweepgen - 2, the span needs sweeping
 	// if sweepgen == h->sweepgen - 1, the span is currently being swept
@@ -459,11 +542,15 @@ type mspan struct {
 	// if sweepgen == h->sweepgen + 3, the span was swept and then cached and is still cached
 	// h->sweepgen is incremented by 2 after every GC
 
+	// spanclass 标记当前所属的尺寸组
+	// state 标记当前的状态
+	// needzero 在申请之前是否需要清零
+	// elemsize 元素大小
 	sweepgen    uint32
 	divMul      uint32        // for divide by elemsize
 	allocCount  uint16        // number of allocated objects
-	spanclass   spanClass     // 当前span的尺寸 // size class and noscan (uint8)
-	state       mSpanStateBox // 当前的span状态 // mSpanInUse etc; accessed atomically (get/set methods)
+	spanclass   spanClass     // size class and noscan (uint8)
+	state       mSpanStateBox // mSpanInUse etc; accessed atomically (get/set methods)
 	needzero    uint8         // needs to be zeroed before allocation
 	elemsize    uintptr       // computed from sizeclass or from npages
 	limit       uintptr       // end of data in span
@@ -471,10 +558,12 @@ type mspan struct {
 	specials    *special      // linked list of special records sorted by offset.
 }
 
+// base 返回 s 的基址
 func (s *mspan) base() uintptr {
 	return s.startAddr
 }
 
+// layout 返回 元素大小 元素个数 总大小
 func (s *mspan) layout() (size, n, total uintptr) {
 	total = s.npages << _PageShift
 	size = s.elemsize
@@ -529,6 +618,9 @@ func recordspan(vh unsafe.Pointer, p unsafe.Pointer) {
 	h.allspans[len(h.allspans)-1] = s
 }
 
+// spanClass 代表不同大小的尺寸等级
+// 每个等级都有 scan 和 noscan 两个 spanClass
+// noscan 仅包含不需要扫描的对象 即不包含指针 不需要被 GC 扫描
 // A spanClass represents the size class and noscan-ness of a span.
 //
 // Each size class has a noscan spanClass and a scan spanClass. The
@@ -537,25 +629,30 @@ func recordspan(vh unsafe.Pointer, p unsafe.Pointer) {
 // collector.
 type spanClass uint8
 
-// 奇数noscan 偶数scan
 const (
 	numSpanClasses = _NumSizeClasses << 1
 	tinySpanClass  = spanClass(tinySizeClass<<1 | 1)
 )
 
+// makeSpanClass 创建指定等级且是否扫描的等级
 func makeSpanClass(sizeclass uint8, noscan bool) spanClass {
 	return spanClass(sizeclass<<1) | spanClass(bool2int(noscan))
 }
 
+// sizeclass 返回尺寸等级
 func (sc spanClass) sizeclass() int8 {
 	return int8(sc >> 1)
 }
 
+// noscan 判断是否需要扫描
+// 奇数 noscan 偶数 scan
 func (sc spanClass) noscan() bool {
 	return sc&1 != 0
 }
 
 // arenaIndex 地址索引
+// 地址减去全局基址再除以每个 heapArena 的大小
+// 就可以获取在哪个 arenaIndex
 // arenaIndex returns the index into mheap_.arenas of the arena
 // containing metadata for p. This index combines of an index into the
 // L1 map and an index into the L2 map and should be used as
@@ -569,17 +666,21 @@ func (sc spanClass) noscan() bool {
 //
 //go:nosplit
 func arenaIndex(p uintptr) arenaIdx {
+	// p 减去基址 然后 除以 每个 heapArena 的大小 就能获取在哪个 heapArena id
 	return arenaIdx((p - arenaBaseOffset) / heapArenaBytes)
 }
 
+// arenaBase 返回指定 arena 的基址
 // arenaBase returns the low address of the region covered by heap
 // arena i.
 func arenaBase(i arenaIdx) uintptr {
 	return uintptr(i)*heapArenaBytes + arenaBaseOffset
 }
 
+// arenaIdx heapArena 索引
 type arenaIdx uint
 
+// 返回地址区域的一级索引
 func (i arenaIdx) l1() uint {
 	if arenaL1Bits == 0 {
 		// Let the compiler optimize this away if there's no
@@ -590,6 +691,7 @@ func (i arenaIdx) l1() uint {
 	}
 }
 
+// 返回地址区域的二级索引
 func (i arenaIdx) l2() uint {
 	if arenaL1Bits == 0 {
 		return uint(i)
@@ -598,6 +700,8 @@ func (i arenaIdx) l2() uint {
 	}
 }
 
+// inheap 返回 b 指向空间是否在堆上
+// b 指向 mSpanManual 即栈空间 返回 false
 // inheap reports whether b is a pointer into a (potentially dead) heap object.
 // It returns false for pointers into mSpanManual spans.
 // Non-preemptible because it is used by write barriers.
@@ -608,6 +712,7 @@ func inheap(b uintptr) bool {
 	return spanOfHeap(b) != nil
 }
 
+// inHeapOrStack 类似 inheap 指向栈空间也返回 true
 // inHeapOrStack is a variant of inheap that returns true for pointers
 // into any allocated heap span.
 //
@@ -667,7 +772,7 @@ func spanOf(p uintptr) *mspan {
 	return ha.spans[(p/pageSize)%pagesPerArena]
 }
 
-// spanOfUnchecked 和spanOf相同，但调用者必须去报p是Go堆内存
+// spanOfUnchecked 和spanOf相同，但调用者必须确保 p 指向的是已申请的 Go 堆内存
 // spanOfUnchecked is equivalent to spanOf, but the caller must ensure
 // that p points into an allocated heap arena.
 //
@@ -710,6 +815,7 @@ func pageIndexOf(p uintptr) (arena *heapArena, pageIdx uintptr, pageMask uint8) 
 	return
 }
 
+// init 初始化 Go 堆
 // Initialize the heap.
 func (h *mheap) init() {
 	lockInit(&h.lock, lockRankMheap)
@@ -733,6 +839,7 @@ func (h *mheap) init() {
 
 	// h->mapcache needs no init
 
+	// 初始化每个 central
 	for i := range h.central {
 		h.central[i].mcentral.init(spanClass(i))
 	}
@@ -898,6 +1005,10 @@ func (h *mheap) reclaimChunk(arenas []arenaIdx, pageIdx, n uintptr) uintptr {
 type spanAllocType uint8
 
 const (
+	// spanAllocHeap          堆 span
+	// spanAllocStack         栈 span
+	// spanAllocPtrScalarBits GC prog 位图 span
+	// spanAllocWorkBuf       work buf span
 	spanAllocHeap          spanAllocType = iota // heap span
 	spanAllocStack                              // stack span
 	spanAllocPtrScalarBits                      // unrolled GC prog bitmap span
@@ -950,7 +1061,8 @@ func (h *mheap) alloc(npages uintptr, spanclass spanClass) *mspan {
 //
 //go:systemstack
 func (h *mheap) allocManual(npages uintptr, typ spanAllocType) *mspan {
-	if !typ.manual() { // 手动管理的内存不能是堆内存
+	if !typ.manual() {
+		// 手动管理的内存不能是堆内存
 		throw("manual span allocation called with non-manually-managed type")
 	}
 	return h.allocSpan(npages, typ, 0)
@@ -1374,10 +1486,10 @@ func (h *mheap) grow(npage uintptr) (uintptr, bool) {
 	totalGrowth := uintptr(0)
 	// This may overflow because ask could be very large
 	// and is otherwise unrelated to h.curArena.base.
-	end := h.curArena.base + ask // 当前基址加上需要的得到 end 可能溢出
+	end := h.curArena.base + ask        // 当前基址加上需要的得到 end 可能溢出
 	nBase := alignUp(end, physPageSize) // 向上取整物理页大小
 	if nBase > h.curArena.end || /* overflow */ end < h.curArena.base {
-	    // 检测溢出后
+		// 检测溢出后
 		// Not enough room in the current arena. Allocate more
 		// arena space. This may not be contiguous with the
 		// current arena, so we have to request the full ask.
@@ -1468,6 +1580,7 @@ func (h *mheap) freeSpan(s *mspan) {
 	})
 }
 
+// freeManual 释放由 allocManual 申请手动管理的 mspan
 // freeManual frees a manually-managed span returned by allocManual.
 // typ must be the same as the spanAllocType passed to the allocManual that
 // allocated s.
@@ -1628,10 +1741,12 @@ func (list *mSpanList) remove(span *mspan) {
 	span.list = nil
 }
 
+// isEmpty 链表是否为空
 func (list *mSpanList) isEmpty() bool {
 	return list.first == nil
 }
 
+// insert 头插一个 span
 func (list *mSpanList) insert(span *mspan) {
 	if span.next != nil || span.prev != nil || span.list != nil {
 		println("runtime: failed mSpanList.insert", span, span.next, span.prev, span.list)
@@ -1639,10 +1754,13 @@ func (list *mSpanList) insert(span *mspan) {
 	}
 	span.next = list.first
 	if list.first != nil {
+		// 链表不为空 直接头插
+		// 保证链表尾不能修改
 		// The list contains at least one span; link it in.
 		// The last span in the list doesn't change.
 		list.first.prev = span
 	} else {
+		// 链表为空 直接替换
 		// The list contains no spans, so this is also the last span.
 		list.last = span
 	}
@@ -1965,16 +2083,19 @@ func freeSpecial(s *special, p unsafe.Pointer, size uintptr) {
 	}
 }
 
+// gcBits 用于标记的位图
 // gcBits is an alloc/mark bitmap. This is always used as *gcBits.
 //
 //go:notinheap
 type gcBits uint8
 
+// bytep 返回第 n 个字节的数据指针
 // bytep returns a pointer to the n'th byte of b.
 func (b *gcBits) bytep(n uintptr) *uint8 {
 	return addb((*uint8)(b), n)
 }
 
+// bitp 返回第 n 个比特位的地址和掩码
 // bitp returns a pointer to the byte containing bit n and a mask for
 // selecting that bit from *bytep.
 func (b *gcBits) bitp(n uintptr) (bytep *uint8, mask uint8) {

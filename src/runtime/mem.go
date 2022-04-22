@@ -6,6 +6,14 @@ package runtime
 
 import "unsafe"
 
+// 操作系统内存管理抽象层
+// 运行时管理的内存有以下四种状态
+// None - 没有保留或者没有映射 默认状态
+// Reserved - 由运行时拥有 但访问会失败 不会计入进程内存占用
+// Prepared - 保留状态 不打算由物理内存支持 操作系统可能会懒式实现
+// 			- 可以有效的过渡到 Ready
+// 			- 访问该块内存是未定义的 可能错误 可能返回未预料的零值等
+// Ready - 可以安全访问
 // OS memory management abstraction layer
 //
 // Regions of the address space managed by the runtime may be in one of four
@@ -35,6 +43,7 @@ import "unsafe"
 // OS-specific implementations that handle errors, while the interface boundary
 // implements cross-OS functionality, like updating runtime accounting.
 
+// sysAlloc 将操作系统选择的内存区域从 None 转换为 Ready
 // sysAlloc transitions an OS-chosen region of memory from None to Ready.
 // More specifically, it obtains a large chunk of zeroed memory from the
 // operating system, typically on the order of a hundred kilobytes
@@ -48,6 +57,10 @@ func sysAlloc(n uintptr, sysStat *sysMemStat) unsafe.Pointer {
 	return sysAllocOS(n)
 }
 
+// sysUnused 将内存从 Ready 标记为 Prepared
+// 它通知操作系统不再需要支持此内存区域的物理页面 并且可以将其重用于其他目的
+// sysUnused 内存区域的内容被视为没收
+// 并且在调用 sysUsed 之前不得再次访问该区域
 // sysUnused transitions a memory region from Ready to Prepared. It notifies the
 // operating system that the physical pages backing this memory region are no
 // longer needed and can be reused for other purposes. The contents of a
@@ -57,6 +70,8 @@ func sysUnused(v unsafe.Pointer, n uintptr) {
 	sysUnusedOS(v, n)
 }
 
+// sysUsed 将内存从 Prepared 标记为 Ready
+// 通知操作系统该内存可以成功的访问
 // sysUsed transitions a memory region from Prepared to Ready. It notifies the
 // operating system that the memory region is needed and ensures that the region
 // may be safely accessed. This is typically a no-op on systems that don't have
@@ -66,6 +81,7 @@ func sysUsed(v unsafe.Pointer, n uintptr) {
 	sysUsedOS(v, n)
 }
 
+// sysHugePage 通知操作系统将该块内存表示为 huge
 // sysHugePage does not transition memory regions, but instead provides a
 // hint to the OS that it would be more efficient to back this memory region
 // with pages of a larger size transparently.
@@ -73,6 +89,7 @@ func sysHugePage(v unsafe.Pointer, n uintptr) {
 	sysHugePageOS(v, n)
 }
 
+// sysFree 将内存状态转为 None
 // sysFree transitions a memory region from any state to None. Therefore, it
 // returns memory unconditionally. It is used if an out-of-memory error has been
 // detected midway through an allocation or to carve out an aligned section of
@@ -88,6 +105,8 @@ func sysFree(v unsafe.Pointer, n uintptr, sysStat *sysMemStat) {
 	sysFreeOS(v, n)
 }
 
+// sysFault 将内存状态由 Ready 或 Prepared 转换为 Reserved
+// 使得访问这块内存总是出错
 // sysFault transitions a memory region from Ready or Prepared to Reserved. It
 // marks a region such that it will always fault if accessed. Used only for
 // debugging the runtime.
@@ -95,6 +114,9 @@ func sysFault(v unsafe.Pointer, n uintptr) {
 	sysFaultOS(v, n)
 }
 
+// sysReserve 将内存由 None 转为 Reserved
+// 访问就会导致致命错误
+// 该指向内存不会分配物理内存
 // sysReserve transitions a memory region from None to Reserved. It reserves
 // address space in such a way that it would cause a fatal fault upon access
 // (either via permissions or not committing the memory). Such a reservation is
@@ -111,6 +133,8 @@ func sysReserve(v unsafe.Pointer, n uintptr) unsafe.Pointer {
 	return sysReserveOS(v, n)
 }
 
+// sysMap 将内存由 Reserved 转为 Prepared
+// 确保内存可以安全的过渡
 // sysMap transitions a memory region from Reserved to Prepared. It ensures the
 // memory region can be efficiently transitioned to Ready.
 func sysMap(v unsafe.Pointer, n uintptr, sysStat *sysMemStat) {

@@ -21,6 +21,7 @@ const (
 	_EINVAL = 22
 )
 
+// sysAllocOS 向操作系统申请内存
 // Don't split the stack as this method may be invoked without a valid G, which
 // prevents us from allocating more stack.
 //

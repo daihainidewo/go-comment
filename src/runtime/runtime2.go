@@ -205,6 +205,7 @@ type note struct {
 	key uintptr
 }
 
+// 函数描述符
 type funcval struct {
 	fn uintptr
 	// variable-size, fn-specific data here
@@ -516,6 +517,9 @@ type g struct {
 
 	// Per-G GC state
 
+	// gcAssistBytes 表示当前 g 的内存申请负载
+	// 为正表示可以无需代价申请标值内存
+	// 为负表示需要清理标值内存以进行还债
 	// gcAssistBytes is this G's GC assist credit in terms of
 	// bytes allocated. If this is positive, then the G has credit
 	// to allocate gcAssistBytes bytes without assisting. If this
@@ -556,7 +560,7 @@ type m struct {
 	nextp         puintptr
 	oldp          puintptr // the p that was attached before executing a syscall
 	id            int64
-	mallocing     int32
+	mallocing     int32 // 标记申请内存中
 	throwing      int32
 	preemptoff    string // if != "", keep curg running on this m
 	locks         int32  // 引用计数，非零表示禁止抢占当前g
@@ -690,6 +694,7 @@ type p struct {
 	// swept and reclaimed by sweeping in the current sweep loop.
 	traceSwept, traceReclaimed uintptr
 
+	// 持久化小块内存分配器
 	palloc persistentAlloc // per-P to avoid mutex
 
 	_ uint32 // Alignment for atomic fields below
@@ -877,17 +882,25 @@ const (
 	_SigIgn                  // _SIG_DFL action is to ignore the signal
 )
 
+// 函数结构体
+// 信息由链接器填充
 // Layout of in-memory per-function information prepared by linker
 // See https://golang.org/s/go12symtab.
 // Keep in sync with linker (../cmd/link/internal/ld/pcln.go:/pclntab)
 // and with package debug/gosym and with symtab.go in package runtime.
 type _func struct {
+	// entryoff 基于 pc 的数据偏移量
+	// nameoff 函数名的偏移量
 	entryoff uint32 // start pc, as offset from moduledata.text/pcHeader.textStart
 	nameoff  int32  // function name
 
+	// args 入参出参的个数
+	// deferreturn 延迟操作对于基址的偏移
 	args        int32  // in/out args size
 	deferreturn uint32 // offset of start of a deferreturn call instruction from entry, if any.
 
+	// npcdata pcdata 个数
+	// nfuncdata funcdata 个数 必须在最后且必须按照 uint32 字节对齐
 	pcsp      uint32
 	pcfile    uint32
 	pcln      uint32
@@ -899,10 +912,18 @@ type _func struct {
 	nfuncdata uint8   // must be last, must end on a uint32-aligned boundary
 }
 
+// 内联代码返回的伪函数
+// *Func 可能是 *_func 或 *funcinl
+// 它们由第一个字段区分
 // Pseudo-Func that is returned for PCs that occur in inlined code.
 // A *Func can be either a *_func or a *funcinl, and they are distinguished
 // by the first uintptr.
 type funcinl struct {
+	// ones 设置为 ^0 区分 _func
+	// entry 最外层的函数帧
+	// name 函数名字
+	// file 函数文件名
+	// line 函数所在文件行
 	ones  uint32  // set to ^0 to distinguish from _func
 	entry uintptr // entry of the real (the "outermost") frame
 	name  string
@@ -1010,8 +1031,19 @@ type _panic struct {
 	goexit    bool
 }
 
+// 栈帧信息
 // stack traces
 type stkframe struct {
+	// fn 函数信息
+	// pc fn 内的程序计数器
+	// continpc 可以继续执行的程序计数器 0 表示销毁
+	// lr 调用者的程序计数器 又叫 link register
+	// sp pc 上的栈指针
+	// fp 调用者的栈指针 又叫 frame pointer
+	// varp 本地变量的顶地址
+	// argp 指向函数参数
+	// arglen 函数参数的个数
+	// argmap 参数位图
 	fn       funcInfo   // function being run
 	pc       uintptr    // program counter within fn
 	continpc uintptr    // program counter where execution can continue, or 0 if not

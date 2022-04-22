@@ -205,6 +205,7 @@ var gcBlackenEnabled uint32
 
 // GC 阶段
 const (
+	// GC 清理 -> GC 标记 -> GC 结束
 	_GCoff             = iota // GC not running; sweeping in background, write barrier disabled
 	_GCmark                   // GC marking roots and workbufs: allocate black, write barrier ENABLED
 	_GCmarktermination        // GC mark termination: allocate black, P's help GC, write barrier ENABLED

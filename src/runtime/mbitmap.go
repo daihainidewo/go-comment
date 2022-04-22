@@ -59,11 +59,14 @@ const (
 	heapBitsShift      = 1     // shift offset between successive bitPointer or bitScan entries
 	wordsPerBitmapByte = 8 / 2 // heap words described by one bitmap byte
 
+	// bitScanAll    = 0xf0
+	// bitPointerAll = 0xf
 	// all scan/pointer bits in a byte
 	bitScanAll    = bitScan | bitScan<<heapBitsShift | bitScan<<(2*heapBitsShift) | bitScan<<(3*heapBitsShift)
 	bitPointerAll = bitPointer | bitPointer<<heapBitsShift | bitPointer<<(2*heapBitsShift) | bitPointer<<(3*heapBitsShift)
 )
 
+// 返回 p 偏移 n 字节的地址
 // addb returns the byte pointer p+n.
 //
 //go:nowritebarrier
@@ -86,6 +89,7 @@ func subtractb(p *byte, n uintptr) *byte {
 	return (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) - n))
 }
 
+// add1 返回向后偏移 1 字节的地址
 // add1 returns the byte pointer p+1.
 //
 //go:nowritebarrier
@@ -165,6 +169,7 @@ func (s *mspan) refillAllocCache(whichByte uintptr) {
 	s.allocCache = ^aCache
 }
 
+// nextFreeIndex 返回 s.freeindex 及其之后的下一个空闲对象的索引
 // nextFreeIndex returns the index of the next free object in s at
 // or after s.freeindex.
 // There are hardware instructions that can be used to make this
@@ -581,7 +586,7 @@ func (h heapBits) isPointer() bool {
 //go:nosplit
 func bulkBarrierPreWrite(dst, src, size uintptr) {
 	if (dst|src|size)&(goarch.PtrSize-1) != 0 {
-        // 检测传入地址是否对指针大小内存对齐
+		// 检测传入地址是否对指针大小内存对齐
 		throw("bulkBarrierPreWrite: unaligned arguments")
 	}
 	if !writeBarrier.needed {
@@ -1605,6 +1610,9 @@ func progToPointerMask(prog *byte, size uintptr) bitvector {
 //	10000000 n c: repeat the previous n bits c times; n, c are varints
 //	1nnnnnnn c: repeat the previous n bits c times; c is a varint
 
+// runGCProg 执行 GC prog
+// size=1 dst 是从 dst 向前布局的 1 位指针掩码
+// size=2 dst 是 2bit 的堆位图 并且向后写入 这种情况 调用者需要确保 dst 完整 byte 写入
 // runGCProg executes the GC program prog, and then trailer if non-nil,
 // writing to dst with entries of the given size.
 // If size == 1, dst is a 1-bit pointer mask laid out moving forward from dst.
@@ -1627,10 +1635,14 @@ Run:
 		// The rest of the loop assumes that nbits <= 7.
 		for ; nbits >= 8; nbits -= 8 {
 			if size == 1 {
+				// 将 bits 的最低字节写入 dst
+				// dst 和 bits 都向后偏移 1 字节
 				*dst = uint8(bits)
 				dst = add1(dst)
 				bits >>= 8
 			} else {
+				// size == 2
+				// bits 每 4bit 写入 dst
 				v := bits&bitPointerAll | bitScanAll
 				*dst = uint8(v)
 				dst = add1(dst)
@@ -1647,14 +1659,18 @@ Run:
 		p = add1(p)
 		n := inst & 0x7F
 		if inst&0x80 == 0 {
+			// 最高位为 0
 			// Literal bits; n == 0 means end of program.
 			if n == 0 {
+				// 表示程序结束
 				// Program is over; continue in trailer if present.
 				if trailer != nil {
+					// 如果存在 trailer 则继续
 					p = trailer
 					trailer = nil
 					continue
 				}
+				// 否则退出循环
 				break Run
 			}
 			nbyte := n / 8
@@ -1890,20 +1906,30 @@ Run:
 	return totalBits
 }
 
+// materializeGCProg 为 1bit 指针掩码 分配空间
+// 然后它用程序 prog 指定的指针位掩码填充该空间
+// bitmask 由 s.startAddr 开始
+// 必须使用 dematerializeGCProg 回收 mspan
 // materializeGCProg allocates space for the (1-bit) pointer bitmask
 // for an object of size ptrdata.  Then it fills that space with the
 // pointer bitmask specified by the program prog.
 // The bitmask starts at s.startAddr.
 // The result must be deallocated with dematerializeGCProg.
 func materializeGCProg(ptrdata uintptr, prog *byte) *mspan {
+	// 向上取整
 	// Each word of ptrdata needs one bit in the bitmap.
 	bitmapBytes := divRoundUp(ptrdata, 8*goarch.PtrSize)
+	// 计算需要多少页
 	// Compute the number of pages needed for bitmapBytes.
 	pages := divRoundUp(bitmapBytes, pageSize)
+	// 手动申请内存
 	s := mheap_.allocManual(pages, spanAllocPtrScalarBits)
+	// 执行 GC prog
 	runGCProg(addb(prog, 4), nil, (*byte)(unsafe.Pointer(s.startAddr)), 1)
 	return s
 }
+
+// dematerializeGCProg 释放用于 GC prog 的 mspan
 func dematerializeGCProg(s *mspan) {
 	mheap_.freeManual(s, spanAllocPtrScalarBits)
 }

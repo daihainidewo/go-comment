@@ -33,6 +33,7 @@ var deBruijnIdx32ctz = [32]byte{
 	30, 9, 19, 24, 29, 18, 28, 27,
 }
 
+// Ctz64 计算二进制后缀多少个零
 // Ctz64 counts trailing (low-order) zeroes,
 // and if all are zero, then 64.
 func Ctz64(x uint64) int {
@@ -43,6 +44,7 @@ func Ctz64(x uint64) int {
 	return i + z
 }
 
+// Ctz32 计算二进制后缀多少个零
 // Ctz32 counts trailing (low-order) zeroes,
 // and if all are zero, then 32.
 func Ctz32(x uint32) int {
@@ -53,6 +55,7 @@ func Ctz32(x uint32) int {
 	return i + z
 }
 
+// Ctz8 返回 x 二进制的后缀 0 的个数
 // Ctz8 returns the number of trailing zero bits in x; the result is 8 for x == 0.
 func Ctz8(x uint8) int {
 	return int(ntz8tab[x])

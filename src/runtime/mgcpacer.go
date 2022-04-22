@@ -69,6 +69,12 @@ func init() {
 	}
 }
 
+// gcController 实现了 GC pacing 控制器
+// 该控制器确定何时触发并发垃圾收集以及在 mutator 辅助和后台标记中要做多少标记工作
+// 它计算分配率（以 CPU 时间为单位）和 GC 扫描吞吐量之间的比率
+// 以确定触发 GC 周期的堆大小
+// 这样就不需要 GC 辅助来按时完成
+// 因此该算法通过最小化 GC 辅助将 GC CPU 利用率优化到 GOMAXPROCS 的 25% 的专用背景标记利用率
 // gcController implements the GC pacing controller that determines
 // when to trigger concurrent garbage collection and how much marking
 // work to do in mutator assists and background marking.
@@ -819,6 +825,7 @@ func (c *gcControllerState) update(dHeapLive, dHeapScan int64) {
 	}
 }
 
+// addScannableStack 增加可扫描栈的计数值
 func (c *gcControllerState) addScannableStack(pp *p, amount int64) {
 	if pp == nil {
 		atomic.Xadd64(&c.scannableStackSize, amount)

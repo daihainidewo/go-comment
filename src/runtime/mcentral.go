@@ -14,12 +14,19 @@ package runtime
 
 import "runtime/internal/atomic"
 
+// mentral 给定大小的空闲对象链表
 // Central list of free objects of a given size.
 //
 //go:notinheap
 type mcentral struct {
+	// spanclass 标记当前 mcentral 的等级
 	spanclass spanClass
 
+	// partial 表示有空闲对象列表
+	// full 表示没有空闲对象列表
+	// partial 和 full 都包含两个 mspan 集合
+	// 分别表示已清理的 span 和 未清理的 span
+	// 两者在 GC 循环中交替角色
 	// partial and full contain two mspan sets: one of swept in-use
 	// spans, and one of unswept in-use spans. These two trade
 	// roles on each GC cycle. The unswept set is drained either by
@@ -42,42 +49,50 @@ type mcentral struct {
 	full    [2]spanSet // list of spans with no free objects
 }
 
+// init 依据 spc 初始化指定的等级的 mcentral
 // Initialize a single central free list.
 func (c *mcentral) init(spc spanClass) {
 	c.spanclass = spc
+	// 初始化所有的 spanSet.spineLock
 	lockInit(&c.partial[0].spineLock, lockRankSpanSetSpine)
 	lockInit(&c.partial[1].spineLock, lockRankSpanSetSpine)
 	lockInit(&c.full[0].spineLock, lockRankSpanSetSpine)
 	lockInit(&c.full[1].spineLock, lockRankSpanSetSpine)
 }
 
+// partialUnswept 返回未清理的 partial 的 spanSet
 // partialUnswept returns the spanSet which holds partially-filled
 // unswept spans for this sweepgen.
 func (c *mcentral) partialUnswept(sweepgen uint32) *spanSet {
 	return &c.partial[1-sweepgen/2%2]
 }
 
+// partialSwept 返回清理的 partial 的 spanSet
 // partialSwept returns the spanSet which holds partially-filled
 // swept spans for this sweepgen.
 func (c *mcentral) partialSwept(sweepgen uint32) *spanSet {
 	return &c.partial[sweepgen/2%2]
 }
 
+// partialUnswept 返回未清理的 full 的 spanSet
 // fullUnswept returns the spanSet which holds unswept spans without any
 // free slots for this sweepgen.
 func (c *mcentral) fullUnswept(sweepgen uint32) *spanSet {
 	return &c.full[1-sweepgen/2%2]
 }
 
+// partialSwept 返回清理的 full 的 spanSet
 // fullSwept returns the spanSet which holds swept spans without any
 // free slots for this sweepgen.
 func (c *mcentral) fullSwept(sweepgen uint32) *spanSet {
 	return &c.full[sweepgen/2%2]
 }
 
+// cacheSpan 申请用于 mcache 的 mspan
 // Allocate a span to use in an mcache.
 func (c *mcentral) cacheSpan() *mspan {
 	// Deduct credit for this span allocation and sweep if necessary.
+	// 获取 span 大小
 	spanBytes := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) * _PageSize
 	deductSweepCredit(spanBytes, 0)
 

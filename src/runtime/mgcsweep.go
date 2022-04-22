@@ -777,6 +777,15 @@ func (s *mspan) reportZombies() {
 	throw("found pointer to free object")
 }
 
+// deductSweepCredit 为申请大小为 spanBytes 的 mspan 而扣除扫描信用
+// 必须在分配 mspan 之前执行
+// 必须确保有足够的信用
+// 如果需要会执行清扫工作防止进入债务
+// deductSweepCredit 做了一个最坏情况的假设
+// 即最终分配的 span 的所有 spanBytes 字节都可用于对象分配
+// deductSweepCredit 是比例扫描系统的核心
+// 它使用垃圾收集器收集的统计信息来执行足够的清扫
+// 以便在 GC 周期之间的并发清扫阶段清扫所有页面
 // deductSweepCredit deducts sweep credit for allocating a span of
 // size spanBytes. This must be performed *before* the span is
 // allocated to ensure the system has enough credit. If necessary, it
@@ -796,6 +805,7 @@ func (s *mspan) reportZombies() {
 // mheap_ must NOT be locked.
 func deductSweepCredit(spanBytes uintptr, callerSweepPages uintptr) {
 	if mheap_.sweepPagesPerByte == 0 {
+		// 完成或者禁止比例扫描
 		// Proportional sweep is done or disabled.
 		return
 	}
@@ -826,6 +836,7 @@ retry:
 	}
 }
 
+// clobberfree 重置以 x 为基址大小为 size 的内存空间
 // clobberfree sets the memory content at x to bad content, for debugging
 // purposes.
 func clobberfree(x unsafe.Pointer, size uintptr) {

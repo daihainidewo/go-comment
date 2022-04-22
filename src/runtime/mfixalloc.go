@@ -10,6 +10,9 @@ package runtime
 
 import "unsafe"
 
+// fixalloc 是一个简单的固定大小对象的空闲链表分配器
+// 由 sysAlloc 的 FixAlloc 管理 mcache 和 mspan 的对象
+//
 // FixAlloc is a simple free-list allocator for fixed size objects.
 // Malloc uses a FixAlloc wrapped around sysAlloc to manage its
 // mcache and mspan objects.
@@ -48,6 +51,7 @@ type mlink struct {
 	next *mlink
 }
 
+// init 初始化 f 已分配给定大小的对象 使用分配器获取内存块
 // Initialize f to allocate objects of the given size,
 // using the allocator to obtain chunks of memory.
 func (f *fixalloc) init(size uintptr, first func(arg, p unsafe.Pointer), arg unsafe.Pointer, stat *sysMemStat) {
@@ -55,6 +59,7 @@ func (f *fixalloc) init(size uintptr, first func(arg, p unsafe.Pointer), arg uns
 		throw("runtime: fixalloc size too large")
 	}
 	if min := unsafe.Sizeof(mlink{}); size < min {
+		// size 不能低于最小值
 		size = min
 	}
 
@@ -70,6 +75,7 @@ func (f *fixalloc) init(size uintptr, first func(arg, p unsafe.Pointer), arg uns
 	f.zero = true
 }
 
+// alloc 申请指定大小的内存
 func (f *fixalloc) alloc() unsafe.Pointer {
 	if f.size == 0 {
 		print("runtime: use of FixAlloc_Alloc before FixAlloc_Init\n")
@@ -77,29 +83,36 @@ func (f *fixalloc) alloc() unsafe.Pointer {
 	}
 
 	if f.list != nil {
+		// 链表不为空 直接返回头结点
 		v := unsafe.Pointer(f.list)
 		f.list = f.list.next
 		f.inuse += f.size
 		if f.zero {
+			// 清空内存
 			memclrNoHeapPointers(v, f.size)
 		}
 		return v
 	}
 	if uintptr(f.nchunk) < f.size {
+		// 获取一块持久内存
 		f.chunk = uintptr(persistentalloc(uintptr(f.nalloc), 0, f.stat))
 		f.nchunk = f.nalloc
 	}
 
 	v := unsafe.Pointer(f.chunk)
 	if f.first != nil {
+		// 执行指定的第一次操作
 		f.first(f.arg, v)
 	}
+	// 修改记录数据
 	f.chunk = f.chunk + f.size
 	f.nchunk -= uint32(f.size)
 	f.inuse += f.size
 	return v
 }
 
+// free 释放 p
+// 将 p 头插到 f.list 上
 func (f *fixalloc) free(p unsafe.Pointer) {
 	f.inuse -= f.size
 	v := (*mlink)(p)

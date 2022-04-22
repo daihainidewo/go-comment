@@ -23,6 +23,7 @@ type mcache struct {
 	nextSample uintptr // trigger heap sample after allocating this many bytes
 	scanAlloc  uintptr // bytes of scannable heap allocated
 
+	// 小内存申请
 	// Allocator cache for tiny objects w/o pointers.
 	// See "Tiny allocator" comment in malloc.go.
 
@@ -35,14 +36,15 @@ type mcache struct {
 	//
 	// tinyAllocs is the number of tiny allocations performed
 	// by the P that owns this mcache.
-	tiny       uintptr// 执行向一小块地址
-	tinyoffset uintptr// 小块地址的偏移量
+	tiny       uintptr
+	tinyoffset uintptr
 	tinyAllocs uintptr
 
 	// The rest is not accessed on every malloc.
 
 	alloc [numSpanClasses]*mspan // spans to allocate from, indexed by spanClass
 
+	// 不同大小的栈空间池
 	stackcache [_NumStackOrders]stackfreelist
 
 	// flushGen indicates the sweepgen during which this mcache
@@ -279,6 +281,7 @@ func (c *mcache) releaseAll() {
 	gcController.update(dHeapLive, scanAlloc)
 }
 
+// 为擦除做准备
 // prepareForSweep flushes c if the system has entered a new sweep phase
 // since c was populated. This must happen between the sweep phase
 // starting and the first allocation from c.
