@@ -282,11 +282,15 @@ func (e *MarshalerError) Unwrap() error { return e.Err }
 
 var hex = "0123456789abcdef"
 
+// encodeState 编码 JSON 对象进入 bytes.Buffer
 // An encodeState encodes JSON into a bytes.Buffer.
 type encodeState struct {
+	// Buffer 缓存编码字节
+	// scratch 用于数字格式化临时容器
 	bytes.Buffer // accumulated output
 	scratch      [64]byte
 
+	// ptrLevel 指针深度
 	// Keep track of what pointers we've seen in the current recursive call
 	// path, to avoid cycles that could lead to a stack overflow. Only do
 	// the relatively expensive map operations if ptrLevel is larger than
@@ -296,10 +300,12 @@ type encodeState struct {
 	ptrSeen  map[any]struct{}
 }
 
+// 嵌套深度
 const startDetectingCyclesAfter = 1000
 
 var encodeStatePool sync.Pool
 
+// newEncodeState 新建编码执行容器
 func newEncodeState() *encodeState {
 	if v := encodeStatePool.Get(); v != nil {
 		e := v.(*encodeState)
@@ -355,13 +361,17 @@ func isEmptyValue(v reflect.Value) bool {
 	return false
 }
 
+// reflectValue 获取类型的编码函数并执行
 func (e *encodeState) reflectValue(v reflect.Value, opts encOpts) {
 	valueEncoder(v)(e, v, opts)
 }
 
+// encOpts 编码选项
 type encOpts struct {
+	// quoted json 字符串编码引号
 	// quoted causes primitive fields to be encoded inside JSON strings.
 	quoted bool
+	// escapeHTML 转码 html 特殊字符
 	// escapeHTML causes '<', '>', and '&' to be escaped in JSON strings.
 	escapeHTML bool
 }
@@ -377,8 +387,10 @@ func valueEncoder(v reflect.Value) encoderFunc {
 	return typeEncoder(v.Type())
 }
 
+// typeEncoder 返回 t 的编码函数
 func typeEncoder(t reflect.Type) encoderFunc {
 	if fi, ok := encoderCache.Load(t); ok {
+		// 如果有缓存 就直接返回
 		return fi.(encoderFunc)
 	}
 
@@ -396,9 +408,11 @@ func typeEncoder(t reflect.Type) encoderFunc {
 		f(e, v, opts)
 	}))
 	if loaded {
+		// 已经有过初始化 就直接调用
 		return fi.(encoderFunc)
 	}
 
+	// 新的类型 初始化新的类型编码器
 	// Compute the real encoder and replace the indirect func with it.
 	f = newTypeEncoder(t, true)
 	wg.Done()
@@ -411,6 +425,8 @@ var (
 	textMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
 )
 
+// newTypeEncoder 返回新类型的编码函数
+// 返回的编码器仅在 allowAddr 为 true 时检查 CanAddr
 // newTypeEncoder constructs an encoderFunc for a type.
 // The returned encoder only checks CanAddr when allowAddr is true.
 func newTypeEncoder(t reflect.Type, allowAddr bool) encoderFunc {
@@ -419,12 +435,15 @@ func newTypeEncoder(t reflect.Type, allowAddr bool) encoderFunc {
 	// the address of the value - otherwise we end up with an
 	// allocation as we cast the value to an interface.
 	if t.Kind() != reflect.Pointer && allowAddr && reflect.PointerTo(t).Implements(marshalerType) {
+		// t 不是指针 并且 检查地址 并且 t 的指针类型没有实现 marshalerType
 		return newCondAddrEncoder(addrMarshalerEncoder, newTypeEncoder(t, false))
 	}
 	if t.Implements(marshalerType) {
+		// t 实现了 marshalerType 接口
 		return marshalerEncoder
 	}
 	if t.Kind() != reflect.Pointer && allowAddr && reflect.PointerTo(t).Implements(textMarshalerType) {
+		// t 不是指针 并且 检查地址 并且 t 的指针类型没有实现 textMarshalerType
 		return newCondAddrEncoder(addrTextMarshalerEncoder, newTypeEncoder(t, false))
 	}
 	if t.Implements(textMarshalerType) {
@@ -647,6 +666,7 @@ func stringEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 	}
 }
 
+// isValidNumber 判断是否是合法的 JSON 数字
 // isValidNumber reports whether s is a valid JSON number literal.
 func isValidNumber(s string) bool {
 	// This function implements the JSON numbers grammar.
@@ -657,6 +677,7 @@ func isValidNumber(s string) bool {
 		return false
 	}
 
+	// 负数
 	// Optional -
 	if s[0] == '-' {
 		s = s[1:]
@@ -665,6 +686,7 @@ func isValidNumber(s string) bool {
 		}
 	}
 
+	// 正常十进制
 	// Digits
 	switch {
 	default:
@@ -680,6 +702,7 @@ func isValidNumber(s string) bool {
 		}
 	}
 
+	// 小数
 	// . followed by 1 or more digits.
 	if len(s) >= 2 && s[0] == '.' && '0' <= s[1] && s[1] <= '9' {
 		s = s[2:]
@@ -688,6 +711,7 @@ func isValidNumber(s string) bool {
 		}
 	}
 
+	// 指数
 	// e or E followed by an optional - or + and
 	// 1 or more digits.
 	if len(s) >= 2 && (s[0] == 'e' || s[0] == 'E') {
@@ -719,21 +743,27 @@ func unsupportedTypeEncoder(e *encodeState, v reflect.Value, _ encOpts) {
 	e.error(&UnsupportedTypeError{v.Type()})
 }
 
+// structEncoder 结构体编码器
 type structEncoder struct {
 	fields structFields
 }
 
+// structFields 结构体字段编码器
 type structFields struct {
+	// list 字段列表
+	// nameIndex 字段名索引 list 位置
 	list      []field
 	nameIndex map[string]int
 }
 
+// encode 结构体编码
 func (se structEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 	next := byte('{')
 FieldLoop:
 	for i := range se.fields.list {
 		f := &se.fields.list[i]
 
+		// 通过 f.index 查找嵌套的结构字段
 		// Find the nested struct field by following f.index.
 		fv := v
 		for _, i := range f.index {
@@ -747,10 +777,12 @@ FieldLoop:
 		}
 
 		if f.omitEmpty && isEmptyValue(fv) {
+			// 忽略零值
 			continue
 		}
 		e.WriteByte(next)
 		next = ','
+		// 写入字段名
 		if opts.escapeHTML {
 			e.WriteString(f.nameEscHTML)
 		} else {
@@ -922,10 +954,12 @@ func newArrayEncoder(t reflect.Type) encoderFunc {
 	return enc.encode
 }
 
+// ptrEncoder 指针编码器
 type ptrEncoder struct {
 	elemEnc encoderFunc
 }
 
+// encode 编码指针
 func (pe ptrEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 	if v.IsNil() {
 		e.WriteString("null")
@@ -1170,21 +1204,33 @@ func (e *encodeState) stringBytes(s []byte, escapeHTML bool) {
 	e.WriteByte('"')
 }
 
+// field 结构体字段描述
 // A field represents a single field found in a struct.
 type field struct {
+	// name 字段名
+	// nameBytes 字段名 字节数组
+	// equalFold 类型判等函数
 	name      string
 	nameBytes []byte                 // []byte(name)
 	equalFold func(s, t []byte) bool // bytes.EqualFold or equivalent
 
+	// nameNonEsc 编码名称
+	// nameEscHTML 编码名称 转义 html 特殊字符
 	nameNonEsc  string // `"` + name + `":`
 	nameEscHTML string // `"` + HTMLEscape(name) + `":`
 
+	// tag 是否有 tag
+	// index 匿名嵌套结构体的层级关系
+	// typ 类型
+	// omitEmpty 零值是否为空
+	// quoted 是否加引号
 	tag       bool
 	index     []int
 	typ       reflect.Type
 	omitEmpty bool
 	quoted    bool
 
+	// encoder 编码函数
 	encoder encoderFunc
 }
 

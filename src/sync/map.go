@@ -231,6 +231,7 @@ func (e *entry) storeLocked(i *any) {
 // LoadOrStore 如果存在返回当前值
 // 否则 存储 并返回给定的值
 // loaded 表示是否存入新值
+// true 表示加载旧值 false 表示存储新值
 // LoadOrStore returns the existing value for the key if present.
 // Otherwise, it stores and returns the given value.
 // The loaded result is true if the value was loaded, false if stored.

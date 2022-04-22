@@ -502,8 +502,8 @@ type g struct {
 	lockedm        muintptr // 锁定的M地址
 	sig            uint32
 	writebuf       []byte
-	sigcode0       uintptr
-	sigcode1       uintptr
+	sigcode0       uintptr // sp
+	sigcode1       uintptr // pc
 	sigpc          uintptr
 	gopc           uintptr         // 创建此goroutine的调用者的pc pc of go statement that created this goroutine
 	ancestors      *[]ancestorInfo // 创建此goroutine的祖先信息，仅用于debug.tracebackancestors ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)

@@ -1439,6 +1439,7 @@ var ptrMap sync.Map // map[*rtype]*ptrType
 // The two functions behave identically.
 func PtrTo(t Type) Type { return PointerTo(t) }
 
+// PointerTo 返回 t 的指针类型
 // PointerTo returns the pointer type with element t.
 // For example, if t represents type Foo, PointerTo(t) represents *Foo.
 func PointerTo(t Type) Type {
