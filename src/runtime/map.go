@@ -1017,10 +1017,11 @@ func mapiterinit(t *maptype, h *hmap, it *hiter) {
 	}
 
 	// decide where to start
-	r := uintptr(fastrand())
+	var r uintptr
 	if h.B > 31-bucketCntBits {
-		// 桶太多 出了掩码范围
-		r += uintptr(fastrand()) << 31
+		r = uintptr(fastrand64())
+	} else {
+		r = uintptr(fastrand())
 	}
 	// 起始迭代桶
 	it.startBucket = r & bucketMask(h.B)
