@@ -1680,21 +1680,26 @@ func (t *Type) IsVoid() bool    { return t == TypeVoid }
 func (t *Type) IsTuple() bool   { return t.kind == TTUPLE }
 func (t *Type) IsResults() bool { return t.kind == TRESULTS }
 
+// IsUntyped 返回是否是无类型的类型
+// 即是否能被定义为常量
 // IsUntyped reports whether t is an untyped type.
 func (t *Type) IsUntyped() bool {
 	if t == nil {
 		return false
 	}
 	if t == UntypedString || t == UntypedBool {
+		// 字符串和布尔
 		return true
 	}
 	switch t.kind {
 	case TNIL, TIDEAL:
+		// nil 或者 无类型数字常量
 		return true
 	}
 	return false
 }
 
+// HasPointers 类型是否有指针
 // HasPointers reports whether t contains a heap pointer.
 // Note that this function ignores pointers to go:notinheap types.
 func (t *Type) HasPointers() bool {

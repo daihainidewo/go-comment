@@ -406,9 +406,12 @@ func gcAssistAlloc(gp *g) {
 	// Don't assist in non-preemptible contexts. These are
 	// generally fragile and won't allow the assist to block.
 	if getg() == gp.m.g0 {
+		// 如果是 g0 直接返回
+		// g0 不需要还债
 		return
 	}
 	if mp := getg().m; mp.locks > 0 || mp.preemptoff != "" {
+		// 当前 m 被锁定 或 没有被抢占 即 m 很忙
 		return
 	}
 

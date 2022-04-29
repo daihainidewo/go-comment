@@ -9,6 +9,7 @@ import (
 	"cmd/compile/internal/ir"
 )
 
+// addr 计算一个可寻址的表达式 n 并返回一个表示存储到表示位置的 hole
 // addr evaluates an addressable expression n and returns a hole
 // that represents storing into the represented location.
 func (e *escape) addr(n ir.Node) hole {
@@ -52,6 +53,7 @@ func (e *escape) addr(n ir.Node) hole {
 	return k
 }
 
+// addrs 遍历所有节点执行 addr
 func (e *escape) addrs(l ir.Nodes) []hole {
 	var ks []hole
 	for _, n := range l {
@@ -66,6 +68,7 @@ func (e *escape) assignHeap(src ir.Node, why string, where ir.Node) {
 
 // assignList evaluates the assignment dsts... = srcs....
 func (e *escape) assignList(dsts, srcs []ir.Node, why string, where ir.Node) {
+	// 获取所有 dsts 的 hole
 	ks := e.addrs(dsts)
 	for i, k := range ks {
 		var src ir.Node
@@ -77,6 +80,7 @@ func (e *escape) assignList(dsts, srcs []ir.Node, why string, where ir.Node) {
 			// Detect implicit conversion of uintptr to unsafe.Pointer when
 			// storing into reflect.{Slice,String}Header.
 			if dst.Op() == ir.ODOTPTR && ir.IsReflectHeaderDataField(dst) {
+				// dst 是指针指向方法 并且 dst 不是切片和字符串的反射的头部结构体
 				e.unsafeValue(e.heapHole().note(where, why), src)
 				continue
 			}

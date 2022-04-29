@@ -14,6 +14,21 @@ import (
 	"cmd/compile/internal/types"
 )
 
+/*
+	逃逸分析
+	通过逃逸分析确定变量在堆还是在栈上
+	有两个原则：
+		指向栈对象的指针不能存放在堆中
+		指向栈对象的指针不能超过该对象生命周期
+
+	通过对 AST 的静态数据流分析来实现这一点
+	首先，我们构建一个有向加权图，其中顶点（称为“位置”）表示由语句和表达式分配的变量
+	边表示变量之间的分配（权重表示寻址解除引用计数）
+	我们遍历图寻找可能违反上述不变量的分配路径
+	如果变量 v 的地址存储在堆中或可能超过它的其他地方，则将 v 标记为需要堆分配
+	为了支持过程间分析，我们还记录了从每个函数的参数到堆及其结果参数的数据流
+	该信息被概括为“参数标签”，用于静态调用站点以改进函数参数的转义分析
+*/
 // Escape analysis.
 //
 // Here we analyze functions to determine which Go variables
@@ -82,6 +97,8 @@ import (
 // u[2], etc. However, we do record the implicit dereference involved
 // in indexing a slice.
 
+// batch 批量逃逸分析状态
+// 同一批次状态共享
 // A batch holds escape analysis state that's shared across an entire
 // batch of functions being analyzed at once.
 type batch struct {
@@ -92,6 +109,8 @@ type batch struct {
 	blankLoc location
 }
 
+// closure 表示一个闭包表达式及其溢出 hole
+// hole 存储闭包的记录
 // A closure holds a closure expression and its spill hole (i.e.,
 // where the hole representing storing into its closure record).
 type closure struct {
@@ -99,6 +118,7 @@ type closure struct {
 	clo *ir.ClosureExpr
 }
 
+// escape 单个函数的分析状态
 // An escape holds state specific to a single function being analyzed
 // within a batch.
 type escape struct {
@@ -119,6 +139,7 @@ func Funcs(all []ir.Node) {
 	ir.VisitFuncsBottomUp(all, Batch)
 }
 
+// Batch 对批量函数进行逃逸分析
 // Batch performs escape analysis on a minimal batch of
 // functions.
 func Batch(fns []*ir.Func, recursive bool) {
@@ -131,6 +152,7 @@ func Batch(fns []*ir.Func, recursive bool) {
 	var b batch
 	b.heapLoc.escapes = true
 
+	// 初始化函数列表
 	// Construct data-flow graph from syntax trees.
 	for _, fn := range fns {
 		if base.Flag.W > 1 {
@@ -172,7 +194,9 @@ func (b *batch) with(fn *ir.Func) *escape {
 	}
 }
 
+// initFunc 初始化函数局部变量和隐藏变量还有返回值
 func (b *batch) initFunc(fn *ir.Func) {
+	// new escape
 	e := b.with(fn)
 	if fn.Esc() != escFuncUnknown {
 		base.Fatalf("unexpected node: %v", fn)
@@ -182,11 +206,13 @@ func (b *batch) initFunc(fn *ir.Func) {
 		ir.Dump("escAnalyze", fn)
 	}
 
+	// 局部变量
 	// Allocate locations for local variables.
 	for _, n := range fn.Dcl {
 		e.newLoc(n, false)
 	}
 
+	// 为隐藏变量或闭包变量
 	// Also for hidden parameters (e.g., the ".this" parameter to a
 	// method value wrapper).
 	if fn.OClosure == nil {
@@ -195,6 +221,7 @@ func (b *batch) initFunc(fn *ir.Func) {
 		}
 	}
 
+	// 为返回值初始化
 	// Initialize resultIndex for result parameters.
 	for i, f := range fn.Type().Results().FieldSlice() {
 		e.oldLoc(f.Nname.(*ir.Name)).resultIndex = 1 + i
@@ -205,10 +232,12 @@ func (b *batch) walkFunc(fn *ir.Func) {
 	e := b.with(fn)
 	fn.SetEsc(escFuncStarted)
 
+	// 识别标记标签非结构化循环
 	// Identify labels that mark the head of an unstructured loop.
 	ir.Visit(fn, func(n ir.Node) {
 		switch n.Op() {
 		case ir.OLABEL:
+			// label 标签
 			n := n.(*ir.LabelStmt)
 			if n.Label.IsBlank() {
 				break
@@ -219,6 +248,7 @@ func (b *batch) walkFunc(fn *ir.Func) {
 			e.labels[n.Label] = nonlooping
 
 		case ir.OGOTO:
+			// goto 标签
 			// If we visited the label before the goto,
 			// then this is a looping label.
 			n := n.(*ir.BranchStmt)
@@ -269,6 +299,7 @@ func (b *batch) flowClosure(k hole, clo *ir.ClosureExpr) {
 	}
 }
 
+// finish 逃逸分析汇总
 func (b *batch) finish(fns []*ir.Func) {
 	// Record parameter tags for package export data.
 	for _, fn := range fns {
@@ -289,6 +320,7 @@ func (b *batch) finish(fns []*ir.Func) {
 			continue
 		}
 		if n.Op() == ir.ONAME {
+			// 命名变量
 			n := n.(*ir.Name)
 			n.Opt = nil
 		}
@@ -302,6 +334,7 @@ func (b *batch) finish(fns []*ir.Func) {
 
 		if loc.escapes {
 			if n.Op() == ir.ONAME {
+				// 命名变量
 				if base.Flag.CompilingRuntime {
 					base.ErrorfAt(n.Pos(), "%v escapes to heap, not allowed in runtime", n)
 				}
@@ -309,6 +342,7 @@ func (b *batch) finish(fns []*ir.Func) {
 					base.WarnfAt(n.Pos(), "moved to heap: %v", n)
 				}
 			} else {
+				// 匿名变量
 				if base.Flag.LowerM != 0 && !goDeferWrapper {
 					base.WarnfAt(n.Pos(), "%v escapes to heap", n)
 				}
@@ -355,6 +389,7 @@ func (e *escape) inMutualBatch(fn *ir.Name) bool {
 	return false
 }
 
+// 逃逸分析状态
 const (
 	escFuncUnknown = 0 + iota
 	escFuncPlanned

@@ -1032,6 +1032,8 @@ func ShouldAsanCheckPtr(fn *Func) bool {
 	return base.Flag.ASan && fn.Pragma&NoCheckPtr == 0
 }
 
+// IsReflectHeaderDataField 判断是否是 p.Data
+// p 为 reflect.SliceHeader 或 reflect.StringHeader
 // IsReflectHeaderDataField reports whether l is an expression p.Data
 // where p has type reflect.SliceHeader or reflect.StringHeader.
 func IsReflectHeaderDataField(l Node) bool {

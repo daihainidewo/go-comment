@@ -963,7 +963,10 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	}
 
 	if debug.malloc {
+		// 开启 debug 模式
 		if debug.sbrk != 0 {
+			// 开启了 sbrk
+			// 计算字节对齐
 			align := uintptr(16)
 			if typ != nil {
 				// TODO(austin): This should be just
@@ -983,6 +986,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 					align = 1
 				}
 			}
+			// 申请持久化内存
 			return persistentalloc(size, align, &memstats.other_sys)
 		}
 
@@ -997,7 +1001,8 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// GC is not currently active.
 	var assistG *g
 	if gcBlackenEnabled != 0 {
-		//
+		// 正在进行 GC 操作
+		// 向申请内存的用户 g 进行收费
 		// Charge the current user G for this allocation.
 		assistG = getg()
 		if assistG.m.curg != nil {
@@ -1464,6 +1469,7 @@ func persistentalloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
 }
 
 // persistentalloc1 返回堆外连续内存分配器
+// 只能在 g0 上执行
 // Must run on system stack because stack growth can (re)invoke it.
 // See issue 9174.
 //
@@ -1522,6 +1528,7 @@ func persistentalloc1(size, align uintptr, sysStat *sysMemStat) *notInHeap {
 		}
 
 		// 将新的 persistent.base 添加到 persistentChunks
+		// 将 persistentChunks 更为 persistent.base 的地址
 		// Add the new chunk to the persistentChunks list.
 		for {
 			// persistent.base = persistentChunks
@@ -1535,7 +1542,9 @@ func persistentalloc1(size, align uintptr, sysStat *sysMemStat) *notInHeap {
 		// 设置偏移量
 		persistent.off = alignUp(goarch.PtrSize, align)
 	}
+	// 获取申请内存的基址
 	p := persistent.base.add(persistent.off)
+	// 增加偏移标识
 	persistent.off += size
 	releasem(mp)
 	if persistent == &globalAlloc.persistentAlloc {

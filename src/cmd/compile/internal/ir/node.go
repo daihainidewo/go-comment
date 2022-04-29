@@ -106,12 +106,18 @@ func TakeInit(n Node) Nodes {
 
 type Op uint8
 
+// Go 语句操作
 // Node ops.
 const (
 	OXXX Op = iota
 
+	// ONAME 表示 var 声明变量或者函数名
 	// names
 	ONAME // var or func name
+	// ONONAME 匿名参数或返回值
+	// OTYPE 类型名
+	// OLITERAL 字面值
+	// ONIL nil
 	// Unnamed arg or return value: f(int, string) (int, error) { etc }
 	// Also used for a qualified package identifier that hasn't been resolved yet.
 	ONONAME
@@ -148,6 +154,7 @@ const (
 	OASOP       // X AsOp= Y (x += y)
 	OCALL       // X(Args) (function call, method call or type conversion)
 
+	// ODCL 只声明类型 var X
 	// OCALLFUNC, OCALLMETH, and OCALLINTER have the same structure.
 	// Prior to walk, they are: X(Args), where Args is all regular arguments.
 	// After walk, if any argument whose evaluation might requires temporary variable,
@@ -250,6 +257,7 @@ const (
 	OMETHVALUE   // X.Sel   (method expression t.Method, not called)
 
 	// statements
+	// OBLOCK 块代码
 	OBLOCK // { List } (block of code)
 	OBREAK // break [Label]
 	// OCASE:  case List: Body (List==nil means default)

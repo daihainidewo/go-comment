@@ -61,6 +61,7 @@ func (b *batch) walkOne(root *location, walkgen uint32, enqueue func(*location))
 	root.derefs = 0
 	root.dst = nil
 
+	// 遍历 root 广度优先
 	todo := []*location{root} // LIFO queue
 	for len(todo) > 0 {
 		l := todo[len(todo)-1]
@@ -107,10 +108,12 @@ func (b *batch) walkOne(root *location, walkgen uint32, enqueue func(*location))
 				l.leakTo(root, derefs)
 			}
 
+			// l 的地址指向比它生命周期更长的地方 则分配到堆上
 			// If l's address flows somewhere that
 			// outlives it, then l needs to be heap
 			// allocated.
 			if addressOf && !l.escapes {
+				// 最底层的取地址操作 并且 l 没有逃逸
 				if logopt.Enabled() || base.Flag.LowerM >= 2 {
 					if base.Flag.LowerM >= 2 {
 						fmt.Printf("%s: %v escapes to heap:\n", base.FmtPos(l.n.Pos()), l.n)

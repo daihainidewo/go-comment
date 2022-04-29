@@ -10,6 +10,7 @@ import (
 	"cmd/compile/internal/types"
 )
 
+// expr 评估表达式结果存入 hole
 // expr models evaluating an expression n and flowing the result into
 // hole k.
 func (e *escape) expr(k hole, n ir.Node) {
@@ -31,6 +32,7 @@ func (e *escape) exprSkipInit(k hole, n ir.Node) {
 	}()
 
 	if k.derefs >= 0 && !n.Type().IsUntyped() && !n.Type().HasPointers() {
+		// 有解引用 并且 有类型 并且 类型没有指针
 		k.dst = &e.blankLoc
 	}
 
@@ -268,6 +270,8 @@ func (e *escape) exprSkipInit(k hole, n ir.Node) {
 	}
 }
 
+// unsafeValue 计算一个 uintptr 类型的算术表达式
+// 以查找来自 unsafe.Pointer 的转换
 // unsafeValue evaluates a uintptr-typed arithmetic expression looking
 // for conversions from an unsafe.Pointer.
 func (e *escape) unsafeValue(k hole, n ir.Node) {
@@ -282,6 +286,7 @@ func (e *escape) unsafeValue(k hole, n ir.Node) {
 
 	switch n.Op() {
 	case ir.OCONV, ir.OCONVNOP:
+		// 类型转换
 		n := n.(*ir.ConvExpr)
 		if n.X.Type().IsUnsafePtr() {
 			e.expr(k, n.X)
@@ -289,6 +294,7 @@ func (e *escape) unsafeValue(k hole, n ir.Node) {
 			e.discard(n.X)
 		}
 	case ir.ODOTPTR:
+		// 指针点调用
 		n := n.(*ir.SelectorExpr)
 		if ir.IsReflectHeaderDataField(n) {
 			e.expr(k.deref(n, "reflect.Header.Data"), n.X)
@@ -299,10 +305,12 @@ func (e *escape) unsafeValue(k hole, n ir.Node) {
 		n := n.(*ir.UnaryExpr)
 		e.unsafeValue(k, n.X)
 	case ir.OADD, ir.OSUB, ir.OOR, ir.OXOR, ir.OMUL, ir.ODIV, ir.OMOD, ir.OAND, ir.OANDNOT:
+		// 算术运算
 		n := n.(*ir.BinaryExpr)
 		e.unsafeValue(k, n.X)
 		e.unsafeValue(k, n.Y)
 	case ir.OLSH, ir.ORSH:
+		// 左右移位
 		n := n.(*ir.BinaryExpr)
 		e.unsafeValue(k, n.X)
 		// RHS need not be uintptr-typed (#32959) and can't meaningfully
@@ -313,12 +321,14 @@ func (e *escape) unsafeValue(k hole, n ir.Node) {
 	}
 }
 
+// discard 评估表达式的副作用 但丢弃值
 // discard evaluates an expression n for side-effects, but discards
 // its value.
 func (e *escape) discard(n ir.Node) {
 	e.expr(e.discardHole(), n)
 }
 
+// discards 遍历 l 执行 discard
 func (e *escape) discards(l ir.Nodes) {
 	for _, n := range l {
 		e.discard(n)

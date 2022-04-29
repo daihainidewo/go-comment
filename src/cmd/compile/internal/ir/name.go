@@ -322,6 +322,8 @@ func (n *Name) SetVal(v constant.Value) {
 	n.val = v
 }
 
+// Canonical 返回 n 的逻辑声明
+// n 如果是闭包变量
 // Canonical returns the logical declaration that n represents. If n
 // is a closure variable, then Canonical returns the original Name as
 // it appears in the function that immediately contains the

@@ -10,6 +10,7 @@ import (
 	"fmt"
 )
 
+// stmt 评估单个 Go 语句
 // stmt evaluates a single Go statement.
 func (e *escape) stmt(n ir.Node) {
 	if n == nil {
@@ -194,6 +195,7 @@ func (e *escape) stmts(l ir.Nodes) {
 	}
 }
 
+// block 类似 stmts 但保留循环深度
 // block is like stmts, but preserves loopDepth.
 func (e *escape) block(l ir.Nodes) {
 	old := e.loopDepth
@@ -201,6 +203,7 @@ func (e *escape) block(l ir.Nodes) {
 	e.loopDepth = old
 }
 
+// dcl
 func (e *escape) dcl(n *ir.Name) hole {
 	if n.Curfn != e.curfn || n.IsClosureVar() {
 		base.Fatalf("bad declaration of %v", n)

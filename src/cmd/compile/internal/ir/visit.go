@@ -94,6 +94,8 @@ func DoChildren(n Node, do func(Node) bool) bool {
 	return n.doChildren(do)
 }
 
+// Visit 遍历 IR 树的每个非空节点 执行 visit
+// 深度优先的前序遍历
 // Visit visits each non-nil node x in the IR tree rooted at n
 // in a depth-first preorder traversal, calling visit on each node visited.
 func Visit(n Node, visit func(Node)) {

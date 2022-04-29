@@ -66,6 +66,7 @@ type location struct {
 	// in the walk queue.
 	queued bool
 
+	// escapes 表示变量是否逃逸
 	// escapes reports whether the represented variable's address
 	// escapes; that is, whether the variable must be heap
 	// allocated.
@@ -117,6 +118,13 @@ func (l *location) isName(c ir.Class) bool {
 	return l.n != nil && l.n.Op() == ir.ONAME && l.n.(*ir.Name).Class == c
 }
 
+// hole 表示 GO 表达式的上下文
+/* 例如表达式为
+ 	x = **p
+   hole 结构体为
+	dst = x
+	derefs = 2
+*/
 // A hole represents a context for evaluation of a Go
 // expression. E.g., when evaluating p in "x = **p", we'd have a hole
 // with dst==x and derefs==2.
@@ -137,6 +145,7 @@ type note struct {
 	why   string
 }
 
+// note 往 hole 记录节点和原因
 func (k hole) note(where ir.Node, why string) hole {
 	if where == nil || why == "" {
 		base.Fatalf("note: missing where/why")
@@ -183,6 +192,7 @@ func (b *batch) flow(k hole, src *location) {
 		return
 	}
 	if dst.escapes && k.derefs < 0 { // dst = &src
+		// dst 逃逸 并且 k 是取地址操作 即 dst = &src
 		if base.Flag.LowerM >= 2 || logopt.Enabled() {
 			pos := base.FmtPos(src.n.Pos())
 			if base.Flag.LowerM >= 2 {
@@ -206,6 +216,7 @@ func (b *batch) flow(k hole, src *location) {
 func (b *batch) heapHole() hole    { return b.heapLoc.asHole() }
 func (b *batch) discardHole() hole { return b.blankLoc.asHole() }
 
+// oldLoc 返回当前
 func (b *batch) oldLoc(n *ir.Name) *location {
 	if n.Canonical().Opt == nil {
 		base.Fatalf("%v has no location", n)
@@ -213,6 +224,7 @@ func (b *batch) oldLoc(n *ir.Name) *location {
 	return n.Canonical().Opt.(*location)
 }
 
+// newLoc 新建 location
 func (e *escape) newLoc(n ir.Node, transient bool) *location {
 	if e.curfn == nil {
 		base.Fatalf("e.curfn isn't set")
@@ -245,6 +257,7 @@ func (e *escape) newLoc(n ir.Node, transient bool) *location {
 			if n.Opt != nil {
 				base.Fatalf("%v already has a location", n)
 			}
+			// 保存 loction 到 Opt
 			n.Opt = loc
 		}
 	}
