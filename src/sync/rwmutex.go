@@ -126,7 +126,7 @@ func (rw *RWMutex) rUnlockSlow(r int32) {
 	if r+1 == 0 || r+1 == -rwmutexMaxReaders {
 		// 没有被锁
 		race.Enable()
-		throw("sync: RUnlock of unlocked RWMutex")
+		fatal("sync: RUnlock of unlocked RWMutex")
 	}
 	// A writer is pending.
 	if atomic.AddInt32(&rw.readerWait, -1) == 0 {
@@ -214,7 +214,7 @@ func (rw *RWMutex) Unlock() {
 	if r >= rwmutexMaxReaders {
 		// 解锁为锁住的锁
 		race.Enable()
-		throw("sync: Unlock of unlocked RWMutex")
+		fatal("sync: Unlock of unlocked RWMutex")
 	}
 	// Unblock blocked readers, if any.
 	for i := 0; i < int(r); i++ {

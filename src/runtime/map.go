@@ -509,7 +509,7 @@ func mapaccess1(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer {
 	}
 	if h.flags&hashWriting != 0 {
 		// map 不支持并发读写
-		throw("concurrent map read and map write")
+		fatal("concurrent map read and map write")
 	}
 	// 计算 hash 值
 	hash := t.hasher(key, uintptr(h.hash0))
@@ -588,7 +588,7 @@ func mapaccess2(t *maptype, h *hmap, key unsafe.Pointer) (unsafe.Pointer, bool) 
 		return unsafe.Pointer(&zeroVal[0]), false
 	}
 	if h.flags&hashWriting != 0 {
-		throw("concurrent map read and map write")
+		fatal("concurrent map read and map write")
 	}
 	hash := t.hasher(key, uintptr(h.hash0))
 	m := bucketMask(h.B)
@@ -717,7 +717,7 @@ func mapassign(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer {
 	}
 	if h.flags&hashWriting != 0 {
 		// 不能同时写 map
-		throw("concurrent map writes")
+		fatal("concurrent map writes")
 	}
 	hash := t.hasher(key, uintptr(h.hash0))
 
@@ -835,7 +835,7 @@ bucketloop:
 done:
 	if h.flags&hashWriting == 0 {
 		// 不能是写状态
-		throw("concurrent map writes")
+		fatal("concurrent map writes")
 	}
 	// 重置写入标志位
 	h.flags &^= hashWriting
@@ -868,7 +868,7 @@ func mapdelete(t *maptype, h *hmap, key unsafe.Pointer) {
 	}
 	if h.flags&hashWriting != 0 {
 		// 不能同时写
-		throw("concurrent map writes")
+		fatal("concurrent map writes")
 	}
 
 	hash := t.hasher(key, uintptr(h.hash0))
@@ -974,7 +974,7 @@ search:
 
 	// 恢复标志位
 	if h.flags&hashWriting == 0 {
-		throw("concurrent map writes")
+		fatal("concurrent map writes")
 	}
 	h.flags &^= hashWriting
 }
@@ -1048,7 +1048,7 @@ func mapiternext(it *hiter) {
 		racereadpc(unsafe.Pointer(h), callerpc, abi.FuncPCABIInternal(mapiternext))
 	}
 	if h.flags&hashWriting != 0 {
-		throw("concurrent map iteration and map write")
+		fatal("concurrent map iteration and map write")
 	}
 	t := it.t
 	bucket := it.bucket
@@ -1202,7 +1202,7 @@ func mapclear(t *maptype, h *hmap) {
 	}
 
 	if h.flags&hashWriting != 0 {
-		throw("concurrent map writes")
+		fatal("concurrent map writes")
 	}
 
 	// 清空所有标志位 标记值
@@ -1238,7 +1238,7 @@ func mapclear(t *maptype, h *hmap) {
 	}
 
 	if h.flags&hashWriting == 0 {
-		throw("concurrent map writes")
+		fatal("concurrent map writes")
 	}
 	// 结束写占用
 	h.flags &^= hashWriting

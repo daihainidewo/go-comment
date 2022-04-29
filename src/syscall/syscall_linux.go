@@ -16,8 +16,6 @@ import (
 	"unsafe"
 )
 
-func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno)
-
 // N.B. RawSyscall6 is provided via linkname by runtime/internal/syscall.
 //
 // Errno is uintptr and thus compatible with the runtime/internal/syscall
@@ -48,11 +46,15 @@ func runtime_exitsyscall()
 // uintptr arguments are pointers, because some values may look like pointers,
 // but not really be pointers, and adjusting their value would break the call.
 //
+// //go:norace, on RawSyscall, to avoid race instrumentation if RawSyscall is
+// called after fork, or from a signal handler.
+//
 // //go:linkname to ensure ABI wrappers are generated for external callers
 // (notably x/sys/unix assembly).
 
 //go:uintptrkeepalive
 //go:nosplit
+//go:norace
 //go:linkname RawSyscall
 func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 	return RawSyscall6(trap, a1, a2, a3, 0, 0, 0)
@@ -76,6 +78,16 @@ func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 	// This is typically not a problem in the runtime because cmd/go avoids
 	// adding coverage instrumentation to the runtime in race mode.
 	r1, r2, err = RawSyscall6(trap, a1, a2, a3, 0, 0, 0)
+	runtime_exitsyscall()
+	return
+}
+
+//go:uintptrkeepalive
+//go:nosplit
+//go:linkname Syscall6
+func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno) {
+	runtime_entersyscall()
+	r1, r2, err = RawSyscall6(trap, a1, a2, a3, a4, a5, a6)
 	runtime_exitsyscall()
 	return
 }

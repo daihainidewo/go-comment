@@ -546,16 +546,17 @@ type mspan struct {
 	// state 标记当前的状态
 	// needzero 在申请之前是否需要清零
 	// elemsize 元素大小
-	sweepgen    uint32
-	divMul      uint32        // for divide by elemsize
-	allocCount  uint16        // number of allocated objects
-	spanclass   spanClass     // size class and noscan (uint8)
-	state       mSpanStateBox // mSpanInUse etc; accessed atomically (get/set methods)
-	needzero    uint8         // needs to be zeroed before allocation
-	elemsize    uintptr       // computed from sizeclass or from npages
-	limit       uintptr       // end of data in span
-	speciallock mutex         // guards specials list
-	specials    *special      // linked list of special records sorted by offset.
+	sweepgen              uint32
+	divMul                uint32        // for divide by elemsize
+	allocCount            uint16        // number of allocated objects
+	spanclass             spanClass     // size class and noscan (uint8)
+	state                 mSpanStateBox // mSpanInUse etc; accessed atomically (get/set methods)
+	needzero              uint8         // needs to be zeroed before allocation
+	allocCountBeforeCache uint16        // a copy of allocCount that is stored just before this span is cached
+	elemsize              uintptr       // computed from sizeclass or from npages
+	limit                 uintptr       // end of data in span
+	speciallock           mutex         // guards specials list
+	specials              *special      // linked list of special records sorted by offset.
 }
 
 // base 返回 s 的基址

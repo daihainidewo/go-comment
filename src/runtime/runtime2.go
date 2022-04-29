@@ -561,7 +561,7 @@ type m struct {
 	oldp          puintptr // the p that was attached before executing a syscall
 	id            int64
 	mallocing     int32 // 标记申请内存中
-	throwing      int32
+	throwing      throwType
 	preemptoff    string // if != "", keep curg running on this m
 	locks         int32  // 引用计数，非零表示禁止抢占当前g
 	dying         int32

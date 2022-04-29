@@ -2,8 +2,17 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build netgo
+package b
 
-package net
+import "./a"
 
-func init() { netGo = true }
+func f() {
+	a.Append()
+	a.Delete()
+	a.Print()
+	a.Println()
+	a.Complex()
+	a.Copy()
+	a.UnsafeAdd()
+	a.UnsafeSlice()
+}
