@@ -247,6 +247,10 @@ type gcControllerState struct {
 	stackScanWork   atomic.Int64
 	globalsScanWork atomic.Int64
 
+	// bgScanCredit 是并发后台扫描累积的扫描工作积分
+	// 这个信用是通过后台扫描积累的 并被 mutator 助手欧窃取
+	// 这是原子更新的
+	// 在周期中读写都有可能发生更新
 	// bgScanCredit is the scan work credit accumulated by the
 	// concurrent background scan. This credit is accumulated by
 	// the background scan and stolen by mutator assists. This is
@@ -280,6 +284,9 @@ type gcControllerState struct {
 	// that assists and background mark workers started.
 	markStartTime int64
 
+	// dedicatedMarkWorkersNeeded 是需要启动的专用标记工作者的数量
+	// 这是在每个周期开始时计算的
+	// 并随着专用标记工作者的启动而自动递减
 	// dedicatedMarkWorkersNeeded is the number of dedicated mark
 	// workers that need to be started. This is computed at the
 	// beginning of each cycle and decremented atomically as
@@ -320,12 +327,16 @@ type gcControllerState struct {
 	// See github.com/golang/go/issues/44163 for more details.
 	idleMarkWorkers atomic.Uint64
 
+	// assistWorkPerByte 由 mutator 助手在申请内存时需要扫描工作的比例
+	// 每个周期开始前计算并在 heapScan 更新时更新
 	// assistWorkPerByte is the ratio of scan work to allocated
 	// bytes that should be performed by mutator assists. This is
 	// computed at the beginning of each cycle and updated every
 	// time heapScan is updated.
 	assistWorkPerByte atomic.Float64
 
+	// assistBytesPerWork 是 assistWorkPerByte 的倒数
+	// 由于是两个字段导致 assistBytesPerWork 可能与 assistWorkPerByte 的倒数具有一定偏差
 	// assistBytesPerWork is 1/assistWorkPerByte.
 	//
 	// Note that because this is read and written independently
@@ -704,6 +715,9 @@ func (c *gcControllerState) endCycle(now int64, procs int, userForced bool) {
 	}
 }
 
+// 如果有空闲的工作槽
+// enlistWorker 鼓励另一个专用的标记工作人员在另一个 P 上启动
+// 当有更多工作可用时 putfull 会使用它
 // enlistWorker encourages another dedicated mark worker to start on
 // another P if there are spare worker slots. It is used by putfull
 // when more work is made available.
@@ -721,27 +735,35 @@ func (c *gcControllerState) enlistWorker() {
 	// There are no idle Ps. If we need more dedicated workers,
 	// try to preempt a running P so it will switch to a worker.
 	if c.dedicatedMarkWorkersNeeded <= 0 {
+		// 不需要专业的 GC 工作者 返回
 		return
 	}
 	// Pick a random other P to preempt.
 	if gomaxprocs <= 1 {
+		// 单核 返回
 		return
 	}
 	gp := getg()
 	if gp == nil || gp.m == nil || gp.m.p == 0 {
+		// gmp 任一为空 返回
 		return
 	}
+	// 获取当前 pid
 	myID := gp.m.p.ptr().id
 	for tries := 0; tries < 5; tries++ {
+		// 尝试 5 次
+		// 获取随机 id
 		id := int32(fastrandn(uint32(gomaxprocs - 1)))
 		if id >= myID {
 			id++
 		}
 		p := allp[id]
 		if p.status != _Prunning {
+			// p 不空闲 就继续尝试
 			continue
 		}
 		if preemptone(p) {
+			// 标记 g p 为抢占状态
 			return
 		}
 	}

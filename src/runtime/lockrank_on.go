@@ -208,6 +208,7 @@ func releaseLockRank(rank lockRank) {
 	})
 }
 
+// lockWithRankMayAcquire 检测 l 是否能正常进行锁住
 // See comment on lockWithRank regarding stack splitting.
 func lockWithRankMayAcquire(l *mutex, rank lockRank) {
 	gp := getg()

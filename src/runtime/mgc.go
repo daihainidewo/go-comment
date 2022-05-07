@@ -281,11 +281,13 @@ func pollFractionalWorkerExit() bool {
 	return float64(selfTime)/float64(delta) > 1.2*gcController.fractionalUtilizationGoal
 }
 
+// work 全局 GC 助手
 var work struct {
 	full  lfstack          // lock-free list of full blocks workbuf
 	empty lfstack          // lock-free list of empty blocks workbuf
 	pad0  cpu.CacheLinePad // prevents false-sharing between full/empty and nproc/nwait
 
+	// 空闲和繁忙的 span 列表
 	wbufSpans struct {
 		lock mutex
 		// free is a list of spans dedicated to workbufs, but
@@ -374,6 +376,8 @@ var work struct {
 	// beginning of this GC cycle.
 	initialHeapLive uint64
 
+	// assistQueue 是一个阻塞队列
+	// 队列中的 g 是没有足够的信用偷取或者没有足够的工作去做
 	// assistQueue is a queue of assists that are blocked because
 	// there was neither enough credit to steal or enough work to
 	// do.

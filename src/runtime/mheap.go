@@ -73,6 +73,7 @@ type mheap struct {
 	lock  mutex
 	pages pageAlloc // page allocation data structure
 
+	// sweepgen 扫描者 id 生成 在 STW 期间写入
 	sweepgen uint32 // sweep generation, see comment in mspan; written during STW
 
 	// allspans is a slice of all mspans ever created. Each mspan
@@ -542,6 +543,7 @@ type mspan struct {
 	// if sweepgen == h->sweepgen + 3, the span was swept and then cached and is still cached
 	// h->sweepgen is incremented by 2 after every GC
 
+	// sweeepgen 清理者 id
 	// spanclass 标记当前所属的尺寸组
 	// state 标记当前的状态
 	// needzero 在申请之前是否需要清零
@@ -1009,18 +1011,21 @@ const (
 	// spanAllocHeap          堆 span
 	// spanAllocStack         栈 span
 	// spanAllocPtrScalarBits GC prog 位图 span
-	// spanAllocWorkBuf       work buf span
+	// spanAllocWorkBuf       workbuf span
 	spanAllocHeap          spanAllocType = iota // heap span
 	spanAllocStack                              // stack span
 	spanAllocPtrScalarBits                      // unrolled GC prog bitmap span
 	spanAllocWorkBuf                            // work buf span
 )
 
+// manual 是否是手动管理的内存
 // manual returns true if the span allocation is manually managed.
 func (s spanAllocType) manual() bool {
 	return s != spanAllocHeap
 }
 
+// alloc 从 Go 堆申请包含 npages 页的 span
+// 里面元素标记大小尺寸为 spanclass
 // alloc allocates a new span of npage pages from the GC'd heap.
 //
 // spanclass indicates the span's size class and scannability.
@@ -1721,12 +1726,14 @@ func (list *mSpanList) init() {
 	list.last = nil
 }
 
+// remove 从 list 中移除 span
 func (list *mSpanList) remove(span *mspan) {
 	if span.list != list {
 		print("runtime: failed mSpanList.remove span.npages=", span.npages,
 			" span=", span, " prev=", span.prev, " span.list=", span.list, " list=", list, "\n")
 		throw("mSpanList.remove")
 	}
+	// 从链表中摘除 span
 	if list.first == span {
 		list.first = span.next
 	} else {
@@ -1786,6 +1793,7 @@ func (list *mSpanList) insertBack(span *mspan) {
 	span.list = list
 }
 
+// takeAll 将 other 中的所有 span 头插到 list 上
 // takeAll removes all spans from other and inserts them at the front
 // of list.
 func (list *mSpanList) takeAll(other *mSpanList) {

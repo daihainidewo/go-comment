@@ -448,6 +448,16 @@ type g struct {
 	syscallsp uintptr // if status==Gsyscall, syscallsp = sched.sp to use during gc
 	syscallpc uintptr // if status==Gsyscall, syscallpc = sched.pc to use during gc
 	stktopsp  uintptr // 栈顶预期的sp expected sp at top of stack, to check in traceback
+	// param 是一个通用指针参数字段
+	// 用于在难以找到其他参数存储的特定上下文中传递值
+	// 它目前以三种方式使用
+	// 1. 当一个 channel 操作唤醒一个阻塞的 goroutine 时
+	// 		它设置 param 指向完成阻塞操作的 sudog
+	// 2. 通过 gcAssistAlloc1 向其调用者发回信号
+	// 		表明 goroutine 完成了 GC 周期
+	// 		因为 goroutine 的堆栈可能在此期间已经移动 所以其他方式都是不安全的
+	// 3. 通过 debugCallWrap 将参数传递给新的 goroutine
+	// 		因为在运行时分配闭包是被禁止的。
 	// param is a generic pointer parameter field used to pass
 	// values in particular contexts where other storage for the
 	// parameter would be difficult to find. It is currently used
@@ -725,6 +735,9 @@ type p struct {
 	// mark worker started.
 	gcMarkWorkerStartTime int64
 
+	// gcw 是 p 的 GC 工作缓冲区缓存
+	// 由写屏障填充 mutator 助手释放
+	// 并且处理某些 GC 状态的装换
 	// gcw is this P's GC work buffer cache. The work buffer is
 	// filled by write barriers, drained by mutator assists, and
 	// disposed on certain GC state transitions.
@@ -943,9 +956,12 @@ type itab struct {
 	fun   [1]uintptr // variable sized. fun[0]==0 means _type does not implement inter.
 }
 
+// lfnode 无锁栈节点
 // Lock-free stack node.
 // Also known to export_test.go.
 type lfnode struct {
+	// next 指向上一个 node
+	// pushcnt 调用 push 的次数
 	next    uint64
 	pushcnt uintptr
 }

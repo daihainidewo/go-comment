@@ -9,6 +9,7 @@ package runtime
 import "unsafe"
 
 const (
+	// addrBits 虚拟地址表示比特位数
 	// addrBits is the number of bits needed to represent a virtual address.
 	//
 	// See heapAddrBits for a table of address space sizes on
@@ -24,6 +25,7 @@ const (
 	// get to really high addresses and panic if it does.
 	addrBits = 48
 
+	// cntBits 取走高16位和低3位 用于指针字节对齐
 	// In addition to the 16 bits taken from the top, we can take 3 from the
 	// bottom, because node must be pointer-aligned, giving a total of 19 bits
 	// of count.
@@ -38,6 +40,8 @@ const (
 	aixCntBits  = 64 - aixAddrBits + 3
 )
 
+// lfstackPack 将地址 node 封包成 uint64
+// node<<16 | cnt&(1<<19-1)
 func lfstackPack(node *lfnode, cnt uintptr) uint64 {
 	if GOARCH == "ppc64" && GOOS == "aix" {
 		return uint64(uintptr(unsafe.Pointer(node)))<<(64-aixAddrBits) | uint64(cnt&(1<<aixCntBits-1))
@@ -45,6 +49,7 @@ func lfstackPack(node *lfnode, cnt uintptr) uint64 {
 	return uint64(uintptr(unsafe.Pointer(node)))<<(64-addrBits) | uint64(cnt&(1<<cntBits-1))
 }
 
+// lfstackUnpack 通过 val 解包成 lfnode 地址
 func lfstackUnpack(val uint64) *lfnode {
 	if GOARCH == "amd64" {
 		// amd64 systems can place the stack above the VA hole, so we need to sign extend

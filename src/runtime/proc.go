@@ -334,6 +334,9 @@ func goschedguarded() {
 }
 
 // gopark 解绑当前g 开启下次调度
+// 如果 unlockf 返回 false 则 g 被恢复
+// unlockf 不能访问这个 G 的堆栈
+// 因为它可能会在调用 gopark 和调用 unlockf 之间移动
 // Puts the current goroutine into a waiting state and calls unlockf on the
 // system stack.
 //
@@ -372,12 +375,15 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason w
 	mcall(park_m)
 }
 
+// goparkunlock 将当前的 goroutine 置于等待状态并解锁锁
+// 通过调用 goready 可以使 goroutine 再次可运行
 // Puts the current goroutine into a waiting state and unlocks the lock.
 // The goroutine can be made runnable again by calling goready(gp).
 func goparkunlock(lock *mutex, reason waitReason, traceEv byte, traceskip int) {
 	gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceEv, traceskip)
 }
 
+// goready 唤醒 gp
 func goready(gp *g, traceskip int) {
 	systemstack(func() {
 		ready(gp, traceskip, true)

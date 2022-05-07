@@ -423,13 +423,18 @@ retry:
 	// and amortize the cost of assisting.
 	assistWorkPerByte := gcController.assistWorkPerByte.Load()
 	assistBytesPerWork := gcController.assistBytesPerWork.Load()
+	// 获取 g 的负债
 	debtBytes := -gp.gcAssistBytes
+	// 获取扫描工作量
 	scanWork := int64(assistWorkPerByte * float64(debtBytes))
 	if scanWork < gcOverAssistWork {
+		// 至少执行 64k 的工作量
 		scanWork = gcOverAssistWork
 		debtBytes = int64(assistBytesPerWork * float64(scanWork))
 	}
 
+	// 获取后台信用
+	// 后台信用小于零属于异常情况
 	// Steal as much credit as we can from the background GC's
 	// scan credit. This is racy and may drop the background
 	// credit below 0 if two mutators steal at the same time. This
@@ -440,12 +445,17 @@ retry:
 	stolen := int64(0)
 	if bgScanCredit > 0 {
 		if bgScanCredit < scanWork {
+			// 后台信用小于扫描工作
+			// 则更新 g 的负债 至 偷取完 后台信用
 			stolen = bgScanCredit
 			gp.gcAssistBytes += 1 + int64(assistBytesPerWork*float64(stolen))
 		} else {
+			// 后台信用大于等于扫描工作
+			// 则更新 g 的负债为新的债务值
 			stolen = scanWork
 			gp.gcAssistBytes += debtBytes
 		}
+		// 更新后台信用
 		atomic.Xaddint64(&gcController.bgScanCredit, -stolen)
 
 		scanWork -= stolen
@@ -472,6 +482,7 @@ retry:
 		// anything on it until it returns from systemstack.
 	})
 
+	// 重置 GC 参数
 	completed := gp.param != nil
 	gp.param = nil
 	if completed {
@@ -479,6 +490,7 @@ retry:
 	}
 
 	if gp.gcAssistBytes < 0 {
+		// gp 仍然负债
 		// We were unable steal enough credit or perform
 		// enough work to pay off the assist debt. We need to
 		// do one of these before letting the mutator allocate
@@ -487,10 +499,14 @@ retry:
 		// If this is because we were preempted, reschedule
 		// and try some more.
 		if gp.preempt {
+			// 如果 gp 可以被抢占 则让出调度
 			Gosched()
+			// 下次调度进入 retry
 			goto retry
 		}
 
+		// 将 g 添加进助手队列中并 gopark
+		// 当 GC 有更多的后台信用时 它将在刷新到全局信用池之前满足排队的助手
 		// Add this G to an assist queue and park. When the GC
 		// has more background credit, it will satisfy queued
 		// assists before flushing to the global credit pool.
@@ -512,6 +528,12 @@ retry:
 	}
 }
 
+// gcAssistAlloc1 是 gcAssistAlloc 在系统栈上执行的代码
+// 这是一个单独的函数
+// 可以更容易地看出我们没有从用户堆栈中捕获任何内容
+// 因为在此函数中用户堆栈可能会移动
+// gcAssistAlloc1 通过将 gp.param 设置为非零来指示此辅助是否完成了标记阶段
+// 这不能在堆栈上通信 因为它可能会移动
 // gcAssistAlloc1 is the part of gcAssistAlloc that runs on the system
 // stack. This is a separate function to make it easier to see that
 // we're not capturing anything from the user stack, since the user
@@ -523,11 +545,13 @@ retry:
 //
 //go:systemstack
 func gcAssistAlloc1(gp *g, scanWork int64) {
+	// 清除标志表名当前助手完成标记阶段
 	// Clear the flag indicating that this assist completed the
 	// mark phase.
 	gp.param = nil
 
 	if atomic.Load(&gcBlackenEnabled) == 0 {
+		// GC 结束 则清空负债
 		// The gcBlackenEnabled check in malloc races with the
 		// store that clears it but an atomic check in every malloc
 		// would be a performance hit.
@@ -553,6 +577,7 @@ func gcAssistAlloc1(gp *g, scanWork int64) {
 	casgstatus(gp, _Grunning, _Gwaiting)
 	gp.waitreason = waitReasonGCAssistMarking
 
+	// 获取当前 p 的工作缓冲区缓存
 	// drain own cached work first in the hopes that it
 	// will be more cache friendly.
 	gcw := &getg().m.p.ptr().gcw
@@ -594,6 +619,9 @@ func gcAssistAlloc1(gp *g, scanWork int64) {
 	}
 }
 
+// gcWakeAllAssists 唤醒所有当前被阻止的助手
+// 这在 GC 循环结束时使用
+// gcBlackenEnabled 必须为 false 以防止新的助攻在此之后进入休眠状态
 // gcWakeAllAssists wakes all currently blocked assists. This is used
 // at the end of a GC cycle. gcBlackenEnabled must be false to prevent
 // new assists from going to sleep after this point.
@@ -604,6 +632,8 @@ func gcWakeAllAssists() {
 	unlock(&work.assistQueue.lock)
 }
 
+// gcParkAssist 将当前 g 放入助手队列中并且 gopark
+// 返回当前是否满足助手 如果返回 false 调用者必须重试
 // gcParkAssist puts the current goroutine on the assist queue and parks.
 //
 // gcParkAssist reports whether the assist is now satisfied. If it
@@ -614,6 +644,7 @@ func gcParkAssist() bool {
 	// exit the assist. The cycle can't finish while we hold the
 	// lock.
 	if atomic.Load(&gcBlackenEnabled) == 0 {
+		// 如果是后台清理中 直接返回
 		unlock(&work.assistQueue.lock)
 		return true
 	}
@@ -627,6 +658,8 @@ func gcParkAssist() bool {
 	// race in case background marking has flushed more
 	// credit since we checked above.
 	if atomic.Loadint64(&gcController.bgScanCredit) > 0 {
+		// 重新校验后台信用是否大于零
+		// 则置空助手队列
 		work.assistQueue.q = oldList
 		if oldList.tail != 0 {
 			oldList.tail.ptr().schedlink.set(nil)
@@ -1113,6 +1146,15 @@ done:
 	}
 }
 
+// gcDrainN 使灰色对象变黑
+// 直到它大致执行了 scanWork 单位的扫描工作或 G 被抢占
+// 这是尽力而为
+// 因此如果无法获得工作缓冲区
+// 它可能会执行较少的工作
+// 否则它将执行至少 n 个工作单元
+// 但可能会执行更多
+// 因为扫描始终以整个对象增量进行
+// 它返回执行的扫描工作量
 // gcDrainN blackens grey objects until it has performed roughly
 // scanWork units of scan work or the G is preempted. This is
 // best-effort, so it may perform less work if it fails to get a work
@@ -1131,12 +1173,14 @@ func gcDrainN(gcw *gcWork, scanWork int64) int64 {
 		throw("gcDrainN phase incorrect")
 	}
 
+	// 可能已经有在执行的 gcw 所以不希望这个调用声称完成
 	// There may already be scan work on the gcw, which we don't
 	// want to claim was done by this call.
 	workFlushed := -gcw.heapScanWork
 
 	gp := getg().m.curg
 	for !gp.preempt && workFlushed+gcw.heapScanWork < scanWork {
+		// gp 不被抢占 并且 工作量小于目标工作量
 		// See gcDrain comment.
 		if work.full == 0 {
 			gcw.balance()

@@ -41,6 +41,7 @@ type sweepdata struct {
 	nbgsweep    uint32
 	npausesweep uint32
 
+	// active 跟踪杰出的清理者和清理终止条件
 	// active tracks outstanding sweepers and the sweep
 	// termination condition.
 	active activeSweep
@@ -64,15 +65,18 @@ const (
 	sweepClassDone  sweepClass = sweepClass(^uint32(0))
 )
 
+// load 原子获取 s
 func (s *sweepClass) load() sweepClass {
 	return sweepClass(atomic.Load((*uint32)(s)))
 }
 
+// update cas 更新 s
 func (s *sweepClass) update(sNew sweepClass) {
 	// Only update *s if its current value is less than sNew,
 	// since *s increases monotonically.
 	sOld := s.load()
 	for sOld < sNew && !atomic.Cas((*uint32)(s), uint32(sOld), uint32(sNew)) {
+		// cas 失败更新旧值
 		sOld = s.load()
 	}
 	// TODO(mknyszek): This isn't the only place we have
@@ -82,10 +86,13 @@ func (s *sweepClass) update(sNew sweepClass) {
 	// like RISC-V however have native support for an atomic max.
 }
 
+// clear 重置 s
 func (s *sweepClass) clear() {
 	atomic.Store((*uint32)(s), 0)
 }
 
+// split 返回 span class 以及是否是完整或者部分未扫描列表感兴趣
+// true 表示 full
 // split returns the underlying span class as well as
 // whether we're interested in the full or partial
 // unswept lists for that class, indicated as a boolean
@@ -122,12 +129,18 @@ func (h *mheap) nextSpanForSweep() *mspan {
 
 const sweepDrainedMask = 1 << 31
 
+// activeSweep 是一种捕获是否完成清扫
+// 以及是否有任何优秀的清扫器的类型
 // activeSweep is a type that captures whether sweeping
 // is done, and whether there are any outstanding sweepers.
 //
 // Every potential sweeper must call begin() before they look
 // for work, and end() after they've finished sweeping.
 type activeSweep struct {
+	// state 划分为两个部分
+	// 高位 掩码为 sweepDrainedMask 是个 bool
+	// 表名当前所有清理工作是否已经从队列中排除
+	// 剩下的位是计数器 表示当前的清理者
 	// state is divided into two parts.
 	//
 	// The top bit (masked by sweepDrainedMask) is a boolean
@@ -139,6 +152,12 @@ type activeSweep struct {
 	state atomic.Uint32
 }
 
+// begin 注册新的清理者
+// 如果 sweepLocker 无效 调用者可以确定所有未完成的 sweep 工作已经被耗尽
+// 所以没有什么可以 sweep 了
+// 但是当前可能有清扫器正在运行
+// 因此这并不表示所有清扫已完成
+// 尽管 sweepLocker 无效 但是 sweepGen 始终有效
 // begin registers a new sweeper. Returns a sweepLocker
 // for acquiring spans for sweeping. Any outstanding sweeper blocks
 // sweep termination.
@@ -202,11 +221,14 @@ func (a *activeSweep) markDrained() bool {
 	}
 }
 
+// sweepers 返回有多少个清理者
 // sweepers returns the current number of active sweepers.
 func (a *activeSweep) sweepers() uint32 {
 	return a.state.Load() &^ sweepDrainedMask
 }
 
+// isDone 返回是否所有清理工作完成并且没有清理者存在
+// 表示扫描工作是否完全完成
 // isDone returns true if all sweep work has been drained and no more
 // outstanding sweepers exist. That is, when the sweep phase is
 // completely done.
@@ -298,6 +320,7 @@ func bgsweep(c chan int) {
 	}
 }
 
+// sweepLocker 获取 span 的扫描权
 // sweepLocker acquires sweep ownership of spans.
 type sweepLocker struct {
 	// sweepGen is the sweep generation of the heap.
@@ -305,11 +328,14 @@ type sweepLocker struct {
 	valid    bool
 }
 
+// sweepLocked 表示扫描所有权
 // sweepLocked represents sweep ownership of a span.
 type sweepLocked struct {
 	*mspan
 }
 
+// tryAcquire 尝试获取 span 的扫描所有权
+// 如果它成功获得所有权 它会阻止扫描完成
 // tryAcquire attempts to acquire sweep ownership of span s. If it
 // successfully acquires ownership, it blocks sweep completion.
 func (l *sweepLocker) tryAcquire(s *mspan) (sweepLocked, bool) {

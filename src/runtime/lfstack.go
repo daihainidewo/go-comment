@@ -11,6 +11,12 @@ import (
 	"unsafe"
 )
 
+// lfstack 是无锁栈的头
+// 零值表示空链表
+// 这个栈具有侵入性 节点必须嵌入 lfnode 作为第一个字段
+// 栈不保留指向节点的 GC 可见指针
+// 因此调用者负责确保节点不会被垃圾回收
+// 通常通过从手动管理的内存中分配它们
 // lfstack is the head of a lock-free stack.
 //
 // The zero value of lfstack is an empty list.
@@ -22,6 +28,7 @@ import (
 // (typically by allocating them from manually-managed memory).
 type lfstack uint64
 
+// push 将 node 插入到 lfstack 中
 func (head *lfstack) push(node *lfnode) {
 	node.pushcnt++
 	new := lfstackPack(node, node.pushcnt)
@@ -38,6 +45,7 @@ func (head *lfstack) push(node *lfnode) {
 	}
 }
 
+// pop 从 lfstack 中弹出一个节点
 func (head *lfstack) pop() unsafe.Pointer {
 	for {
 		old := atomic.Load64((*uint64)(head))
@@ -52,10 +60,13 @@ func (head *lfstack) pop() unsafe.Pointer {
 	}
 }
 
+// empty 返回 lfstack 是否为空
 func (head *lfstack) empty() bool {
 	return atomic.Load64((*uint64)(head)) == 0
 }
 
+// lfnodeValidate 判断 node 是否是 lfstack.push 的合法地址
+// 在 node 被申请时调用
 // lfnodeValidate panics if node is not a valid address for use with
 // lfstack.push. This only needs to be called when node is allocated.
 func lfnodeValidate(node *lfnode) {
