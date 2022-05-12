@@ -11,10 +11,22 @@ import (
 	"unsafe"
 )
 
+// spanSet mspan 的集合
+// push pop 可以并发执行
 // A spanSet is a set of *mspans.
 //
 // spanSet is safe for concurrent push and pop operations.
 type spanSet struct {
+	// spanSet 是两个等级数据结构组成
+	// 可增长的 spine 指向固定长度的 *spanSetBlock 数组的指针
+	// 读可以不用获得锁 但写需要获得锁
+	// 因为每个 mspan 至少覆盖了 8K 的堆
+	// 并且在 spanSet 中最多占用了 8 个字节
+	// 所以 spine 的增长是相当有限的
+	// spine 和 spanSetBlock 都是堆外内存
+	// 用于内存管理 且避免写屏障
+	// spanSetBlock 被 pool 管理 不会释放还给操作系统
+	// 决不能释放 spine 内存 因为有并发的无锁化访问 并且可能会在 STW 时复用
 	// A spanSet is a two-level data structure consisting of a
 	// growable spine that points to fixed-sized blocks. The spine
 	// can be accessed without locks, but adding a block or
@@ -32,11 +44,17 @@ type spanSet struct {
 	// concurrent lock-free access and we're likely to reuse it
 	// anyway. (In principle, we could do this during STW.)
 
+	/*
+	spine -> [spanSetBlockEntries]*spanSetBlock -> [spanSetInitSpineCap]*mspan
+	spine[top][bottom] = mspan
+	 */
 	spineLock mutex
 	spine     unsafe.Pointer // *[N]*spanSetBlock, accessed atomically
 	spineLen  uintptr        // Spine array length, accessed atomically
 	spineCap  uintptr        // Spine array cap, accessed under lock
 
+	// index 表示 spanSet 的头尾
+	// 头尾分别占 32bit
 	// index is the head and tail of the spanSet in a single field.
 	// The head and the tail both represent an index into the logical
 	// concatenation of all blocks, with the head always behind or
@@ -56,23 +74,30 @@ const (
 	spanSetInitSpineCap = 256 // Enough for 1GB heap on 64-bit
 )
 
+// spanSetBlock mspan 集合
 type spanSetBlock struct {
+	// 通过 lfnode 实现无锁栈的管理
 	// Free spanSetBlocks are managed via a lock-free stack.
 	lfnode
 
+	// poped 表示当前集合弹出的 mspan 数 用于何时安全回收
 	// popped is the number of pop operations that have occurred on
 	// this block. This number is used to help determine when a block
 	// may be safely recycled.
 	popped uint32
 
+	// spans 当前 block 的 mspan 集合
 	// spans is the set of spans in this block.
 	spans [spanSetBlockEntries]*mspan
 }
 
+// push 将 s 添加进 b 中
+// 并发安全
 // push adds span s to buffer b. push is safe to call concurrently
 // with other push and pop operations.
 func (b *spanSet) push(s *mspan) {
 	// Obtain our slot.
+	// 获取最新尾坐标
 	cursor := uintptr(b.index.incTail().tail() - 1)
 	top, bottom := cursor/spanSetBlockEntries, cursor%spanSetBlockEntries
 
@@ -81,10 +106,15 @@ func (b *spanSet) push(s *mspan) {
 	var block *spanSetBlock
 retry:
 	if top < spineLen {
+		// top 小于 spineLen
+		// block 为 spine 的第 top 位指向的 spanSetBlock
 		spine := atomic.Loadp(unsafe.Pointer(&b.spine))
 		blockp := add(spine, goarch.PtrSize*top)
 		block = (*spanSetBlock)(atomic.Loadp(blockp))
 	} else {
+		// top 大于 spineLen
+		// 则需要新建 block
+		// 需要加锁 有可能会扩容
 		// Add a new block to the spine, potentially growing
 		// the spine.
 		lock(&b.spineLock)
@@ -92,25 +122,33 @@ retry:
 		// but may have changed while we were waiting.
 		spineLen = atomic.Loaduintptr(&b.spineLen)
 		if top < spineLen {
+			// 二次检测
 			unlock(&b.spineLock)
 			goto retry
 		}
 
 		if spineLen == b.spineCap {
+			// 长度等于容量 则需要双倍扩容
 			// Grow the spine.
 			newCap := b.spineCap * 2
 			if newCap == 0 {
 				newCap = spanSetInitSpineCap
 			}
+			// 申请新的 spine
 			newSpine := persistentalloc(newCap*goarch.PtrSize, cpu.CacheLineSize, &memstats.gcMiscSys)
 			if b.spineCap != 0 {
+				// 拷贝旧数据
+				// block 是堆外内存所以不需要写屏障
 				// Blocks are allocated off-heap, so
 				// no write barriers.
 				memmove(newSpine, b.spine, b.spineCap*goarch.PtrSize)
 			}
+			// 设置新 spine
 			// Spine is allocated off-heap, so no write barrier.
 			atomic.StorepNoWB(unsafe.Pointer(&b.spine), newSpine)
 			b.spineCap = newCap
+			// 不能立即释放旧 spine
+			// 可能仍有读操作
 			// We can't immediately free the old spine
 			// since a concurrent push with a lower index
 			// could still be reading from it. We let it
@@ -120,9 +158,11 @@ retry:
 			// during STW.
 		}
 
+		// 获取 block
 		// Allocate a new block from the pool.
 		block = spanSetBlockPool.alloc()
 
+		// 添加进 spine
 		// Add it to the spine.
 		blockp := add(b.spine, goarch.PtrSize*top)
 		// Blocks are allocated off-heap, so no write barrier.
@@ -136,15 +176,20 @@ retry:
 	atomic.StorepNoWB(unsafe.Pointer(&block.spans[bottom]), unsafe.Pointer(s))
 }
 
+// pop 弹出 b 中的 mspan
+// b 为空返回 nil
+// 该函数并发安全
 // pop removes and returns a span from buffer b, or nil if b is empty.
 // pop is safe to call concurrently with other pop and push operations.
 func (b *spanSet) pop() *mspan {
 	var head, tail uint32
 claimLoop:
 	for {
+		// 获取头尾坐标
 		headtail := b.index.load()
 		head, tail = headtail.split()
 		if head >= tail {
+			// 空 buf 返回
 			// The buf is empty, as far as we can tell.
 			return nil
 		}
@@ -152,6 +197,7 @@ claimLoop:
 		// backed by a block.
 		spineLen := atomic.Loaduintptr(&b.spineLen)
 		if spineLen <= uintptr(head)/spanSetBlockEntries {
+			// spineLen 小于 head 表示没有元素
 			// We're racing with a spine growth and the allocation of
 			// a new block (and maybe a new spine!), and trying to grab
 			// the span at the index which is currently being pushed.
@@ -166,8 +212,10 @@ claimLoop:
 		want := head
 		for want == head {
 			if b.index.cas(headtail, makeHeadTailIndex(want+1, tail)) {
+				// 获取成功 退出循环
 				break claimLoop
 			}
+			// 更新 index
 			headtail = b.index.load()
 			head, tail = headtail.split()
 		}
@@ -246,37 +294,49 @@ func (b *spanSet) reset() {
 		if block != nil {
 			// Sanity check the popped value.
 			if block.popped == 0 {
+				// popped 永远不应该为零
+				// 因为这意味着如果这个块指针不是 nil
+				// 我们已经推送了至少一个值但还没有弹出
 				// popped should never be zero because that means we have
 				// pushed at least one value but not yet popped if this
 				// block pointer is not nil.
 				throw("span set block with unpopped elements found in reset")
 			}
 			if block.popped == spanSetBlockEntries {
+				// popped 也不应该等于 spanSetBlockEntries
+				// 因为最后一个 popper 应该使这个槽中的块指针为零
 				// popped should also never be equal to spanSetBlockEntries
 				// because the last popper should have made the block pointer
 				// in this slot nil.
 				throw("fully empty unfreed span set block found in reset")
 			}
 
+			// 清空指针指向
 			// Clear the pointer to the block.
 			atomic.StorepNoWB(unsafe.Pointer(blockp), nil)
 
+			// 归还 block
 			// Return the block to the block pool.
 			spanSetBlockPool.free(block)
 		}
 	}
+	// 重置数据
 	b.index.reset()
 	atomic.Storeuintptr(&b.spineLen, 0)
 }
 
+// spanSetBlockPool spanSetBlock 的全局池
 // spanSetBlockPool is a global pool of spanSetBlocks.
 var spanSetBlockPool spanSetBlockAlloc
 
+// spanSetBlockAlloc 代表 spanSetBlock 的并发池
 // spanSetBlockAlloc represents a concurrent pool of spanSetBlocks.
 type spanSetBlockAlloc struct {
 	stack lfstack
 }
 
+// alloc 尝试从 p.stack 中获取 spanSetBlock
+// 如果没有则向 persistentalloc 申请 spanSetBlock 的内存
 // alloc tries to grab a spanSetBlock out of the pool, and if it fails
 // persistentallocs a new one and returns it.
 func (p *spanSetBlockAlloc) alloc() *spanSetBlock {
@@ -286,68 +346,81 @@ func (p *spanSetBlockAlloc) alloc() *spanSetBlock {
 	return (*spanSetBlock)(persistentalloc(unsafe.Sizeof(spanSetBlock{}), cpu.CacheLineSize, &memstats.gcMiscSys))
 }
 
+// free 将 block 填充到 p 中
 // free returns a spanSetBlock back to the pool.
 func (p *spanSetBlockAlloc) free(block *spanSetBlock) {
 	atomic.Store(&block.popped, 0)
 	p.stack.push(&block.lfnode)
 }
 
+// headTailIndex 表示队列的头尾
 // haidTailIndex represents a combined 32-bit head and 32-bit tail
 // of a queue into a single 64-bit value.
 type headTailIndex uint64
 
+// makeHeadTailIndex 整合头尾
 // makeHeadTailIndex creates a headTailIndex value from a separate
 // head and tail.
 func makeHeadTailIndex(head, tail uint32) headTailIndex {
 	return headTailIndex(uint64(head)<<32 | uint64(tail))
 }
 
+// head 返回头
 // head returns the head of a headTailIndex value.
 func (h headTailIndex) head() uint32 {
 	return uint32(h >> 32)
 }
 
+// tail 返回尾
 // tail returns the tail of a headTailIndex value.
 func (h headTailIndex) tail() uint32 {
 	return uint32(h)
 }
 
+// split 拆分头尾
 // split splits the headTailIndex value into its parts.
 func (h headTailIndex) split() (head uint32, tail uint32) {
 	return h.head(), h.tail()
 }
 
+// load 原子获取 index
 // load atomically reads a headTailIndex value.
 func (h *headTailIndex) load() headTailIndex {
 	return headTailIndex(atomic.Load64((*uint64)(h)))
 }
 
+// cas 原子替换 index
 // cas atomically compares-and-swaps a headTailIndex value.
 func (h *headTailIndex) cas(old, new headTailIndex) bool {
 	return atomic.Cas64((*uint64)(h), uint64(old), uint64(new))
 }
 
+// incHead 原子自增头
 // incHead atomically increments the head of a headTailIndex.
 func (h *headTailIndex) incHead() headTailIndex {
 	return headTailIndex(atomic.Xadd64((*uint64)(h), (1 << 32)))
 }
 
+// decHead 原子递减头
 // decHead atomically decrements the head of a headTailIndex.
 func (h *headTailIndex) decHead() headTailIndex {
 	return headTailIndex(atomic.Xadd64((*uint64)(h), -(1 << 32)))
 }
 
+// incHead 原子自增尾
 // incTail atomically increments the tail of a headTailIndex.
 func (h *headTailIndex) incTail() headTailIndex {
 	ht := headTailIndex(atomic.Xadd64((*uint64)(h), +1))
 	// Check for overflow.
 	if ht.tail() == 0 {
+		// 溢出检测
 		print("runtime: head = ", ht.head(), ", tail = ", ht.tail(), "\n")
 		throw("headTailIndex overflow")
 	}
 	return ht
 }
 
+// reset 重置 index
 // reset clears the headTailIndex to (0, 0).
 func (h *headTailIndex) reset() {
 	atomic.Store64((*uint64)(h), 0)

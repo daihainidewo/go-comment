@@ -46,6 +46,12 @@ type sweepdata struct {
 	// termination condition.
 	active activeSweep
 
+	// centralIndex 是当前未扫描的跨度类
+	// 它表示 mcentral 跨度集的索引
+	// 通过其加载和更新方法访问和更新
+	// 不受锁保护
+	// 在标记阶段重置
+	// 被用在 mheap.nextSpanForSweep
 	// centralIndex is the current unswept span class.
 	// It represents an index into the mcentral span
 	// sets. Accessed and updated via its load and
@@ -56,6 +62,7 @@ type sweepdata struct {
 	centralIndex sweepClass
 }
 
+// sweepClass 是一个 spanClass 并且一个 bit 来表示我们当前是在扫描部分跨度还是整个跨度
 // sweepClass is a spanClass and one bit to represent whether we're currently
 // sweeping partial or full spans.
 type sweepClass uint32
@@ -107,8 +114,10 @@ func (s sweepClass) split() (spc spanClass, full bool) {
 func (h *mheap) nextSpanForSweep() *mspan {
 	sg := h.sweepgen
 	for sc := sweep.centralIndex.load(); sc < numSweepClasses; sc++ {
+		// 获取跨度类和是否扫描整个 span
 		spc, full := sc.split()
 		c := &h.central[spc].mcentral
+		// 从相应集合中获取 span
 		var s *mspan
 		if full {
 			s = c.fullUnswept(sg).pop()
@@ -116,6 +125,7 @@ func (h *mheap) nextSpanForSweep() *mspan {
 			s = c.partialUnswept(sg).pop()
 		}
 		if s != nil {
+			// sweep.centralIndex 记录当前的 sc
 			// Write down that we found something so future sweepers
 			// can start from here.
 			sweep.centralIndex.update(sc)
