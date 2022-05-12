@@ -525,6 +525,10 @@ type g struct {
 	timer          *timer         // 缓存的 timer cached timer for time.Sleep
 	selectDone     uint32         // 标志 select 是否完成 are we participating in a select and did someone win the race?
 
+	// goroutineProfiled indicates the status of this goroutine's stack for the
+	// current in-progress goroutine profile
+	goroutineProfiled goroutineProfileStateHolder
+
 	// Per-G GC state
 
 	// gcAssistBytes 表示当前 g 的内存申请负载

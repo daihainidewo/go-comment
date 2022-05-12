@@ -1542,7 +1542,8 @@ func getStackMap(frame *stkframe, cache *pcvalueCache, debug bool) (locals, args
 			n := *(*uintptr)(p)
 			p = add(p, goarch.PtrSize)
 			// 封装成 slice 赋值给 objs
-			*(*slice)(unsafe.Pointer(&objs)) = slice{array: noescape(p), len: int(n), cap: int(n)}
+			r0 := (*stackObjectRecord)(noescape(p))
+			objs = unsafe.Slice(r0, int(n))
 			// Note: the noescape above is needed to keep
 			// getStackMap from "leaking param content:
 			// frame".  That leak propagates up to getgcmask, then

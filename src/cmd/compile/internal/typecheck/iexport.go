@@ -236,7 +236,6 @@ package typecheck
 
 import (
 	"bytes"
-	"crypto/md5"
 	"encoding/binary"
 	"fmt"
 	"go/constant"
@@ -250,6 +249,7 @@ import (
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
 	"cmd/internal/goobj"
+	"cmd/internal/notsha256"
 	"cmd/internal/src"
 )
 
@@ -353,7 +353,7 @@ func WriteExports(out io.Writer, extensions bool) {
 	hdr.uint64(dataLen)
 
 	// Flush output.
-	h := md5.New()
+	h := notsha256.New()
 	wr := io.MultiWriter(out, h)
 	io.Copy(wr, &hdr)
 	io.Copy(wr, &p.strings)
@@ -2188,7 +2188,7 @@ func (w *exportWriter) localIdent(s *types.Sym) {
 		return
 	}
 
-	if i := strings.LastIndex(name, "."); i >= 0 && !strings.HasPrefix(name, LocalDictName) {
+	if i := strings.LastIndex(name, "."); i >= 0 && !strings.HasPrefix(name, LocalDictName) && !strings.HasPrefix(name, ".rcvr") {
 		base.Fatalf("unexpected dot in identifier: %v", name)
 	}
 

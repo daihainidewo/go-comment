@@ -434,11 +434,15 @@ func sweepone() uintptr {
 		// between sweep done and sweep termination (e.g. not enough
 		// allocations to trigger a GC) which would be nice to fill in
 		// with scavenging work.
-		systemstack(func() {
-			lock(&mheap_.lock)
-			mheap_.pages.scavengeStartGen()
-			unlock(&mheap_.lock)
-		})
+		if debug.scavtrace > 0 {
+			systemstack(func() {
+				lock(&mheap_.lock)
+				released := atomic.Loaduintptr(&mheap_.pages.scav.released)
+				printScavTrace(released, false)
+				atomic.Storeuintptr(&mheap_.pages.scav.released, 0)
+				unlock(&mheap_.lock)
+			})
+		}
 		scavenger.ready()
 	}
 
@@ -700,8 +704,11 @@ func (sl *sweepLocked) sweep(preserve bool) bool {
 			// free slots zeroed.
 			s.needzero = 1
 			stats := memstats.heapStats.acquire()
-			atomic.Xadduintptr(&stats.smallFreeCount[spc.sizeclass()], uintptr(nfreed))
+			atomic.Xadd64(&stats.smallFreeCount[spc.sizeclass()], int64(nfreed))
 			memstats.heapStats.release()
+
+			// Count the frees in the inconsistent, internal stats.
+			gcController.totalFree.Add(int64(nfreed) * int64(s.elemsize))
 		}
 		if !preserve {
 			// The caller may not have removed this span from whatever
@@ -746,10 +753,16 @@ func (sl *sweepLocked) sweep(preserve bool) bool {
 			} else {
 				mheap_.freeSpan(s)
 			}
+
+			// Count the free in the consistent, external stats.
 			stats := memstats.heapStats.acquire()
-			atomic.Xadduintptr(&stats.largeFreeCount, 1)
-			atomic.Xadduintptr(&stats.largeFree, size)
+			atomic.Xadd64(&stats.largeFreeCount, 1)
+			atomic.Xadd64(&stats.largeFree, int64(size))
 			memstats.heapStats.release()
+
+			// Count the free in the inconsistent, internal stats.
+			gcController.totalFree.Add(int64(size))
+
 			return true
 		}
 

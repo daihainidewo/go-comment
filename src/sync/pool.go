@@ -113,9 +113,7 @@ func (p *Pool) Put(x any) {
 		// 优先置为私有
 		// 没有设置私有，则将当前的设置为私有
 		l.private = x
-		x = nil
-	}
-	if x != nil {
+	} else {
 		// 如果有私有则将其存放到share的头部
 		l.shared.pushHead(x)
 	}

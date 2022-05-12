@@ -2672,6 +2672,15 @@ func gcstopm() {
 func execute(gp *g, inheritTime bool) {
 	_g_ := getg()
 
+	if goroutineProfile.active {
+		// Make sure that gp has had its stack written out to the goroutine
+		// profile, exactly as it was when the goroutine profiler first stopped
+		// the world.
+		tryRecordGoroutineProfile(gp, osyield)
+	}
+
+	// Assign gp.m before entering _Grunning so running Gs have an
+	// M.
 	// m 和 gp 互相绑定
 	_g_.m.curg = gp
 	gp.m = _g_.m
@@ -2744,7 +2753,7 @@ top:
 
 	// Try to schedule a GC worker.
 	if gcBlackenEnabled != 0 {
-		gp = gcController.findRunnableGCWorker(_p_)
+		gp = gcController.findRunnableGCWorker(_p_, now)
 		if gp != nil {
 			return gp, false, true
 		}
@@ -4017,7 +4026,18 @@ func exitsyscall() {
 	_g_.waitsince = 0
 	oldp := _g_.m.oldp.ptr() // 获取原来的P
 	_g_.m.oldp = 0
-	if exitsyscallfast(oldp) { // 尝试获取系统调用前绑定的p
+	// 尝试获取系统调用前绑定的p
+	if exitsyscallfast(oldp) {
+		// When exitsyscallfast returns success, we have a P so can now use
+		// write barriers
+		if goroutineProfile.active {
+			// Make sure that gp has had its stack written out to the goroutine
+			// profile, exactly as it was when the goroutine profiler first
+			// stopped the world.
+			systemstack(func() {
+				tryRecordGoroutineProfileWB(_g_)
+			})
+		}
 		if trace.enabled {
 			if oldp != _g_.m.p.ptr() || _g_.m.syscalltick != _g_.m.p.ptr().syscalltick {
 				systemstack(traceGoStart)
@@ -4399,6 +4419,14 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 		if _g_.m.curg != nil {
 			newg.labels = _g_.m.curg.labels
 		}
+		if goroutineProfile.active {
+			// A concurrent goroutine profile is running. It should include
+			// exactly the set of goroutines that were alive when the goroutine
+			// profiler first stopped the world. That does not include newg, so
+			// mark it as not needing a profile before transitioning it from
+			// _Gdead.
+			newg.goroutineProfiled.Store(goroutineProfileSatisfied)
+		}
 	}
 	// Track initial transition?
 	// 随机开始跟踪延迟统计
@@ -4424,6 +4452,11 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 	_p_.goidcache++
 	if raceenabled {
 		newg.racectx = racegostart(callerpc)
+		if newg.labels != nil {
+			// See note in proflabel.go on labelSync's role in synchronizing
+			// with the reads in the signal handler.
+			racereleasemergeg(newg, unsafe.Pointer(&labelSync))
+		}
 	}
 	if trace.enabled {
 		traceGoCreate(newg, newg.startpc)
@@ -4863,6 +4896,16 @@ func sigprof(pc, sp, lr uintptr, gp *g, mp *m) {
 			tagPtr = &gp.m.curg.labels
 		}
 		cpuprof.add(tagPtr, stk[:n])
+
+		gprof := gp
+		var pp *p
+		if gp != nil && gp.m != nil {
+			if gp.m.curg != nil {
+				gprof = gp.m.curg
+			}
+			pp = gp.m.p.ptr()
+		}
+		traceCPUSample(gprof, pp, stk[:n])
 	}
 	getg().m.mallocing--
 }
@@ -5205,6 +5248,10 @@ func procresize(nprocs int32) *p {
 	stealOrder.reset(uint32(nprocs))
 	var int32p *int32 = &gomaxprocs // make compiler check that gomaxprocs is an int32
 	atomic.Store((*uint32)(unsafe.Pointer(int32p)), uint32(nprocs))
+	if old != nprocs {
+		// Notify the limiter that the amount of procs has changed.
+		gcCPULimiter.resetCapacity(now, nprocs)
+	}
 	return runnablePs
 }
 
@@ -5389,7 +5436,7 @@ func checkdead() {
 		}
 	}
 
-	unlock(&sched.lock)    // unlock so that GODEBUG=scheddetail=1 doesn't hang
+	unlock(&sched.lock) // unlock so that GODEBUG=scheddetail=1 doesn't hang
 	fatal("all goroutines are asleep - deadlock!")
 }
 
