@@ -3580,7 +3580,8 @@ func park_m(gp *g) {
 	dropg() // 解绑curg和m
 
 	if fn := _g_.m.waitunlockf; fn != nil {
-		ok := fn(gp, _g_.m.waitlock) // 在开始下一次调度前执行附加操作
+		// 尝试释放锁
+		ok := fn(gp, _g_.m.waitlock)
 		_g_.m.waitunlockf = nil
 		_g_.m.waitlock = nil
 		if !ok {

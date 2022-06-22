@@ -95,6 +95,8 @@ type mheap struct {
 	// _ uint32 // align uint64 fields on 32-bit for atomics
 
 	// 比例扫描
+	// pagesInUse span 中处于 mSpanInUse 状态的 page 数
+	// pagesSwept 在清扫的 page 数
 	// pagesSweptBasis 扫描原点
 	// sweepPagesPerByte 标记是否完成或者是否开启
 	// Proportional sweep
@@ -544,6 +546,9 @@ type mspan struct {
 	// state 标记当前的状态
 	// needzero 在申请之前是否需要清零
 	// elemsize 元素大小
+	// limit span 中最后一个数据
+	// speciallock 保护 specials
+	// specials 特殊记录链表 基于 offset 排序
 	sweepgen              uint32
 	divMul                uint32        // for divide by elemsize
 	allocCount            uint16        // number of allocated objects
@@ -1845,6 +1850,8 @@ const (
 	// if that happens.
 )
 
+// special 链表节点
+// 表示对象对 span 的偏移量和 special 的种类
 //go:notinheap
 type special struct {
 	next   *special // linked list in span
@@ -2058,6 +2065,7 @@ type specialsIter struct {
 	s     *special
 }
 
+// newSpecialsIter 返回 span 中的 specials 迭代器
 func newSpecialsIter(span *mspan) specialsIter {
 	return specialsIter{&span.specials, span.specials}
 }

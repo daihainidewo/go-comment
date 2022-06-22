@@ -31,6 +31,7 @@ import (
 
 var sweep sweepdata
 
+// sweepdata 后台清扫状态
 // State of background sweep.
 type sweepdata struct {
 	lock    mutex
@@ -108,6 +109,7 @@ func (s sweepClass) split() (spc spanClass, full bool) {
 	return spanClass(s >> 1), s&1 == 0
 }
 
+// nextSpanForSweep 获取下一个需要清扫的span
 // nextSpanForSweep finds and pops the next span for sweeping from the
 // central sweep buffers. It returns ownership of the span to the caller.
 // Returns nil if no such span exists.
@@ -132,6 +134,7 @@ func (h *mheap) nextSpanForSweep() *mspan {
 			return s
 		}
 	}
+	// 记录清扫完成
 	// Write down that we found nothing.
 	sweep.centralIndex.update(sweepClassDone)
 	return nil
@@ -213,6 +216,7 @@ func (a *activeSweep) end(sl sweepLocker) {
 	}
 }
 
+// markDrained 标记清扫完成
 // markDrained marks the active sweep cycle as having drained
 // all remaining work. This is safe to be called concurrently
 // with all other methods of activeSweep, though may race.
@@ -300,6 +304,7 @@ func finishsweep_m() {
 	nextMarkBitArenaEpoch()
 }
 
+// bgsweep 后台清扫
 func bgsweep(c chan int) {
 	sweep.g = getg()
 
@@ -307,6 +312,7 @@ func bgsweep(c chan int) {
 	lock(&sweep.lock)
 	sweep.parked = true
 	c <- 1
+	// 等待开始扫描
 	goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceEvGoBlock, 1)
 
 	for {
@@ -314,6 +320,7 @@ func bgsweep(c chan int) {
 			sweep.nbgsweep++
 			Gosched()
 		}
+		// 归还内存
 		for freeSomeWbufs(true) {
 			Gosched()
 		}
@@ -372,6 +379,7 @@ func sweepone() uintptr {
 	// in the middle of sweep thus leaving the span in an inconsistent state for next GC
 	gp.m.locks++
 
+	// 获取清理者
 	// TODO(austin): sweepone is almost always called in a loop;
 	// lift the sweepLocker into its callers.
 	sl := sweep.active.begin()
@@ -386,10 +394,12 @@ func sweepone() uintptr {
 	for {
 		s := mheap_.nextSpanForSweep()
 		if s == nil {
+			// 清理完成
 			noMoreWork = sweep.active.markDrained()
 			break
 		}
 		if state := s.state.get(); state != mSpanInUse {
+			// 已经清扫过的span
 			// This can happen if direct sweeping already
 			// swept this span, but in that case the sweep
 			// generation should always be up-to-date.
@@ -400,8 +410,10 @@ func sweepone() uintptr {
 			continue
 		}
 		if s, ok := sl.tryAcquire(s); ok {
+			// 获取 s 的清扫权
 			// Sweep the span we found.
 			npages = s.npages
+			// 执行清扫
 			if s.sweep(false) {
 				// Whole span was freed. Count it toward the
 				// page reclaimer credit since these pages can
@@ -498,6 +510,10 @@ func (s *mspan) ensureSwept() {
 	}
 }
 
+// sweep 释放或收集标记阶段未标记的块的终结器
+// 清空标记位用于下次 GC 循环
+// 返回 true 表示 span 归还给 heap
+// 如果 preserve==true 不要归还给 heap 也不要重连到 mcentral 列表中 调用者需要小心使用
 // Sweep frees or collects finalizers for blocks not marked in the mark phase.
 // It clears the mark bits in preparation for the next GC round.
 // Returns true if the span was returned to heap.
@@ -518,6 +534,7 @@ func (sl *sweepLocked) sweep(preserve bool) bool {
 		sl.mspan = nil
 	}
 
+	// 清扫id
 	sweepgen := mheap_.sweepgen
 	if state := s.state.get(); state != mSpanInUse || s.sweepgen != sweepgen-1 {
 		print("mspan.sweep: state=", state, " sweepgen=", s.sweepgen, " mheap.sweepgen=", sweepgen, "\n")
@@ -528,6 +545,7 @@ func (sl *sweepLocked) sweep(preserve bool) bool {
 		traceGCSweepSpan(s.npages * _PageSize)
 	}
 
+	// 添加清扫页数
 	mheap_.pagesSwept.Add(int64(s.npages))
 
 	spc := s.spanclass
