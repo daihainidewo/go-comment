@@ -63,8 +63,8 @@ type Addr struct {
 	z *intern.Value
 }
 
-// z0, z4, and z6noz are sentinel IP.z values.
-// See the IP type's field docs.
+// z0, z4, and z6noz are sentinel Addr.z values.
+// See the Addr type's field docs.
 var (
 	z0    = (*intern.Value)(nil)
 	z4    = new(intern.Value)
@@ -474,7 +474,7 @@ func (ip Addr) Is6() bool {
 
 // Unmap returns ip with any IPv4-mapped IPv6 address prefix removed.
 //
-// That is, if ip is an IPv6 address wrapping an IPv4 adddress, it
+// That is, if ip is an IPv6 address wrapping an IPv4 address, it
 // returns the wrapped IPv4 address. Otherwise it returns ip unmodified.
 func (ip Addr) Unmap() Addr {
 	if ip.Is4In6() {
@@ -498,7 +498,7 @@ func (ip Addr) WithZone(zone string) Addr {
 	return ip
 }
 
-// withoutZone unconditionally strips the zone from IP.
+// withoutZone unconditionally strips the zone from ip.
 // It's similar to WithZone, but small enough to be inlinable.
 func (ip Addr) withoutZone() Addr {
 	if !ip.Is6() {
@@ -508,7 +508,7 @@ func (ip Addr) withoutZone() Addr {
 	return ip
 }
 
-// hasZone reports whether IP has an IPv6 zone.
+// hasZone reports whether ip has an IPv6 zone.
 func (ip Addr) hasZone() bool {
 	return ip.z != z0 && ip.z != z4 && ip.z != z6noz
 }
@@ -1310,14 +1310,14 @@ func ParsePrefix(s string) (Prefix, error) {
 	bitsStr := s[i+1:]
 	bits, err := strconv.Atoi(bitsStr)
 	if err != nil {
-		return Prefix{}, errors.New("netip.ParsePrefix(" + strconv.Quote(s) + ": bad bits after slash: " + strconv.Quote(bitsStr))
+		return Prefix{}, errors.New("netip.ParsePrefix(" + strconv.Quote(s) + "): bad bits after slash: " + strconv.Quote(bitsStr))
 	}
 	maxBits := 32
 	if ip.Is6() {
 		maxBits = 128
 	}
 	if bits < 0 || bits > maxBits {
-		return Prefix{}, errors.New("netip.ParsePrefix(" + strconv.Quote(s) + ": prefix length out of range")
+		return Prefix{}, errors.New("netip.ParsePrefix(" + strconv.Quote(s) + "): prefix length out of range")
 	}
 	return PrefixFrom(ip, bits), nil
 }

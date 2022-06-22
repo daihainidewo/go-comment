@@ -440,13 +440,9 @@ type ptrtype struct {
 }
 
 type structfield struct {
-	name       name
-	typ        *_type
-	offsetAnon uintptr
-}
-
-func (f *structfield) offset() uintptr {
-	return f.offsetAnon >> 1
+	name   name
+	typ    *_type
+	offset uintptr
 }
 
 type structtype struct {
@@ -479,6 +475,10 @@ func (n name) data(off int) *byte {
 // 是否可导出
 func (n name) isExported() bool {
 	return (*n.bytes)&(1<<0) != 0
+}
+
+func (n name) isEmbedded() bool {
+	return (*n.bytes)&(1<<3) != 0
 }
 
 // 读取 varint
@@ -779,8 +779,11 @@ func typesEqual(t, v *_type, seen map[_typePair]struct{}) bool {
 				// tag 不一样返回 false
 				return false
 			}
-			if tf.offsetAnon != vf.offsetAnon {
 				// 匿名偏移不一样返回 false
+			if tf.offset != vf.offset {
+				return false
+			}
+			if tf.name.isEmbedded() != vf.name.isEmbedded() {
 				return false
 			}
 		}

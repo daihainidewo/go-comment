@@ -358,7 +358,7 @@ func methods(t *types.Type) []*typeSig {
 		}
 		if f.Nointerface() {
 			// In the case of a nointerface method on an instantiated
-			// type, don't actually apppend the typeSig.
+			// type, don't actually append the typeSig.
 			continue
 		}
 		ms = append(ms, sig)
@@ -413,14 +413,8 @@ func dimportpath(p *types.Pkg) {
 		return
 	}
 
-	str := p.Path
-	if p == types.LocalPkg {
-		// Note: myimportpath != "", or else dgopkgpath won't call dimportpath.
-		str = base.Ctxt.Pkgpath
-	}
-
 	s := base.Ctxt.Lookup("type..importpath." + p.Prefix + ".")
-	ot := dnameData(s, 0, str, "", nil, false)
+	ot := dnameData(s, 0, p.Path, "", nil, false, false)
 	objw.Global(s, int32(ot), obj.DUPOK|obj.RODATA)
 	s.Set(obj.AttrContentAddressable, true)
 	p.Pathsym = s
@@ -469,12 +463,12 @@ func dnameField(lsym *obj.LSym, ot int, spkg *types.Pkg, ft *types.Field) int {
 	if !types.IsExported(ft.Sym.Name) && ft.Sym.Pkg != spkg {
 		base.Fatalf("package mismatch for %v", ft.Sym)
 	}
-	nsym := dname(ft.Sym.Name, ft.Note, nil, types.IsExported(ft.Sym.Name))
+	nsym := dname(ft.Sym.Name, ft.Note, nil, types.IsExported(ft.Sym.Name), ft.Embedded != 0)
 	return objw.SymPtr(lsym, ot, nsym, 0)
 }
 
 // dnameData writes the contents of a reflect.name into s at offset ot.
-func dnameData(s *obj.LSym, ot int, name, tag string, pkg *types.Pkg, exported bool) int {
+func dnameData(s *obj.LSym, ot int, name, tag string, pkg *types.Pkg, exported, embedded bool) int {
 	if len(name) >= 1<<29 {
 		base.Fatalf("name too long: %d %s...", len(name), name[:1024])
 	}
@@ -499,6 +493,9 @@ func dnameData(s *obj.LSym, ot int, name, tag string, pkg *types.Pkg, exported b
 	if pkg != nil {
 		bits |= 1 << 2
 	}
+	if embedded {
+		bits |= 1 << 3
+	}
 	b := make([]byte, l)
 	b[0] = bits
 	copy(b[1:], nameLen[:nameLenLen])
@@ -521,7 +518,7 @@ func dnameData(s *obj.LSym, ot int, name, tag string, pkg *types.Pkg, exported b
 var dnameCount int
 
 // dname creates a reflect.name for a struct field or method.
-func dname(name, tag string, pkg *types.Pkg, exported bool) *obj.LSym {
+func dname(name, tag string, pkg *types.Pkg, exported, embedded bool) *obj.LSym {
 	// Write out data as "type.." to signal two things to the
 	// linker, first that when dynamically linking, the symbol
 	// should be moved to a relro section, and second that the
@@ -546,11 +543,14 @@ func dname(name, tag string, pkg *types.Pkg, exported bool) *obj.LSym {
 		sname = fmt.Sprintf(`%s"".%d`, sname, dnameCount)
 		dnameCount++
 	}
+	if embedded {
+		sname += ".embedded"
+	}
 	s := base.Ctxt.Lookup(sname)
 	if len(s.P) > 0 {
 		return s
 	}
-	ot := dnameData(s, 0, name, tag, pkg, exported)
+	ot := dnameData(s, 0, name, tag, pkg, exported, embedded)
 	objw.Global(s, int32(ot), obj.DUPOK|obj.RODATA)
 	s.Set(obj.AttrContentAddressable, true)
 	return s
@@ -618,7 +618,7 @@ func dextratypeData(lsym *obj.LSym, ot int, t *types.Type) int {
 		if !exported && a.name.Pkg != typePkg(t) {
 			pkg = a.name.Pkg
 		}
-		nsym := dname(a.name.Name, "", pkg, exported)
+		nsym := dname(a.name.Name, "", pkg, exported, false)
 
 		ot = objw.SymPtrOff(lsym, ot, nsym)
 		ot = dmethodptrOff(lsym, ot, writeType(a.mtype))
@@ -785,7 +785,7 @@ func dcommontype(lsym *obj.LSym, t *types.Type) int {
 	}
 	ot = objw.SymPtr(lsym, ot, gcsym, 0) // gcdata
 
-	nsym := dname(p, "", nil, exported)
+	nsym := dname(p, "", nil, exported, false)
 	ot = objw.SymPtrOff(lsym, ot, nsym) // str
 	// ptrToThis
 	if sptr == nil {
@@ -1084,7 +1084,7 @@ func writeType(t *types.Type) *obj.LSym {
 			if !exported && a.name.Pkg != tpkg {
 				pkg = a.name.Pkg
 			}
-			nsym := dname(a.name.Name, "", pkg, exported)
+			nsym := dname(a.name.Name, "", pkg, exported, false)
 
 			ot = objw.SymPtrOff(lsym, ot, nsym)
 			ot = objw.SymPtrOff(lsym, ot, writeType(a.type_))
@@ -1190,14 +1190,7 @@ func writeType(t *types.Type) *obj.LSym {
 			// ../../../../runtime/type.go:/structField
 			ot = dnameField(lsym, ot, spkg, f)
 			ot = objw.SymPtr(lsym, ot, writeType(f.Type), 0)
-			offsetAnon := uint64(f.Offset) << 1
-			if offsetAnon>>1 != uint64(f.Offset) {
-				base.Fatalf("%v: bad field offset for %s", t, f.Sym.Name)
-			}
-			if f.Embedded != 0 {
-				offsetAnon |= 1
-			}
-			ot = objw.Uintptr(lsym, ot, offsetAnon)
+			ot = objw.Uintptr(lsym, ot, uint64(f.Offset))
 		}
 	}
 
@@ -1366,7 +1359,7 @@ func WriteTabs() {
 			//	name nameOff
 			//	typ  typeOff // pointer to symbol
 			// }
-			nsym := dname(p.Sym().Name, "", nil, true)
+			nsym := dname(p.Sym().Name, "", nil, true, false)
 			t := p.Type()
 			if p.Class != ir.PFUNC {
 				t = types.NewPtr(t)
@@ -1448,6 +1441,14 @@ type typesByString []typeAndStr
 
 func (a typesByString) Len() int { return len(a) }
 func (a typesByString) Less(i, j int) bool {
+	// put named types before unnamed types
+	if a[i].t.Sym() != nil && a[j].t.Sym() == nil {
+		return true
+	}
+	if a[i].t.Sym() == nil && a[j].t.Sym() != nil {
+		return false
+	}
+
 	if a[i].short != a[j].short {
 		return a[i].short < a[j].short
 	}
@@ -1727,6 +1728,9 @@ func CollectPTabs() {
 		}
 		if s.Pkg.Name != "main" {
 			continue
+		}
+		if n.Type().HasTParam() {
+			continue // skip generic functions (#52937)
 		}
 		ptabs = append(ptabs, n)
 	}

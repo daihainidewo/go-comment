@@ -14,7 +14,6 @@ import (
 	"go/build"
 	"go/scanner"
 	"go/token"
-	"internal/goroot"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -35,6 +34,7 @@ import (
 	"cmd/go/internal/fsys"
 	"cmd/go/internal/imports"
 	"cmd/go/internal/modfetch"
+	"cmd/go/internal/modindex"
 	"cmd/go/internal/modinfo"
 	"cmd/go/internal/modload"
 	"cmd/go/internal/par"
@@ -686,6 +686,9 @@ func LoadImport(ctx context.Context, opts PackageOpts, path, srcDir string, pare
 }
 
 func loadImport(ctx context.Context, opts PackageOpts, pre *preload, path, srcDir string, parent *Package, stk *ImportStack, importPos []token.Position, mode int) *Package {
+	ctx, span := trace.StartSpan(ctx, "modload.loadImport "+path)
+	defer span.Done()
+
 	if path == "" {
 		panic("LoadImport called with empty package path")
 	}
@@ -801,6 +804,9 @@ func loadImport(ctx context.Context, opts PackageOpts, pre *preload, path, srcDi
 // loadPackageData returns a boolean, loaded, which is true if this is the
 // first time the package was loaded. Callers may preload imports in this case.
 func loadPackageData(ctx context.Context, path, parentPath, parentDir, parentRoot string, parentIsStd bool, mode int) (bp *build.Package, loaded bool, err error) {
+	ctx, span := trace.StartSpan(ctx, "load.loadPackageData "+path)
+	defer span.Done()
+
 	if path == "" {
 		panic("loadPackageData called with empty package path")
 	}
@@ -871,7 +877,16 @@ func loadPackageData(ctx context.Context, path, parentPath, parentDir, parentRoo
 			if !cfg.ModulesEnabled {
 				buildMode = build.ImportComment
 			}
+			if modroot := modload.PackageModRoot(ctx, r.path); modroot != "" {
+				if mi, err := modindex.Get(modroot); err == nil {
+					data.p, data.err = mi.Import(cfg.BuildContext, mi.RelPath(r.dir), buildMode)
+					goto Happy
+				} else if !errors.Is(err, modindex.ErrNotIndexed) {
+					base.Fatalf("go: %v", err)
+				}
+			}
 			data.p, data.err = cfg.BuildContext.ImportDir(r.dir, buildMode)
+		Happy:
 			if cfg.ModulesEnabled {
 				// Override data.p.Root, since ImportDir sets it to $GOPATH, if
 				// the module is inside $GOPATH/src.
@@ -2054,7 +2069,7 @@ func resolveEmbed(pkgdir string, patterns []string) (files []string, pmap map[st
 		}
 
 		// Glob to find matches.
-		match, err := fsys.Glob(pkgdir + string(filepath.Separator) + filepath.FromSlash(glob))
+		match, err := fsys.Glob(str.QuoteGlob(pkgdir) + string(filepath.Separator) + filepath.FromSlash(glob))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -3062,7 +3077,7 @@ func PackagesAndErrorsOutsideModule(ctx context.Context, opts PackageOpts, args 
 			return nil, fmt.Errorf("%s: argument must be a package path, not a meta-package", arg)
 		case path.Clean(p) != p:
 			return nil, fmt.Errorf("%s: argument must be a clean package path", arg)
-		case !strings.Contains(p, "...") && search.IsStandardImportPath(p) && goroot.IsStandardPackage(cfg.GOROOT, cfg.BuildContext.Compiler, p):
+		case !strings.Contains(p, "...") && search.IsStandardImportPath(p) && modindex.IsStandardPackage(cfg.GOROOT, cfg.BuildContext.Compiler, p):
 			return nil, fmt.Errorf("%s: argument must not be a package in the standard library", arg)
 		default:
 			patterns[i] = p

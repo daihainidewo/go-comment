@@ -811,7 +811,7 @@ func (p *PageAlloc) Bounds() (ChunkIdx, ChunkIdx) {
 func (p *PageAlloc) Scavenge(nbytes uintptr) (r uintptr) {
 	pp := (*pageAlloc)(p)
 	systemstack(func() {
-		r = pp.scavenge(nbytes)
+		r = pp.scavenge(nbytes, nil)
 	})
 	return
 }
@@ -1163,8 +1163,36 @@ var Semacquire = semacquire
 var Semrelease1 = semrelease1
 
 func SemNwait(addr *uint32) uint32 {
-	root := semroot(addr)
+	root := semtable.rootFor(addr)
 	return atomic.Load(&root.nwait)
+}
+
+const SemTableSize = semTabSize
+
+// SemTable is a wrapper around semTable exported for testing.
+type SemTable struct {
+	semTable
+}
+
+// Enqueue simulates enqueuing a waiter for a semaphore (or lock) at addr.
+func (t *SemTable) Enqueue(addr *uint32) {
+	s := acquireSudog()
+	s.releasetime = 0
+	s.acquiretime = 0
+	s.ticket = 0
+	t.semTable.rootFor(addr).queue(addr, s, false)
+}
+
+// Dequeue simulates dequeuing a waiter for a semaphore (or lock) at addr.
+//
+// Returns true if there actually was a waiter to be dequeued.
+func (t *SemTable) Dequeue(addr *uint32) bool {
+	s, _ := t.semTable.rootFor(addr).dequeue(addr)
+	if s != nil {
+		releaseSudog(s)
+		return true
+	}
+	return false
 }
 
 // mspan wrapper for testing.
@@ -1294,7 +1322,7 @@ func (c *GCController) StartCycle(stackSize, globalsSize uint64, scannableFrac f
 	if c.heapMarked > trigger {
 		trigger = c.heapMarked
 	}
-	c.scannableStackSize = stackSize
+	c.maxStackScan = stackSize
 	c.globalsScan = globalsSize
 	c.heapLive = trigger
 	c.heapScan += uint64(float64(trigger-c.heapMarked) * scannableFrac)
@@ -1415,6 +1443,7 @@ func NewGCCPULimiter(now int64, gomaxprocs int32) *GCCPULimiter {
 	// on a 32-bit architecture, it may get allocated unaligned
 	// space.
 	l := Escape(new(GCCPULimiter))
+	l.limiter.test = true
 	l.limiter.resetCapacity(now, gomaxprocs)
 	return l
 }
@@ -1439,16 +1468,20 @@ func (l *GCCPULimiter) NeedUpdate(now int64) bool {
 	return l.limiter.needUpdate(now)
 }
 
-func (l *GCCPULimiter) StartGCTransition(enableGC bool, totalAssistTime, now int64) {
-	l.limiter.startGCTransition(enableGC, totalAssistTime, now)
+func (l *GCCPULimiter) StartGCTransition(enableGC bool, now int64) {
+	l.limiter.startGCTransition(enableGC, now)
 }
 
 func (l *GCCPULimiter) FinishGCTransition(now int64) {
 	l.limiter.finishGCTransition(now)
 }
 
-func (l *GCCPULimiter) Update(totalAssistTime int64, now int64) {
-	l.limiter.update(totalAssistTime, now)
+func (l *GCCPULimiter) Update(now int64) {
+	l.limiter.update(now)
+}
+
+func (l *GCCPULimiter) AddAssistTime(t int64) {
+	l.limiter.addAssistTime(t)
 }
 
 func (l *GCCPULimiter) ResetCapacity(now int64, nprocs int32) {

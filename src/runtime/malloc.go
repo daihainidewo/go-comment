@@ -165,10 +165,6 @@ const (
 
 	pageShift = _PageShift // 13
 	pageSize  = _PageSize  // 8192
-	pageMask  = _PageMask  // 8191
-	// By construction, single page spans of the smallest object class
-	// have the most objects per span.
-	maxObjsPerSpan = pageSize / 8 // 1024
 
 	concurrentSweep = _ConcurrentSweep // true
 

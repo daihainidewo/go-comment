@@ -993,7 +993,10 @@ func (t *test) run() {
 
 	case "build":
 		// Build Go file.
-		_, err := runcmd(goTool(), "build", t.goGcflags(), "-o", "a.exe", long)
+		cmd := []string{goTool(), "build", t.goGcflags()}
+		cmd = append(cmd, flags...)
+		cmd = append(cmd, "-o", "a.exe", long)
+		_, err := runcmd(cmd...)
 		if err != nil {
 			t.err = err
 		}
@@ -1582,6 +1585,7 @@ var (
 		"amd64":   {"GOAMD64", "v1", "v2", "v3", "v4"},
 		"arm":     {"GOARM", "5", "6", "7"},
 		"arm64":   {},
+		"loong64": {},
 		"mips":    {"GOMIPS", "hardfloat", "softfloat"},
 		"mips64":  {"GOMIPS64", "hardfloat", "softfloat"},
 		"ppc64":   {"GOPPC64", "power8", "power9"},
@@ -1962,6 +1966,8 @@ var types2Failures32Bit = setOf(
 var go118Failures = setOf(
 	"typeparam/nested.go",     // 1.18 compiler doesn't support function-local types with generics
 	"typeparam/issue51521.go", // 1.18 compiler produces bad panic message and link error
+	"typeparam/issue53419.go", // 1.18 compiler mishandles generic selector resolution
+	"typeparam/issue53477.go", // 1.18 compiler mishandles generic interface-interface comparisons from value switch statements
 )
 
 // In all of these cases, the 1.17 compiler reports reasonable errors, but either the

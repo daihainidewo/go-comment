@@ -407,6 +407,7 @@ func (g *genInst) buildClosure(outer *ir.Func, x ir.Node) ir.Node {
 
 	// Make a new internal function.
 	fn, formalParams, formalResults := startClosure(pos, outer, typ)
+	fn.SetWrapper(true) // See issue 52237
 
 	// This is the dictionary we want to use.
 	// It may be a constant, it may be the outer functions's dictionary, or it may be
@@ -720,11 +721,12 @@ func (g *genInst) getInstantiation(nameNode *ir.Name, shapes []*types.Type, isMe
 // Struct containing info needed for doing the substitution as we create the
 // instantiation of a generic function with specified type arguments.
 type subster struct {
-	g        *genInst
-	isMethod bool     // If a method is being instantiated
-	newf     *ir.Func // Func node for the new stenciled function
-	ts       typecheck.Tsubster
-	info     *instInfo // Place to put extra info in the instantiation
+	g           *genInst
+	isMethod    bool     // If a method is being instantiated
+	newf        *ir.Func // Func node for the new stenciled function
+	ts          typecheck.Tsubster
+	info        *instInfo // Place to put extra info in the instantiation
+	skipClosure bool      // Skip substituting closures
 
 	// Map from non-nil, non-ONAME node n to slice of all m, where m.Defn = n
 	defnMap map[ir.Node][]**ir.Name
@@ -977,7 +979,20 @@ func (subst *subster) node(n ir.Node) ir.Node {
 			}
 		}
 
+		old := subst.skipClosure
+		// For unsafe.{Alignof,Offsetof,Sizeof}, subster will transform them to OLITERAL nodes,
+		// and discard their arguments. However, their children nodes were already process before,
+		// thus if they contain any closure, the closure was still be added to package declarations
+		// queue for processing later. Thus, genInst will fail to generate instantiation for the
+		// closure because of lacking dictionary information, see issue #53390.
+		if call, ok := m.(*ir.CallExpr); ok && call.X.Op() == ir.ONAME {
+			switch call.X.Name().BuiltinOp {
+			case ir.OALIGNOF, ir.OOFFSETOF, ir.OSIZEOF:
+				subst.skipClosure = true
+			}
+		}
 		ir.EditChildren(m, edit)
+		subst.skipClosure = old
 
 		m.SetTypecheck(1)
 
@@ -1122,6 +1137,9 @@ func (subst *subster) node(n ir.Node) ir.Node {
 			}
 
 		case ir.OCLOSURE:
+			if subst.skipClosure {
+				break
+			}
 			// We're going to create a new closure from scratch, so clear m
 			// to avoid using the ir.Copy by accident until we reassign it.
 			m = nil
@@ -1329,15 +1347,16 @@ func (g *genInst) dictPass(info *instInfo) {
 				m = convertUsingDictionary(info, info.dictParam, m.Pos(), mce.X, m, m.Type())
 			}
 		case ir.ODOTTYPE, ir.ODOTTYPE2:
-			if !m.Type().HasShape() {
+			dt := m.(*ir.TypeAssertExpr)
+			if !dt.Type().HasShape() && !dt.X.Type().HasShape() {
 				break
 			}
-			dt := m.(*ir.TypeAssertExpr)
-			var rt ir.Node
+			var rtype, itab ir.Node
 			if dt.Type().IsInterface() || dt.X.Type().IsEmptyInterface() {
+				// TODO(mdempsky): Investigate executing this block unconditionally.
 				ix := findDictType(info, m.Type())
 				assert(ix >= 0)
-				rt = getDictionaryType(info, info.dictParam, dt.Pos(), ix)
+				rtype = getDictionaryType(info, info.dictParam, dt.Pos(), ix)
 			} else {
 				// nonempty interface to noninterface. Need an itab.
 				ix := -1
@@ -1348,13 +1367,14 @@ func (g *genInst) dictPass(info *instInfo) {
 					}
 				}
 				assert(ix >= 0)
-				rt = getDictionaryEntry(dt.Pos(), info.dictParam, ix, info.dictInfo.dictLen)
+				itab = getDictionaryEntry(dt.Pos(), info.dictParam, ix, info.dictInfo.dictLen)
 			}
 			op := ir.ODYNAMICDOTTYPE
 			if m.Op() == ir.ODOTTYPE2 {
 				op = ir.ODYNAMICDOTTYPE2
 			}
-			m = ir.NewDynamicTypeAssertExpr(dt.Pos(), op, dt.X, rt)
+			m = ir.NewDynamicTypeAssertExpr(dt.Pos(), op, dt.X, rtype)
+			m.(*ir.DynamicTypeAssertExpr).ITab = itab
 			m.SetType(dt.Type())
 			m.SetTypecheck(1)
 		case ir.OCASE:

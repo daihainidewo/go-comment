@@ -35,8 +35,8 @@ import (
 // where n is the number of distinct addresses with goroutines blocked
 // on them that hash to the given semaRoot.
 // See golang.org/issue/17953 for a program that worked badly
-// before we introduced the second level of list, and test/locklinear.go
-// for a test that exercises this.
+// before we introduced the second level of list, and
+// BenchmarkSemTable/OneAddrCollision/* for a benchmark that exercises this.
 type semaRoot struct {
 	lock mutex
 	// 平衡树 存等待的g tree-heap
@@ -45,14 +45,20 @@ type semaRoot struct {
 	nwait uint32 // Number of waiters. Read w/o the lock.
 }
 
+var semtable semTable
+
 // Prime to not correlate with any user patterns.
 // 为啥是251
 const semTabSize = 251
 
 // 信号表 固定大小
-var semtable [semTabSize]struct {
+type semTable [semTabSize]struct {
 	root semaRoot
 	pad  [cpu.CacheLinePadSize - unsafe.Sizeof(semaRoot{})]byte
+}
+
+func (t *semTable) rootFor(addr *uint32) *semaRoot {
+	return &t[(uintptr(unsafe.Pointer(addr))>>3)%semTabSize].root
 }
 
 //go:linkname sync_runtime_Semacquire sync.runtime_Semacquire
@@ -120,7 +126,7 @@ func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes i
 	//	sleep
 	//	(waiter descriptor is dequeued by signaler)
 	s := acquireSudog()
-	root := semroot(addr)
+	root := semtable.rootFor(addr)
 	t0 := int64(0)
 	s.releasetime = 0
 	s.acquiretime = 0
@@ -171,7 +177,7 @@ func semrelease(addr *uint32) {
 // 解锁单个 addr 的等待 g 并唤醒该 g
 func semrelease1(addr *uint32, handoff bool, skipframes int) {
 	// 取根结点
-	root := semroot(addr)
+	root := semtable.rootFor(addr)
 	atomic.Xadd(addr, 1)
 
 	// 检测操作必须在 xadd 后面
@@ -235,10 +241,6 @@ func semrelease1(addr *uint32, handoff bool, skipframes int) {
 			goyield()
 		}
 	}
-}
-
-func semroot(addr *uint32) *semaRoot {
-	return &semtable[(uintptr(unsafe.Pointer(addr))>>3)%semTabSize].root
 }
 
 // 检测锁是否可获取

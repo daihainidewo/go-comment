@@ -170,6 +170,7 @@ func (ts *testScript) setup() {
 		"GOCACHE=" + testGOCACHE,
 		"GODEBUG=" + os.Getenv("GODEBUG"),
 		"GOEXE=" + cfg.ExeSuffix,
+		"GOEXPERIMENT=" + os.Getenv("GOEXPERIMENT"),
 		"GOOS=" + runtime.GOOS,
 		"GOPATH=" + filepath.Join(ts.workdir, "gopath"),
 		"GOPROXY=" + proxyURL,
@@ -189,6 +190,14 @@ func (ts *testScript) setup() {
 		":=" + string(os.PathListSeparator),
 		"/=" + string(os.PathSeparator),
 		"CMDGO_TEST_RUN_MAIN=true",
+	}
+	if testenv.Builder() != "" || os.Getenv("GIT_TRACE_CURL") == "1" {
+		// To help diagnose https://go.dev/issue/52545,
+		// enable tracing for Git HTTPS requests.
+		ts.env = append(ts.env,
+			"GIT_TRACE_CURL=1",
+			"GIT_TRACE_CURL_NO_DATA=1",
+			"GIT_REDACT_COOKIES=o,SSO,GSSO_Uberproxy")
 	}
 	if !testenv.HasExternalNetwork() {
 		ts.env = append(ts.env, "TESTGONETWORK=panic", "TESTGOVCS=panic")

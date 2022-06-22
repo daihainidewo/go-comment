@@ -1296,8 +1296,9 @@ func stopTheWorldWithSema() {
 	}
 	// 将空闲的P的状态转为 _Pgcstop
 	// stop idle P's
+	now := nanotime()
 	for {
-		p := pidleget()
+		p, _ := pidleget(now)
 		if p == nil {
 			break
 		}
@@ -2415,9 +2416,9 @@ func startm(_p_ *p, spinning bool) {
 	// disable preemption before acquiring a P from pidleget below.
 	mp := acquirem()
 	lock(&sched.lock)
-	if _p_ == nil { // _p_ 为空
-		_p_ = pidleget() // 从p空闲列表中获取一个
-		if _p_ == nil {  // 获取失败
+	if _p_ == nil {
+		_p_, _ = pidleget(0)
+		if _p_ == nil {
 			unlock(&sched.lock)
 			if spinning {
 				// The caller incremented nmspinning, but there are no idle Ps,
@@ -2551,7 +2552,7 @@ func handoffp(_p_ *p) {
 	// because wakeNetPoller may call wakep which may call startm.
 	when := nobarrierWakeTime(_p_)
 	// 都没有则将_p_存放到空闲P列表中
-	pidleput(_p_)
+	pidleput(_p_, 0)
 	unlock(&sched.lock)
 
 	if when != 0 {
@@ -2753,7 +2754,7 @@ top:
 
 	// Try to schedule a GC worker.
 	if gcBlackenEnabled != 0 {
-		gp = gcController.findRunnableGCWorker(_p_, now)
+		gp, now = gcController.findRunnableGCWorker(_p_, now)
 		if gp != nil {
 			return gp, false, true
 		}
@@ -2911,7 +2912,7 @@ top:
 		throw("findrunnable: wrong p")
 	}
 	// 将p存进空闲列表中
-	pidleput(_p_)
+	now = pidleput(_p_, now)
 	unlock(&sched.lock)
 
 	// Delicate dance: thread transitions from spinning to non-spinning
@@ -2998,11 +2999,10 @@ top:
 			throw("findrunnable: netpoll with spinning")
 		}
 		// 计算等待时间
+		// Refresh now.
+		now = nanotime()
 		delay := int64(-1)
 		if pollUntil != 0 {
-			if now == 0 {
-				now = nanotime()
-			}
 			delay = pollUntil - now
 			if delay < 0 {
 				delay = 0
@@ -3015,7 +3015,7 @@ top:
 		// 阻塞获取可用的网络协程
 		list := netpoll(delay) // block until new work is available
 		atomic.Store64(&sched.pollUntil, 0)
-		atomic.Store64(&sched.lastpoll, uint64(nanotime()))
+		atomic.Store64(&sched.lastpoll, uint64(now))
 		if faketime != 0 && list.empty() {
 			// 如果使用 faketime 并且没有就绪的协程则休眠m
 			// Using fake time and nothing is ready; stop M.
@@ -3024,7 +3024,7 @@ top:
 			goto top
 		}
 		lock(&sched.lock)
-		_p_ = pidleget()
+		_p_, _ = pidleget(now)
 		unlock(&sched.lock)
 		if _p_ == nil {
 			// 没有空闲的p就将就绪的list存进全局可执行g链表中
@@ -3168,7 +3168,7 @@ func checkRunqsNoP(allpSnapshot []*p, idlepMaskSnapshot pMask) *p {
 	for id, p2 := range allpSnapshot {
 		if !idlepMaskSnapshot.read(uint32(id)) && !runqempty(p2) {
 			lock(&sched.lock)
-			pp := pidleget()
+			pp, _ := pidleget(0)
 			unlock(&sched.lock)
 			if pp != nil {
 				return pp
@@ -3235,7 +3235,7 @@ func checkIdleGCNoP() (*p, *g) {
 	// the assumption in gcControllerState.findRunnableGCWorker that an
 	// empty gcBgMarkWorkerPool is only possible if gcMarkDone is running.
 	lock(&sched.lock)
-	pp := pidleget()
+	pp, now := pidleget(0)
 	if pp == nil {
 		unlock(&sched.lock)
 		return nil, nil
@@ -3243,14 +3243,14 @@ func checkIdleGCNoP() (*p, *g) {
 
 	// Now that we own a P, gcBlackenEnabled can't change (as it requires STW).
 	if gcBlackenEnabled == 0 || !gcController.addIdleMarkWorker() {
-		pidleput(pp)
+		pidleput(pp, now)
 		unlock(&sched.lock)
 		return nil, nil
 	}
 
 	node := (*gcBgMarkWorkerNode)(gcBgMarkWorkerPool.pop())
 	if node == nil {
-		pidleput(pp)
+		pidleput(pp, now)
 		unlock(&sched.lock)
 		gcController.removeIdleMarkWorker()
 		return nil, nil
@@ -4168,7 +4168,7 @@ func exitsyscallfast_reacquired() {
 
 func exitsyscallfast_pidle() bool {
 	lock(&sched.lock)
-	_p_ := pidleget()
+	_p_, _ := pidleget(0)
 	if _p_ != nil && atomic.Load(&sched.sysmonwait) != 0 {
 		atomic.Store(&sched.sysmonwait, 0)
 		notewakeup(&sched.sysmonnote)
@@ -4196,7 +4196,7 @@ func exitsyscall0(gp *g) {
 	var _p_ *p
 	if schedEnabled(gp) {
 		// 如果gp能被调度，尝试获取p
-		_p_ = pidleget()
+		_p_, _ = pidleget(0)
 	}
 	var locked bool
 	if _p_ == nil {
@@ -4517,7 +4517,7 @@ func gfput(_p_ *p, gp *g) {
 
 	stksize := gp.stack.hi - gp.stack.lo
 
-	if stksize != _FixedStack {
+	if stksize != uintptr(startingStackSize) {
 		// non-standard stack size - free it.
 		stackfree(gp.stack)
 		gp.stack.lo = 0
@@ -4581,10 +4581,21 @@ retry:
 		return nil
 	}
 	_p_.gFree.n--
-	if gp.stack.lo == 0 {
-		// Stack was deallocated in gfput. Allocate a new one.
+	if gp.stack.lo != 0 && gp.stack.hi-gp.stack.lo != uintptr(startingStackSize) {
+		// Deallocate old stack. We kept it in gfput because it was the
+		// right size when the goroutine was put on the free list, but
+		// the right size has changed since then.
 		systemstack(func() {
-			gp.stack = stackalloc(_FixedStack)
+			stackfree(gp.stack)
+			gp.stack.lo = 0
+			gp.stack.hi = 0
+			gp.stackguard0 = 0
+		})
+	}
+	if gp.stack.lo == 0 {
+		// Stack was deallocated in gfput or just above. Allocate a new one.
+		systemstack(func() {
+			gp.stack = stackalloc(startingStackSize)
 		})
 		gp.stackguard0 = gp.stack.lo + _StackGuard
 	} else {
@@ -5238,7 +5249,7 @@ func procresize(nprocs int32) *p {
 		}
 		p.status = _Pidle // 标记p没有工作
 		if runqempty(p) { // 如果p本地可执行队列为空
-			pidleput(p) // 就存至空闲p列表中
+			pidleput(p, now)
 		} else {
 			// 如果有可执行的g就绑定m并加入runnablePs中
 			p.m.set(mget()) // 绑定m
@@ -5408,14 +5419,15 @@ func checkdead() {
 	// Maybe jump time forward for playground.
 	if faketime != 0 {
 		// timeSleepUntil返回下一个计时器应触发的时间，以及保存该计时器已打开的计时器堆的P。
-		when, _p_ := timeSleepUntil()
-		if _p_ != nil {
+		if when := timeSleepUntil(); when < maxWhen {
 			faketime = when
-			for pp := &sched.pidle; *pp != 0; pp = &(*pp).ptr().link {
-				if (*pp).ptr() == _p_ {
-					*pp = _p_.link
-					break
-				}
+
+			// Start an M to steal the timer.
+			pp, _ := pidleget(faketime)
+			if pp == nil {
+				// There should always be a free P since
+				// nothing is running.
+				throw("checkdead: no p for timer")
 			}
 			mp := mget()
 			if mp == nil {
@@ -5423,7 +5435,12 @@ func checkdead() {
 				// nothing is running.
 				throw("checkdead: no m for timer")
 			}
-			mp.nextp.set(_p_)
+			// M must be spinning to steal. We set this to be
+			// explicit, but since this is the only M it would
+			// become spinning on its own anyways.
+			atomic.Xadd(&sched.nmspinning, 1)
+			mp.spinning = true
+			mp.nextp.set(pp)
 			notewakeup(&mp.park)
 			return
 		}
@@ -5506,7 +5523,7 @@ func sysmon() {
 			lock(&sched.lock)
 			if atomic.Load(&sched.gcwaiting) != 0 || atomic.Load(&sched.npidle) == uint32(gomaxprocs) {
 				syscallWake := false
-				next, _ := timeSleepUntil()
+				next := timeSleepUntil()
 				if next > now {
 					atomic.Store(&sched.sysmonwait, 1)
 					unlock(&sched.lock)
@@ -5580,7 +5597,7 @@ func sysmon() {
 			//
 			// See issue 42515 and
 			// https://gnats.netbsd.org/cgi-bin/query-pr-single.pl?number=50094.
-			if next, _ := timeSleepUntil(); next < now {
+			if next := timeSleepUntil(); next < now {
 				startm(nil, false)
 			}
 		}
@@ -6065,8 +6082,8 @@ func updateTimerPMask(pp *p) {
 }
 
 // pidleput 将_p_添加到 _Pidle 列表，必须持有 schedt.lock
-// Put p to on _Pidle list.
-// pidleput puts p to on the _Pidle list.
+// pidleput puts p on the _Pidle list. now must be a relatively recent call
+// to nanotime or zero. Returns now or the current time if now was zero.
 //
 // This releases ownership of p. Once sched.lock is released it is no longer
 // safe to use p.
@@ -6076,17 +6093,24 @@ func updateTimerPMask(pp *p) {
 // May run during STW, so write barriers are not allowed.
 //
 //go:nowritebarrierrec
-func pidleput(_p_ *p) {
+func pidleput(_p_ *p, now int64) int64 {
 	assertLockHeld(&sched.lock)
 
 	if !runqempty(_p_) {
 		throw("pidleput: P has non-empty run queue")
 	}
+	if now == 0 {
+		now = nanotime()
+	}
 	updateTimerPMask(_p_) // clear if there are no timers.
 	idlepMask.set(_p_.id)
 	_p_.link = sched.pidle
 	sched.pidle.set(_p_)
-	atomic.Xadd(&sched.npidle, 1) // TODO: fast atomic
+	atomic.Xadd(&sched.npidle, 1)
+	if !_p_.limiterEvent.start(limiterEventIdle, now) {
+		throw("must be able to track idle limiter event")
+	}
+	return now
 }
 
 // pidleget 从_Pidle列表中获取一个空闲的P
@@ -6098,18 +6122,22 @@ func pidleput(_p_ *p) {
 // May run during STW, so write barriers are not allowed.
 //
 //go:nowritebarrierrec
-func pidleget() *p {
+func pidleget(now int64) (*p, int64) {
 	assertLockHeld(&sched.lock)
 
 	_p_ := sched.pidle.ptr()
 	if _p_ != nil {
 		// Timer may get added at any time now.
+		if now == 0 {
+			now = nanotime()
+		}
 		timerpMask.set(_p_.id)
 		idlepMask.clear(_p_.id)
 		sched.pidle = _p_.link
-		atomic.Xadd(&sched.npidle, -1) // TODO: fast atomic
+		atomic.Xadd(&sched.npidle, -1)
+		_p_.limiterEvent.stop(limiterEventIdle, now)
 	}
-	return _p_
+	return _p_, now
 }
 
 // runqempty 返回_p_本地运行队列和_p_.runnext是否有G
@@ -6370,7 +6398,7 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 						// between different Ps.
 						// A sync chan send/recv takes ~50ns as of time of
 						// writing, so 3us gives ~50x overshoot.
-						if GOOS != "windows" && GOOS != "openbsd" {
+						if GOOS != "windows" && GOOS != "openbsd" && GOOS != "netbsd" {
 							usleep(3)
 						} else {
 							// On some platforms system timer granularity is
