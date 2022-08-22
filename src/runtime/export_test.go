@@ -84,23 +84,23 @@ func GCMask(x any) (ret []byte) {
 }
 
 func RunSchedLocalQueueTest() {
-	_p_ := new(p)
-	gs := make([]g, len(_p_.runq))
+	pp := new(p)
+	gs := make([]g, len(pp.runq))
 	Escape(gs) // Ensure gs doesn't move, since we use guintptrs
-	for i := 0; i < len(_p_.runq); i++ {
-		if g, _ := runqget(_p_); g != nil {
+	for i := 0; i < len(pp.runq); i++ {
+		if g, _ := runqget(pp); g != nil {
 			throw("runq is not empty initially")
 		}
 		for j := 0; j < i; j++ {
-			runqput(_p_, &gs[i], false)
+			runqput(pp, &gs[i], false)
 		}
 		for j := 0; j < i; j++ {
-			if g, _ := runqget(_p_); g != &gs[i] {
+			if g, _ := runqget(pp); g != &gs[i] {
 				print("bad element at iter ", i, "/", j, "\n")
 				throw("bad element")
 			}
 		}
-		if g, _ := runqget(_p_); g != nil {
+		if g, _ := runqget(pp); g != nil {
 			throw("runq is not empty afterwards")
 		}
 	}
@@ -312,9 +312,9 @@ func ReadMetricsSlow(memStats *MemStats, samplesp unsafe.Pointer, len, cap int) 
 
 	// Initialize the metrics beforehand because this could
 	// allocate and skew the stats.
-	semacquire(&metricsSema)
+	metricsLock()
 	initMetrics()
-	semrelease(&metricsSema)
+	metricsUnlock()
 
 	systemstack(func() {
 		// Read memstats first. It's going to flush
@@ -460,17 +460,17 @@ func MapBucketsPointerIsNil(m map[int]int) bool {
 }
 
 func LockOSCounts() (external, internal uint32) {
-	g := getg()
-	if g.m.lockedExt+g.m.lockedInt == 0 {
-		if g.lockedm != 0 {
+	gp := getg()
+	if gp.m.lockedExt+gp.m.lockedInt == 0 {
+		if gp.lockedm != 0 {
 			panic("lockedm on non-locked goroutine")
 		}
 	} else {
-		if g.lockedm == 0 {
+		if gp.lockedm == 0 {
 			panic("nil lockedm on locked goroutine")
 		}
 	}
-	return g.m.lockedExt, g.m.lockedInt
+	return gp.m.lockedExt, gp.m.lockedInt
 }
 
 //go:noinline
@@ -1196,8 +1196,6 @@ func (t *SemTable) Dequeue(addr *uint32) bool {
 }
 
 // mspan wrapper for testing.
-//
-//go:notinheap
 type MSpan mspan
 
 // Allocate an mspan for testing.
@@ -1244,9 +1242,9 @@ func (th *TimeHistogram) Count(bucket, subBucket uint) (uint64, bool) {
 	t := (*timeHistogram)(th)
 	i := bucket*TimeHistNumSubBuckets + subBucket
 	if i >= uint(len(t.counts)) {
-		return t.underflow, false
+		return t.underflow.Load(), false
 	}
-	return t.counts[i], true
+	return t.counts[i].Load(), true
 }
 
 func (th *TimeHistogram) Record(duration int64) {
@@ -1322,10 +1320,10 @@ func (c *GCController) StartCycle(stackSize, globalsSize uint64, scannableFrac f
 	if c.heapMarked > trigger {
 		trigger = c.heapMarked
 	}
-	c.maxStackScan = stackSize
-	c.globalsScan = globalsSize
-	c.heapLive = trigger
-	c.heapScan += uint64(float64(trigger-c.heapMarked) * scannableFrac)
+	c.maxStackScan.Store(stackSize)
+	c.globalsScan.Store(globalsSize)
+	c.heapLive.Store(trigger)
+	c.heapScan.Add(int64(float64(trigger-c.heapMarked) * scannableFrac))
 	c.startCycle(0, gomaxprocs, gcTrigger{kind: gcTriggerHeap})
 }
 
@@ -1338,7 +1336,7 @@ func (c *GCController) HeapGoal() uint64 {
 }
 
 func (c *GCController) HeapLive() uint64 {
-	return c.heapLive
+	return c.heapLive.Load()
 }
 
 func (c *GCController) HeapMarked() uint64 {
@@ -1358,8 +1356,8 @@ type GCControllerReviseDelta struct {
 }
 
 func (c *GCController) Revise(d GCControllerReviseDelta) {
-	c.heapLive += uint64(d.HeapLive)
-	c.heapScan += uint64(d.HeapScan)
+	c.heapLive.Add(d.HeapLive)
+	c.heapScan.Add(d.HeapScan)
 	c.heapScanWork.Add(d.HeapScanWork)
 	c.stackScanWork.Add(d.StackScanWork)
 	c.globalsScanWork.Add(d.GlobalsScanWork)

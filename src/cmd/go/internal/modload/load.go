@@ -607,7 +607,7 @@ func resolveLocalPackage(ctx context.Context, dir string, rs *Requirements) (str
 	if pkg == "" {
 		if inWorkspaceMode() {
 			if mr := findModuleRoot(absDir); mr != "" {
-				return "", fmt.Errorf("directory %s is contained in a module that is not one of the workspace modules listed in go.work. You can add the module to the workspace using go work use %s", base.ShortPath(absDir), base.ShortPath(mr))
+				return "", fmt.Errorf("directory %s is contained in a module that is not one of the workspace modules listed in go.work. You can add the module to the workspace using:\n\tgo work use %s", base.ShortPath(absDir), base.ShortPath(mr))
 			}
 			return "", fmt.Errorf("directory %s outside modules listed in go.work or their selected dependencies", base.ShortPath(absDir))
 		}
@@ -2102,8 +2102,8 @@ func (ld *loader) checkTidyCompatibility(ctx context.Context, rs *Requirements) 
 // may see these legacy imports. We drop them so that the module
 // search does not look for modules to try to satisfy them.
 func scanDir(modroot string, dir string, tags map[string]bool) (imports_, testImports []string, err error) {
-	if mi, mierr := modindex.Get(modroot); mierr == nil {
-		imports_, testImports, err = mi.ScanDir(mi.RelPath(dir), tags)
+	if ip, mierr := modindex.GetPackage(modroot, dir); mierr == nil {
+		imports_, testImports, err = ip.ScanDir(tags)
 		goto Happy
 	} else if !errors.Is(mierr, modindex.ErrNotIndexed) {
 		return nil, nil, mierr

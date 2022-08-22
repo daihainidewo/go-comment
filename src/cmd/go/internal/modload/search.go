@@ -195,7 +195,7 @@ func matchPackages(ctx context.Context, m *search.Match, tags map[string]bool, f
 			}
 			modPrefix = mod.Path
 		}
-		if mi, err := modindex.Get(root); err == nil {
+		if mi, err := modindex.GetModule(root); err == nil {
 			walkFromIndex(mi, modPrefix, isMatch, treeCanMatch, tags, have, addPkg)
 			continue
 		} else if !errors.Is(err, modindex.ErrNotIndexed) {
@@ -213,24 +213,23 @@ func matchPackages(ctx context.Context, m *search.Match, tags map[string]bool, f
 }
 
 // walkFromIndex matches packages in a module using the module index. modroot
-// is the module's root directory on disk, index is the ModuleIndex for the
+// is the module's root directory on disk, index is the modindex.Module for the
 // module, and importPathRoot is the module's path prefix.
-func walkFromIndex(index *modindex.ModuleIndex, importPathRoot string, isMatch, treeCanMatch func(string) bool, tags, have map[string]bool, addPkg func(string)) {
-loopPackages:
-	for _, reldir := range index.Packages() {
+func walkFromIndex(index *modindex.Module, importPathRoot string, isMatch, treeCanMatch func(string) bool, tags, have map[string]bool, addPkg func(string)) {
+	index.Walk(func(reldir string) {
 		// Avoid .foo, _foo, and testdata subdirectory trees.
 		p := reldir
 		for {
 			elem, rest, found := strings.Cut(p, string(filepath.Separator))
 			if strings.HasPrefix(elem, ".") || strings.HasPrefix(elem, "_") || elem == "testdata" {
-				continue loopPackages
+				return
 			}
 			if found && elem == "vendor" {
 				// Ignore this path if it contains the element "vendor" anywhere
 				// except for the last element (packages named vendor are allowed
 				// for historical reasons). Note that found is true when this
 				// isn't the last path element.
-				continue loopPackages
+				return
 			}
 			if !found {
 				// Didn't find the separator, so we're considering the last element.
@@ -241,23 +240,23 @@ loopPackages:
 
 		// Don't use GOROOT/src.
 		if reldir == "" && importPathRoot == "" {
-			continue
+			return
 		}
 
 		name := path.Join(importPathRoot, filepath.ToSlash(reldir))
 		if !treeCanMatch(name) {
-			continue
+			return
 		}
 
 		if !have[name] {
 			have[name] = true
 			if isMatch(name) {
-				if _, _, err := index.ScanDir(reldir, tags); err != imports.ErrNoGo {
+				if _, _, err := index.Package(reldir).ScanDir(tags); err != imports.ErrNoGo {
 					addPkg(name)
 				}
 			}
 		}
-	}
+	})
 }
 
 // MatchInModule identifies the packages matching the given pattern within the

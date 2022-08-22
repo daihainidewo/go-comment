@@ -7,6 +7,7 @@ package runtime
 import (
 	"internal/goarch"
 	"runtime/internal/atomic"
+	"runtime/internal/sys"
 	"unsafe"
 )
 
@@ -404,8 +405,8 @@ type workbufhdr struct {
 }
 
 // workbuf 填充整个 span 空间
-//go:notinheap
 type workbuf struct {
+	_ sys.NotInHeap
 	workbufhdr
 	// account for the above fields
 	obj [(_WorkbufSize - unsafe.Sizeof(workbufhdr{})) / goarch.PtrSize]uintptr

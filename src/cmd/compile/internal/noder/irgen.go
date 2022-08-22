@@ -41,7 +41,7 @@ func checkFiles(noders []*noder) (posMap, *types2.Package, *types2.Info) {
 	conf := types2.Config{
 		Context:               ctxt,
 		GoVersion:             base.Flag.Lang,
-		IgnoreLabels:          true, // parser already checked via syntax.CheckBranches mode
+		IgnoreBranchErrors:    true, // parser already checked via syntax.CheckBranches mode
 		CompilerErrorMessages: true, // use error strings matching existing compiler errors
 		Error: func(err error) {
 			terr := err.(types2.Error)
@@ -219,7 +219,6 @@ type typeDelayInfo struct {
 
 func (g *irgen) generate(noders []*noder) {
 	types.LocalPkg.Name = g.self.Name()
-	types.LocalPkg.Height = g.self.Height()
 	typecheck.TypecheckAllowed = true
 
 	// Prevent size calculations until we set the underlying type

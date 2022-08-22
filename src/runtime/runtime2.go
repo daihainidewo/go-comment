@@ -470,13 +470,12 @@ type g struct {
 	// 3. By debugCallWrap to pass parameters to a new goroutine because allocating a
 	//    closure in the runtime is forbidden.
 	param        unsafe.Pointer
-	atomicstatus uint32   // g 的原子状态
-	stackLock    uint32   // sigprof/scang lock; TODO: fold in to atomicstatus
-	goid         int64    // goroutine的编号
-	schedlink    guintptr // 调度链接下一个g，gFree
-	waitsince    int64    // approx time when the g become blocked
-	// 等待缘由
-	waitreason waitReason // if status==Gwaiting
+	atomicstatus uint32
+	stackLock    uint32 // sigprof/scang lock; TODO: fold in to atomicstatus
+	goid         uint64
+	schedlink    guintptr
+	waitsince    int64      // approx time when the g become blocked
+	waitreason   waitReason // if status==Gwaiting
 
 	preempt       bool // 抢占标志位 preemption signal, duplicates stackguard0 = stackpreempt
 	preemptStop   bool // transition to _Gpreempted on preemption; otherwise, just deschedule
@@ -497,8 +496,8 @@ type g struct {
 	activeStackChans bool // 存在没有锁定的堆栈channel 所以复制栈帧时需要锁保护栈帧
 	// parkingOnChan indicates that the goroutine is about to
 	// park on a chansend or chanrecv. Used to signal an unsafe point
-	// for stack shrinking. It's a boolean value, but is updated atomically.
-	parkingOnChan uint8 // 处于 chansend 或 chanrecv 状态，标记缩小栈不安全标志
+	// for stack shrinking.
+	parkingOnChan atomic.Bool // 处于 chansend 或 chanrecv 状态，标记缩小栈不安全标志
 
 	raceignore     int8     // ignore race detection events
 	sysblocktraced bool     // StartTrace has emitted EvGoInSyscall about this goroutine
@@ -589,12 +588,12 @@ type m struct {
 	fastrand      uint64 // 随机数种子
 	needextram    bool
 	traceback     uint8
-	ncgocall      uint64      // number of cgo calls in total
-	ncgo          int32       // number of cgo calls currently in progress
-	cgoCallersUse uint32      // if non-zero, cgoCallers in use temporarily
-	cgoCallers    *cgoCallers // cgo traceback if crashing in cgo call
-	park          note        // 休眠的标记
-	alllink       *m          // on allm
+	ncgocall      uint64        // number of cgo calls in total
+	ncgo          int32         // number of cgo calls currently in progress
+	cgoCallersUse atomic.Uint32 // if non-zero, cgoCallers in use temporarily
+	cgoCallers    *cgoCallers   // cgo traceback if crashing in cgo call
+	park          note
+	alllink       *m // on allm
 	schedlink     muintptr
 	lockedg       guintptr
 	createstack   [32]uintptr // stack that created this thread.
@@ -623,12 +622,11 @@ type m struct {
 
 	// preemptGen counts the number of completed preemption
 	// signals. This is used to detect when a preemption is
-	// requested, but fails. Accessed atomically.
-	preemptGen uint32
+	// requested, but fails.
+	preemptGen atomic.Uint32
 
 	// Whether this is a pending preemption signal on this M.
-	// Accessed atomically.
-	signalPending uint32
+	signalPending atomic.Uint32
 
 	dlogPerM
 
@@ -711,19 +709,15 @@ type p struct {
 	// 持久化小块内存分配器
 	palloc persistentAlloc // per-P to avoid mutex
 
-	_ uint32 // Alignment for atomic fields below
-
 	// The when field of the first entry on the timer heap.
-	// This is updated using atomic functions.
 	// This is 0 if the timer heap is empty.
-	timer0When uint64
+	timer0When atomic.Int64
 
 	// The earliest known nextwhen field of a timer with
 	// timerModifiedEarlier status. Because the timer may have been
 	// modified again, there need not be any timer with this value.
-	// This is updated using atomic functions.
 	// This is 0 if there are no timerModifiedEarlier timers.
-	timerModifiedEarliest uint64
+	timerModifiedEarliest atomic.Int64
 
 	// Per-P GC state
 	gcAssistTime         int64 // Nanoseconds in assistAlloc
@@ -804,10 +798,9 @@ type p struct {
 }
 
 type schedt struct {
-	// accessed atomically. keep at top to ensure alignment on 32-bit systems.
-	goidgen   uint64 // 已分配的goroutine id的值
-	lastpoll  uint64 // time of last network poll, 0 if currently polling
-	pollUntil uint64 // time to which current poll is sleeping
+	goidgen   atomic.Uint64 // 已分配的goroutine id的值
+	lastpoll  atomic.Int64 // time of last network poll, 0 if currently polling
+	pollUntil atomic.Int64 // time to which current poll is sleeping
 
 	lock mutex // schedt 锁结构体
 
@@ -822,11 +815,12 @@ type schedt struct {
 	nmsys        int32    // 系统M个数，不包括锁定的M，只包括 templateThread 和 sysmon
 	nmfreed      int64    // 累计释放 M 的个数
 
-	ngsys uint32 // 系统goroutine的个数
+	ngsys atomic.Int32 // number of system goroutines
 
-	pidle      puintptr // 空闲的P列表
-	npidle     uint32   // 空闲P的数目
-	nmspinning uint32   // 自旋m的个数 See "Worker thread parking/unparking" comment in proc.go.
+	pidle        puintptr // idle p's
+	npidle       atomic.Int32
+	nmspinning   atomic.Int32  // See "Worker thread parking/unparking" comment in proc.go.
+	needspinning atomic.Uint32 // See "Delicate dance" comment in proc.go. Boolean. Must hold sched.lock to set to 1.
 
 	// Global runnable queue.
 	runq     gQueue // 等待执行g的队列
@@ -865,10 +859,10 @@ type schedt struct {
 	// m.exited is set. Linked through m.freelink.
 	freem *m // 等待被释放的m列表
 
-	gcwaiting  uint32 // gc is waiting to run
+	gcwaiting  atomic.Bool // gc is waiting to run
 	stopwait   int32
 	stopnote   note
-	sysmonwait uint32 // 进入 sysmon 中
+	sysmonwait atomic.Bool
 	sysmonnote note
 
 	// safepointFn should be called on each P at the next GC
@@ -889,11 +883,11 @@ type schedt struct {
 	// with the rest of the runtime.
 	sysmonlock mutex
 
+	_ uint32 // ensure timeToRun has 8-byte alignment
+
 	// timeToRun is a distribution of scheduling latencies, defined
 	// as the sum of time a G spends in the _Grunnable state before
 	// it transitions to _Grunning.
-	//
-	// timeToRun is protected by sched.lock.
 	timeToRun timeHistogram
 }
 
@@ -1090,7 +1084,7 @@ type stkframe struct {
 // ancestorInfo records details of where a goroutine was started.
 type ancestorInfo struct {
 	pcs  []uintptr // pcs from the stack of this goroutine
-	goid int64     // goroutine id of this goroutine; original goroutine possibly dead
+	goid uint64    // goroutine id of this goroutine; original goroutine possibly dead
 	gopc uintptr   // pc of go statement that created this goroutine
 }
 

@@ -10,6 +10,7 @@ package runtime
 import (
 	"internal/abi"
 	"runtime/internal/atomic"
+	"runtime/internal/sys"
 	"unsafe"
 )
 
@@ -57,9 +58,8 @@ type bucketType int
 // creation, including its next and allnext links.
 //
 // No heap pointers.
-//
-//go:notinheap
 type bucket struct {
+	_       sys.NotInHeap
 	next    *bucket
 	allnext *bucket
 	typ     bucketType // memBucket or blockBucket (includes mutexProfile)
@@ -948,7 +948,7 @@ func goroutineProfileWithLabelsConcurrent(p []StackRecord, labels []unsafe.Point
 	goroutineProfile.active = true
 	goroutineProfile.records = p
 	goroutineProfile.labels = labels
-	// The finializer goroutine needs special handling because it can vary over
+	// The finalizer goroutine needs special handling because it can vary over
 	// time between being a user goroutine (eligible for this profile) and a
 	// system goroutine (to be excluded). Pick one before restarting the world.
 	if fing != nil {

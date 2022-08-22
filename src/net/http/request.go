@@ -317,14 +317,14 @@ type Request struct {
 	Response *Response
 
 	// ctx is either the client or server context. It should only
-	// be modified via copying the whole Request using WithContext.
+	// be modified via copying the whole Request using Clone or WithContext.
 	// It is unexported to prevent people from using Context wrong
 	// and mutating the contexts held by callers of the same request.
 	ctx context.Context
 }
 
 // Context returns the request's context. To change the context, use
-// WithContext.
+// Clone or WithContext.
 //
 // The returned context is always non-nil; it defaults to the
 // background context.
@@ -349,9 +349,7 @@ func (r *Request) Context() context.Context {
 // sending the request, and reading the response headers and body.
 //
 // To create a new request with a context, use NewRequestWithContext.
-// To change the context of a request, such as an incoming request you
-// want to modify before sending back out, use Request.Clone. Between
-// those two uses, it's rare to need WithContext.
+// To make a deep copy of a request with a new context, use Request.Clone.
 func (r *Request) WithContext(ctx context.Context) *Request {
 	if ctx == nil {
 		panic("nil context")
@@ -418,6 +416,9 @@ var ErrNoCookie = errors.New("http: named cookie not present")
 // If multiple cookies match the given name, only one cookie will
 // be returned.
 func (r *Request) Cookie(name string) (*Cookie, error) {
+	if name == "" {
+		return nil, ErrNoCookie
+	}
 	for _, c := range readCookies(r.Header, name) {
 		return c, nil
 	}
@@ -1134,8 +1135,8 @@ func readRequest(b *bufio.Reader) (req *Request, err error) {
 // MaxBytesReader is similar to io.LimitReader but is intended for
 // limiting the size of incoming request bodies. In contrast to
 // io.LimitReader, MaxBytesReader's result is a ReadCloser, returns a
-// MaxBytesError for a Read beyond the limit, and closes the
-// underlying reader when its Close method is called.
+// non-nil error of type *MaxBytesError for a Read beyond the limit,
+// and closes the underlying reader when its Close method is called.
 //
 // MaxBytesReader prevents clients from accidentally or maliciously
 // sending a large request and wasting server resources. If possible,

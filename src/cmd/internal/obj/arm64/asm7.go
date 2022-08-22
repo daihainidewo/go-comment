@@ -1557,6 +1557,10 @@ func sequenceOfOnes(x uint64) bool {
 // N=0, S=11110x -- period=2
 // R is the shift amount, low bits of S = n-1
 func bitconEncode(x uint64, mode int) uint32 {
+	if mode == 32 {
+		x &= 0xffffffff
+		x = x<<32 | x
+	}
 	var period uint32
 	// determine the period and sign-extend a unit to 64 bits
 	switch {
@@ -1825,17 +1829,24 @@ func rclass(r int16) int {
 // but saved in Offset which type is int64, con32class treats it as uint32 type and reclassifies it.
 func (c *ctxt7) con32class(a *obj.Addr) int {
 	v := uint32(a.Offset)
+	// For 32-bit instruction with constant, rewrite
+	// the high 32-bit to be a repetition of the low
+	// 32-bit, so that the BITCON test can be shared
+	// for both 32-bit and 64-bit. 32-bit ops will
+	// zero the high 32-bit of the destination register
+	// anyway.
+	vbitcon := uint64(v)<<32 | uint64(v)
 	if v == 0 {
 		return C_ZCON
 	}
 	if isaddcon(int64(v)) {
 		if v <= 0xFFF {
-			if isbitcon(uint64(a.Offset)) {
+			if isbitcon(vbitcon) {
 				return C_ABCON0
 			}
 			return C_ADDCON0
 		}
-		if isbitcon(uint64(a.Offset)) {
+		if isbitcon(vbitcon) {
 			return C_ABCON
 		}
 		if movcon(int64(v)) >= 0 {
@@ -1849,7 +1860,7 @@ func (c *ctxt7) con32class(a *obj.Addr) int {
 
 	t := movcon(int64(v))
 	if t >= 0 {
-		if isbitcon(uint64(a.Offset)) {
+		if isbitcon(vbitcon) {
 			return C_MBCON
 		}
 		return C_MOVCON
@@ -1857,13 +1868,13 @@ func (c *ctxt7) con32class(a *obj.Addr) int {
 
 	t = movcon(int64(^v))
 	if t >= 0 {
-		if isbitcon(uint64(a.Offset)) {
+		if isbitcon(vbitcon) {
 			return C_MBCON
 		}
 		return C_MOVCON
 	}
 
-	if isbitcon(uint64(a.Offset)) {
+	if isbitcon(vbitcon) {
 		return C_BITCON
 	}
 
@@ -3143,6 +3154,9 @@ func buildop(ctxt *obj.Link) {
 		case AVUADDW:
 			oprangeset(AVUADDW2, t)
 
+		case AVTBL:
+			oprangeset(AVTBX, t)
+
 		case ASHA1H,
 			AVCNT,
 			AVMOV,
@@ -3151,7 +3165,6 @@ func buildop(ctxt *obj.Link) {
 			AVST2,
 			AVST3,
 			AVST4,
-			AVTBL,
 			AVDUP,
 			AVMOVI,
 			APRFM,
@@ -5468,7 +5481,7 @@ func (c *ctxt7) asmout(p *obj.Prog, o *Optab, out []uint32) {
 		rf := int(p.From.Reg)
 		o1 |= uint32(rf & 31)
 
-	case 100: /* VTBL Vn.<T>, [Vt1.<T>, Vt2.<T>, ...], Vd.<T> */
+	case 100: /* VTBL/VTBX Vn.<T>, [Vt1.<T>, Vt2.<T>, ...], Vd.<T> */
 		af := int((p.From.Reg >> 5) & 15)
 		at := int((p.To.Reg >> 5) & 15)
 		if af != at {
@@ -5499,7 +5512,14 @@ func (c *ctxt7) asmout(p *obj.Prog, o *Optab, out []uint32) {
 		default:
 			c.ctxt.Diag("invalid register numbers in ARM64 register list: %v", p)
 		}
-		o1 = q<<30 | 0xe<<24 | len<<13
+		var op uint32
+		switch p.As {
+		case AVTBL:
+			op = 0
+		case AVTBX:
+			op = 1
+		}
+		o1 = q<<30 | 0xe<<24 | len<<13 | op<<12
 		o1 |= (uint32(rf&31) << 16) | uint32(offset&31)<<5 | uint32(rt&31)
 
 	case 101: // VMOVQ $vcon1, $vcon2, Vd or VMOVD|VMOVS $vcon, Vd -> FMOVQ/FMOVD/FMOVS pool(PC), Vd: load from constant pool.

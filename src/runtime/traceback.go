@@ -7,7 +7,6 @@ package runtime
 import (
 	"internal/bytealg"
 	"internal/goarch"
-	"runtime/internal/atomic"
 	"runtime/internal/sys"
 	"unsafe"
 )
@@ -820,10 +819,10 @@ func traceback1(pc, sp, lr uintptr, gp *g, flags uint) {
 		// concurrently with a signal handler.
 		// We just have to stop a signal handler from interrupting
 		// in the middle of our copy.
-		atomic.Store(&gp.m.cgoCallersUse, 1)
+		gp.m.cgoCallersUse.Store(1)
 		cgoCallers := *gp.m.cgoCallers
 		gp.m.cgoCallers[0] = 0
-		atomic.Store(&gp.m.cgoCallersUse, 0)
+		gp.m.cgoCallersUse.Store(0)
 
 		printCgoTraceback(&cgoCallers)
 	}
@@ -926,8 +925,8 @@ func gcallers(gp *g, skip int, pcbuf []uintptr) int {
 // showframe reports whether the frame with the given characteristics should
 // be printed during a traceback.
 func showframe(f funcInfo, gp *g, firstFrame bool, funcID, childID funcID) bool {
-	g := getg()
-	if g.m.throwing >= throwTypeRuntime && gp != nil && (gp == g.m.curg || gp == g.m.caughtsig.ptr()) {
+	mp := getg().m
+	if mp.throwing >= throwTypeRuntime && gp != nil && (gp == mp.curg || gp == mp.caughtsig.ptr()) {
 		return true
 	}
 	return showfuncinfo(f, firstFrame, funcID, childID)
@@ -1054,10 +1053,10 @@ func tracebackothers(me *g) {
 		}
 		print("\n")
 		goroutineheader(gp)
-		// Note: gp.m == g.m occurs when tracebackothers is
-		// called from a signal handler initiated during a
-		// systemstack call. The original G is still in the
-		// running state, and we want to print its stack.
+		// Note: gp.m == getg().m occurs when tracebackothers is called
+		// from a signal handler initiated during a systemstack call.
+		// The original G is still in the running state, and we want to
+		// print its stack.
 		if gp.m != getg().m && readgstatus(gp)&^_Gscan == _Grunning {
 			print("\tgoroutine running on other thread; stack unavailable\n")
 			printcreatedby(gp)
@@ -1125,7 +1124,7 @@ func tracebackHexdump(stk stack, frame *stkframe, bad uintptr) {
 // system (that is, the finalizer goroutine) is considered a user
 // goroutine.
 func isSystemGoroutine(gp *g, fixed bool) bool {
-	// Keep this in sync with cmd/trace/trace.go:isSystemGoroutine.
+	// Keep this in sync with internal/trace.IsSystemGoroutine.
 	f := findfunc(gp.startpc)
 	if !f.valid() {
 		return false
@@ -1412,7 +1411,7 @@ func printOneCgoTraceback(pc uintptr, max int, arg *cgoSymbolizerArg) int {
 // callCgoSymbolizer calls the cgoSymbolizer function.
 func callCgoSymbolizer(arg *cgoSymbolizerArg) {
 	call := cgocall
-	if panicking > 0 || getg().m.curg != getg() {
+	if panicking.Load() > 0 || getg().m.curg != getg() {
 		// We do not want to call into the scheduler when panicking
 		// or when on the system stack.
 		call = asmcgocall
@@ -1432,7 +1431,7 @@ func cgoContextPCs(ctxt uintptr, buf []uintptr) {
 		return
 	}
 	call := cgocall
-	if panicking > 0 || getg().m.curg != getg() {
+	if panicking.Load() > 0 || getg().m.curg != getg() {
 		// We do not want to call into the scheduler when panicking
 		// or when on the system stack.
 		call = asmcgocall

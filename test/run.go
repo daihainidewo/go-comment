@@ -58,7 +58,7 @@ type envVars struct {
 }
 
 var env = func() (res envVars) {
-	cmd := exec.Command("go", "env", "-json")
+	cmd := exec.Command(goTool(), "env", "-json")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Fatal("StdoutPipe:", err)
@@ -75,10 +75,14 @@ var env = func() (res envVars) {
 	return
 }()
 
-// TODO(mdempsky): This will give false negatives if the unified
-// experiment is enabled by default, but presumably at that point we
-// won't need to disable tests for it anymore anyway.
-var unifiedEnabled = strings.Contains(","+env.GOEXPERIMENT+",", ",unified,")
+var unifiedEnabled = func() bool {
+	for _, tag := range build.Default.ToolTags {
+		if tag == "goexperiment.unified" {
+			return true
+		}
+	}
+	return false
+}()
 
 // defaultAllCodeGen returns the default value of the -all_codegen
 // flag. By default, we prefer to be fast (returning false), except on
@@ -86,6 +90,10 @@ var unifiedEnabled = strings.Contains(","+env.GOEXPERIMENT+",", ",unified,")
 // test coverage on trybots. See https://golang.org/issue/34297.
 func defaultAllCodeGen() bool {
 	return os.Getenv("GO_BUILDER_NAME") == "linux-amd64"
+}
+
+func optimizationOff() bool {
+	return strings.HasSuffix(os.Getenv("GO_BUILDER_NAME"), "-noopt")
 }
 
 var (
@@ -525,7 +533,13 @@ func (ctxt *context) match(name string) bool {
 	return false
 }
 
-func init() { checkShouldTest() }
+func init() {
+	checkShouldTest()
+	// TODO(cuonglm): remove once we fix non-unified frontend or when it gone.
+	if optimizationOff() {
+		delete(go118Failures, "fixedbugs/issue53702.go")
+	}
+}
 
 // goGcflags returns the -gcflags argument to use with go build / go run.
 // This must match the flags used for building the standard library,
@@ -710,6 +724,22 @@ func (t *test) run() {
 		if tempDirIsGOPATH {
 			cmd.Env = append(cmd.Env, "GOPATH="+t.tempDir)
 		}
+		// Put the bin directory of the GOROOT that built this program
+		// first in the path. This ensures that tests that use the "go"
+		// tool use the same one that built this program. This ensures
+		// that if you do "../bin/go run run.go" in this directory, all
+		// the tests that start subprocesses that "go tool compile" or
+		// whatever, use ../bin/go as their go tool, not whatever happens
+		// to be first in the user's path.
+		path := os.Getenv("PATH")
+		newdir := filepath.Join(runtime.GOROOT(), "bin")
+		if path != "" {
+			path = newdir + string(filepath.ListSeparator) + path
+		} else {
+			path = newdir
+		}
+		cmd.Env = append(cmd.Env, "PATH="+path)
+
 		cmd.Env = append(cmd.Env, runenv...)
 
 		var err error
@@ -1867,14 +1897,6 @@ func checkShouldTest() {
 	assert(shouldTest("// +build !windows !plan9", "windows", "amd64"))
 }
 
-func getenv(key, def string) string {
-	value := os.Getenv(key)
-	if value != "" {
-		return value
-	}
-	return def
-}
-
 // overlayDir makes a minimal-overhead copy of srcRoot in which new files may be added.
 func overlayDir(dstRoot, srcRoot string) error {
 	dstRoot = filepath.Clean(dstRoot)
@@ -1964,10 +1986,15 @@ var types2Failures32Bit = setOf(
 )
 
 var go118Failures = setOf(
-	"typeparam/nested.go",     // 1.18 compiler doesn't support function-local types with generics
-	"typeparam/issue51521.go", // 1.18 compiler produces bad panic message and link error
-	"typeparam/issue53419.go", // 1.18 compiler mishandles generic selector resolution
-	"typeparam/issue53477.go", // 1.18 compiler mishandles generic interface-interface comparisons from value switch statements
+	"fixedbugs/issue53702.go",  // 1.18 compiler failed with "Value live at entry" error
+	"fixedbugs/issue54343.go",  // 1.18 compiler assigns receiver parameter to global variable
+	"typeparam/nested.go",      // 1.18 compiler doesn't support function-local types with generics
+	"typeparam/issue51521.go",  // 1.18 compiler produces bad panic message and link error
+	"typeparam/issue54497.go",  // 1.18 compiler is more conservative about inlining due to repeated issues
+	"typeparam/mdempsky/16.go", // 1.18 compiler uses interface shape type in failed type assertions
+	"typeparam/mdempsky/17.go", // 1.18 compiler mishandles implicit conversions from range loops
+	"typeparam/mdempsky/18.go", // 1.18 compiler mishandles implicit conversions in select statements
+	"typeparam/mdempsky/20.go", // 1.18 compiler crashes on method expressions promoted to derived types
 )
 
 // In all of these cases, the 1.17 compiler reports reasonable errors, but either the
@@ -1995,18 +2022,10 @@ var _ = setOf(
 )
 
 var unifiedFailures = setOf(
-	"closure3.go",  // unified IR numbers closures differently than -d=inlfuncswithclosures
-	"escape4.go",   // unified IR can inline f5 and f6; test doesn't expect this
-	"inline.go",    // unified IR reports function literal diagnostics on different lines than -d=inlfuncswithclosures
-	"linkname3.go", // unified IR is missing some linkname errors
+	"closure3.go", // unified IR numbers closures differently than -d=inlfuncswithclosures
+	"escape4.go",  // unified IR can inline f5 and f6; test doesn't expect this
 
-	"fixedbugs/issue42284.go",  // prints "T(0) does not escape", but test expects "a.I(a.T(0)) does not escape"
-	"fixedbugs/issue7921.go",   // prints "… escapes to heap", but test expects "string(…) escapes to heap"
-	"typeparam/issue47631.go",  // unified IR can handle local type declarations
-	"fixedbugs/issue42058a.go", // unified IR doesn't report channel element too large
-	"fixedbugs/issue42058b.go", // unified IR doesn't report channel element too large
-	"fixedbugs/issue49767.go",  // unified IR doesn't report channel element too large
-	"fixedbugs/issue49814.go",  // unified IR doesn't report array type too large
+	"typeparam/issue47631.go", // unified IR can handle local type declarations
 )
 
 func setOf(keys ...string) map[string]bool {

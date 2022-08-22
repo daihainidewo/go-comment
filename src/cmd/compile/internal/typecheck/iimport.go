@@ -11,8 +11,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"go/constant"
+	"io"
 	"math/big"
-	"os"
 	"strings"
 
 	"cmd/compile/internal/base"
@@ -148,12 +148,10 @@ func ReadImports(pkg *types.Pkg, data string) {
 	sLen := int64(ird.uint64())
 	dLen := int64(ird.uint64())
 
-	// TODO(mdempsky): Replace os.SEEK_CUR with io.SeekCurrent after
-	// #44505 is fixed.
-	whence, _ := ird.Seek(0, os.SEEK_CUR)
+	whence, _ := ird.Seek(0, io.SeekCurrent)
 	stringData := data[whence : whence+sLen]
 	declData := data[whence+sLen : whence+sLen+dLen]
-	ird.Seek(sLen+dLen, os.SEEK_CUR)
+	ird.Seek(sLen+dLen, io.SeekCurrent)
 
 	p := &iimporter{
 		exportVersion: version,
@@ -175,10 +173,9 @@ func ReadImports(pkg *types.Pkg, data string) {
 	for nPkgs := ird.uint64(); nPkgs > 0; nPkgs-- {
 		pkg := p.pkgAt(ird.uint64())
 		pkgName := p.stringAt(ird.uint64())
-		pkgHeight := int(ird.uint64())
+		_ = int(ird.uint64()) // was package height, but not necessary anymore.
 		if pkg.Name == "" {
 			pkg.Name = pkgName
-			pkg.Height = pkgHeight
 			types.NumImport[pkgName]++
 
 			// TODO(mdempsky): This belongs somewhere else.
@@ -186,9 +183,6 @@ func ReadImports(pkg *types.Pkg, data string) {
 		} else {
 			if pkg.Name != pkgName {
 				base.Fatalf("conflicting package names %v and %v for path %q", pkg.Name, pkgName, pkg.Path)
-			}
-			if pkg.Height != pkgHeight {
-				base.Fatalf("conflicting package heights %v and %v for path %q", pkg.Height, pkgHeight, pkg.Path)
 			}
 		}
 
@@ -1465,7 +1459,10 @@ func (r *importReader) node() ir.Node {
 		return n
 
 	case ir.ODYNAMICDOTTYPE, ir.ODYNAMICDOTTYPE2:
-		n := ir.NewDynamicTypeAssertExpr(r.pos(), op, r.expr(), r.expr())
+		n := ir.NewDynamicTypeAssertExpr(r.pos(), op, r.expr(), nil)
+		if r.bool() {
+			n.RType = r.expr()
+		}
 		if r.bool() {
 			n.ITab = r.expr()
 		}
@@ -1493,7 +1490,9 @@ func (r *importReader) node() ir.Node {
 		return n
 
 	case ir.OCONV, ir.OCONVIFACE, ir.OCONVIDATA, ir.OCONVNOP, ir.OBYTES2STR, ir.ORUNES2STR, ir.OSTR2BYTES, ir.OSTR2RUNES, ir.ORUNESTR, ir.OSLICE2ARRPTR:
-		return ir.NewConvExpr(r.pos(), op, r.typ(), r.expr())
+		n := ir.NewConvExpr(r.pos(), op, r.typ(), r.expr())
+		n.SetImplicit(r.bool())
+		return n
 
 	case ir.OCOPY, ir.OCOMPLEX, ir.OREAL, ir.OIMAG, ir.OAPPEND, ir.OCAP, ir.OCLOSE, ir.ODELETE, ir.OLEN, ir.OMAKE, ir.ONEW, ir.OPANIC, ir.ORECOVER, ir.OPRINT, ir.OPRINTN, ir.OUNSAFEADD, ir.OUNSAFESLICE:
 		pos := r.pos()

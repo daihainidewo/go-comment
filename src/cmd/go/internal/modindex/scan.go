@@ -46,6 +46,7 @@ func moduleWalkErr(modroot string, path string, info fs.FileInfo, err error) err
 // encoded representation. It returns ErrNotIndexed if the module can't
 // be indexed because it contains symlinks.
 func indexModule(modroot string) ([]byte, error) {
+	fsys.Trace("indexModule", modroot)
 	var packages []*rawPackage
 	err := fsys.Walk(modroot, func(path string, info fs.FileInfo, err error) error {
 		if err := moduleWalkErr(modroot, path, info, err); err != nil {
@@ -56,7 +57,7 @@ func indexModule(modroot string) ([]byte, error) {
 			return nil
 		}
 		if !str.HasFilePathPrefix(path, modroot) {
-			panic(fmt.Errorf("path %v in walk doesn't have modroot %v as prefix:", path, modroot))
+			panic(fmt.Errorf("path %v in walk doesn't have modroot %v as prefix", path, modroot))
 		}
 		rel := str.TrimFilePathPrefix(path, modroot)
 		packages = append(packages, importRaw(modroot, rel))
@@ -65,7 +66,16 @@ func indexModule(modroot string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return encodeModule(packages), nil
+	return encodeModuleBytes(packages), nil
+}
+
+// indexModule indexes the package at the given directory and returns its
+// encoded representation. It returns ErrNotIndexed if the package can't
+// be indexed.
+func indexPackage(modroot, pkgdir string) []byte {
+	fsys.Trace("indexPackage", pkgdir)
+	p := importRaw(modroot, relPath(pkgdir, modroot))
+	return encodePackageBytes(p)
 }
 
 // rawPackage holds the information from each package that's needed to

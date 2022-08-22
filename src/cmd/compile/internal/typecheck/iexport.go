@@ -405,7 +405,7 @@ func (w *exportWriter) writeIndex(index map[*types.Sym]uint64, mainIndex bool) {
 		w.string(exportPath(pkg))
 		if mainIndex {
 			w.string(pkg.Name)
-			w.uint64(uint64(pkg.Height))
+			w.uint64(0) // was package height, but not necessary anymore.
 		}
 
 		// Sort symbols within a package by name.
@@ -1928,7 +1928,9 @@ func (w *exportWriter) expr(n ir.Node) {
 		w.op(n.Op())
 		w.pos(n.Pos())
 		w.expr(n.X)
-		w.expr(n.RType)
+		if w.bool(n.RType != nil) {
+			w.expr(n.RType)
+		}
 		if w.bool(n.ITab != nil) {
 			w.expr(n.ITab)
 		}
@@ -1978,6 +1980,7 @@ func (w *exportWriter) expr(n ir.Node) {
 		w.pos(n.Pos())
 		w.typ(n.Type())
 		w.expr(n.X)
+		w.bool(n.Implicit())
 
 	case ir.OREAL, ir.OIMAG, ir.OCAP, ir.OCLOSE, ir.OLEN, ir.ONEW, ir.OPANIC:
 		n := n.(*ir.UnaryExpr)

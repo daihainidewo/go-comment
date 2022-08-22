@@ -460,12 +460,11 @@ func tcAppend(n *ir.CallExpr) ir.Node {
 			return n
 		}
 
-		if t.Elem().IsKind(types.TUINT8) && args[1].Type().IsString() {
-			args[1] = DefaultLit(args[1], types.Types[types.TSTRING])
-			return n
-		}
-
-		args[1] = AssignConv(args[1], t.Underlying(), "append")
+		// AssignConv is of args[1] not required here, as the
+		// types of args[0] and args[1] don't need to match
+		// (They will both have an underlying type which are
+		// slices of identical base types, or be []byte and string.)
+		// See issue 53888.
 		return n
 	}
 

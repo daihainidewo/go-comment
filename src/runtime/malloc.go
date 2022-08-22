@@ -301,16 +301,16 @@ const (
 	// memory.
 	heapArenaBytes = 1 << logHeapArenaBytes // 1 << 26 = 64M
 
-	// logHeapArenaBytes heapArenaBytes 以2为底的对数值，结果直接用于数组下标
+	heapArenaWords = heapArenaBytes / goarch.PtrSize
+
 	// logHeapArenaBytes is log_2 of heapArenaBytes. For clarity,
 	// prefer using heapArenaBytes where possible (we need the
 	// constant to compute some other constants).
 	// value 26
 	logHeapArenaBytes = (6+20)*(_64bit*(1-goos.IsWindows)*(1-goarch.IsWasm)*(1-goos.IsIos*goarch.IsArm64)) + (2+20)*(_64bit*goos.IsWindows) + (2+20)*(1-_64bit) + (2+20)*goarch.IsWasm + (2+20)*goos.IsIos*goarch.IsArm64
 
-	// heapArenaBitmapBytes 表示每个arena的位图
-	// heapArenaBitmapBytes is the size of each heap arena's bitmap.
-	heapArenaBitmapBytes = heapArenaBytes / (goarch.PtrSize * 8 / 2) // 2M
+	// heapArenaBitmapWords is the size of each heap arena's bitmap in uintptrs.
+	heapArenaBitmapWords = heapArenaWords / (8 * goarch.PtrSize)
 
 	pagesPerArena = heapArenaBytes / pageSize // 8K
 
@@ -448,10 +448,10 @@ func mallocinit() {
 		throw("bad TinySizeClass")
 	}
 
-	if heapArenaBitmapBytes&(heapArenaBitmapBytes-1) != 0 {
+	if heapArenaBitmapWords&(heapArenaBitmapWords-1) != 0 {
 		// heapBits expects modular arithmetic on bitmap
 		// addresses to work.
-		throw("heapArenaBitmapBytes not a power of 2")
+		throw("heapArenaBitmapWords not a power of 2")
 	}
 
 	// Check physPageSize.
@@ -963,6 +963,11 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		// 返回大小为 0 的对象地址
 		return unsafe.Pointer(&zerobase)
 	}
+
+	// It's possible for any malloc to trigger sweeping, which may in
+	// turn queue finalizers. Record this dynamic lock edge.
+	lockRankMayQueueFinalizer()
+
 	userSize := size
 	if asanenabled {
 		// Refer to ASAN runtime library, the malloc() function allocates extra memory,
@@ -1382,7 +1387,7 @@ func nextSample() uintptr {
 	}
 	if GOOS == "plan9" {
 		// Plan 9 doesn't support floating point in note handler.
-		if g := getg(); g == g.m.gsignal {
+		if gp := getg(); gp == gp.m.gsignal {
 			return nextSampleNoFP()
 		}
 	}
@@ -1470,7 +1475,8 @@ var persistentChunks *notInHeap
 // The returned memory will be zeroed.
 // sysStat must be non-nil.
 //
-// Consider marking persistentalloc'd types go:notinheap.
+// Consider marking persistentalloc'd types not in heap by embedding
+// runtime/internal/sys.NotInHeap.
 func persistentalloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
 	var p *notInHeap
 	systemstack(func() {
@@ -1645,14 +1651,12 @@ func (l *linearAlloc) alloc(size, align uintptr, sysStat *sysMemStat) unsafe.Poi
 // notInHeap is off-heap memory allocated by a lower-level allocator
 // like sysAlloc or persistentAlloc.
 //
-// In general, it's better to use real types marked as go:notinheap,
-// but this serves as a generic type for situations where that isn't
-// possible (like in the allocators).
+// In general, it's better to use real types which embed
+// runtime/internal/sys.NotInHeap, but this serves as a generic type
+// for situations where that isn't possible (like in the allocators).
 //
 // TODO: Use this as the return type of sysAlloc, persistentAlloc, etc?
-//
-//go:notinheap
-type notInHeap struct{}
+type notInHeap struct{ _ sys.NotInHeap }
 
 // add 基于 p 偏移 bytes 字节的指针数据
 func (p *notInHeap) add(bytes uintptr) *notInHeap {

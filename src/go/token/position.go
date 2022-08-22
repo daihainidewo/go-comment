@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
 // -----------------------------------------------------------------------------
@@ -365,11 +366,14 @@ func (f *File) Position(p Pos) (pos Position) {
 // recently added file, plus one. Unless there is a need to extend an
 // interval later, using the FileSet.Base should be used as argument
 // for FileSet.AddFile.
+//
+// A File may be removed from a FileSet when it is no longer needed.
+// This may reduce memory usage in a long-running application.
 type FileSet struct {
-	mutex sync.RWMutex // protects the file set
-	base  int          // base offset for the next file
-	files []*File      // list of files in the order added to the set
-	last  *File        // cache of last file looked up
+	mutex sync.RWMutex         // protects the file set
+	base  int                  // base offset for the next file
+	files []*File              // list of files in the order added to the set
+	last  atomic.Pointer[File] // cache of last file looked up
 }
 
 // NewFileSet creates a new file set.
@@ -405,6 +409,9 @@ func (s *FileSet) Base() int {
 // For convenience, File.Pos may be used to create file-specific position
 // values from a file offset.
 func (s *FileSet) AddFile(filename string, base, size int) *File {
+	// Allocate f outside the critical section.
+	f := &File{name: filename, size: size, lines: []int{0}}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if base < 0 {
@@ -413,11 +420,11 @@ func (s *FileSet) AddFile(filename string, base, size int) *File {
 	if base < s.base {
 		panic(fmt.Sprintf("invalid base %d (should be >= %d)", base, s.base))
 	}
+	f.base = base
 	if size < 0 {
 		panic(fmt.Sprintf("invalid size %d (should be >= 0)", size))
 	}
 	// base >= s.base && size >= 0
-	f := &File{name: filename, base: base, size: size, lines: []int{0}}
 	base += size + 1 // +1 because EOF also has a position
 	if base < 0 {
 		panic("token.Pos offset overflow (> 2G of source code in file set)")
@@ -425,8 +432,27 @@ func (s *FileSet) AddFile(filename string, base, size int) *File {
 	// add the file to the file set
 	s.base = base
 	s.files = append(s.files, f)
-	s.last = f
+	s.last.Store(f)
 	return f
+}
+
+// RemoveFile removes a file from the FileSet so that subsequent
+// queries for its Pos interval yield a negative result.
+// This reduces the memory usage of a long-lived FileSet that
+// encounters an unbounded stream of files.
+//
+// Removing a file that does not belong to the set has no effect.
+func (s *FileSet) RemoveFile(file *File) {
+	s.last.CompareAndSwap(file, nil) // clear last file cache
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if i := searchFiles(s.files, file.base); i >= 0 && s.files[i] == file {
+		last := &s.files[len(s.files)-1]
+		s.files = append(s.files[:i], s.files[i+1:]...)
+		*last = nil // don't prolong lifetime when popping last element
+	}
 }
 
 // Iterate calls f for the files in the file set in the order they were added
@@ -450,25 +476,25 @@ func searchFiles(a []*File, x int) int {
 }
 
 func (s *FileSet) file(p Pos) *File {
-	s.mutex.RLock()
-	// common case: p is in last file
-	if f := s.last; f != nil && f.base <= int(p) && int(p) <= f.base+f.size {
-		s.mutex.RUnlock()
+	// common case: p is in last file.
+	if f := s.last.Load(); f != nil && f.base <= int(p) && int(p) <= f.base+f.size {
 		return f
 	}
+
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
 	// p is not in last file - search all files
 	if i := searchFiles(s.files, int(p)); i >= 0 {
 		f := s.files[i]
 		// f.base <= int(p) by definition of searchFiles
 		if int(p) <= f.base+f.size {
-			s.mutex.RUnlock()
-			s.mutex.Lock()
-			s.last = f // race is ok - s.last is only a cache
-			s.mutex.Unlock()
+			// Update cache of last file. A race is ok,
+			// but an exclusive lock causes heavy contention.
+			s.last.Store(f)
 			return f
 		}
 	}
-	s.mutex.RUnlock()
 	return nil
 }
 

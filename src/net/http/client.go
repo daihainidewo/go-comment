@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -413,22 +414,22 @@ func setRequestCancel(req *Request, rt RoundTripper, deadline time.Time) (stopTi
 	}
 
 	timer := time.NewTimer(time.Until(deadline))
-	var timedOut atomicBool
+	var timedOut atomic.Bool
 
 	go func() {
 		select {
 		case <-initialReqCancel: // 调用req的cancel函数
 			doCancel()
 			timer.Stop()
-		case <-timer.C: // 自然超时
-			timedOut.setTrue()
+		case <-timer.C:
+			timedOut.Store(true)
 			doCancel()
 		case <-stopTimerCh: // 外部调用取消函数
 			timer.Stop()
 		}
 	}()
 
-	return stopTimer, timedOut.isSet
+	return stopTimer, timedOut.Load
 }
 
 // basicAuth 将用户密码使用base64编码
@@ -937,7 +938,7 @@ func (c *Client) PostForm(url string, data url.Values) (resp *Response, err erro
 //	307 (Temporary Redirect)
 //	308 (Permanent Redirect)
 //
-// # Head is a wrapper around DefaultClient.Head
+// Head is a wrapper around DefaultClient.Head.
 //
 // To make a request with a specified context.Context, use NewRequestWithContext
 // and DefaultClient.Do.

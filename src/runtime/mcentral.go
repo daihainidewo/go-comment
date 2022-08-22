@@ -12,13 +12,15 @@
 
 package runtime
 
-import "runtime/internal/atomic"
+import (
+	"runtime/internal/atomic"
+	"runtime/internal/sys"
+)
 
 // mentral 给定大小的空闲对象链表
 // Central list of free objects of a given size.
-//
-//go:notinheap
 type mcentral struct {
+	_         sys.NotInHeap
 	// spanclass 标记当前 mcentral 的等级
 	spanclass spanClass
 
@@ -265,6 +267,6 @@ func (c *mcentral) grow() *mspan {
 	// n := (npages << _PageShift) / size
 	n := s.divideByElemSize(npages << _PageShift)
 	s.limit = s.base() + size*n
-	heapBitsForAddr(s.base()).initSpan(s)
+	s.initHeapBits()
 	return s
 }

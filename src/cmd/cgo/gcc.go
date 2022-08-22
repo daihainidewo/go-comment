@@ -488,7 +488,7 @@ func (p *Package) guessKinds(f *File) []*Name {
 		// Check if compiling the preamble by itself causes any errors,
 		// because the messages we've printed out so far aren't helpful
 		// to users debugging preamble mistakes. See issue 8442.
-		preambleErrors := p.gccErrors([]byte(f.Preamble))
+		preambleErrors := p.gccErrors([]byte(builtinProlog + f.Preamble))
 		if len(preambleErrors) > 0 {
 			error_(token.NoPos, "\n%s errors for preamble:\n%s", gccBaseCmd[0], preambleErrors)
 		}
@@ -2551,6 +2551,11 @@ func (c *typeConv) loadType(dtype dwarf.Type, pos token.Pos, parent string) *Typ
 		t.Go = name // publish before recursive calls
 		goIdent[name.Name] = name
 		if dt.ByteSize < 0 {
+			// Don't override old type
+			if _, ok := typedef[name.Name]; ok {
+				break
+			}
+
 			// Size calculation in c.Struct/c.Opaque will die with size=-1 (unknown),
 			// so execute the basic things that the struct case would do
 			// other than try to determine a Go representation.
