@@ -29,7 +29,8 @@ const (
 	// maxPhysHugePageSize runtime支持最大的huge page大小
 	// maxPhysHugePageSize sets an upper-bound on the maximum huge page size
 	// that the runtime supports.
-	maxPhysHugePageSize = pallocChunkBytes // 4M
+	// 4M
+	maxPhysHugePageSize = pallocChunkBytes
 
 	// pagesPerReclaimerChunk 指示一次从 pageInUse 位图中扫描多少页，由页面回收器使用
 	// 值越大 越减少对扫描的竞争但会增加操作延迟
@@ -443,7 +444,7 @@ type mSpanList struct {
 }
 
 type mspan struct {
-	_    sys.NotInHeap
+	_ sys.NotInHeap
 	// mspan 链表的前后指针和链表头节点
 	next *mspan     // next span in list, or nil if none
 	prev *mspan     // previous span in list, or nil if none
@@ -1185,8 +1186,9 @@ func (h *mheap) tryAllocMSpan() *mspan {
 	if pp == nil || pp.mspancache.len == 0 {
 		return nil
 	}
+	// 获取最后一个mspan
 	// Pull off the last entry in the cache.
-	s := pp.mspancache.buf[pp.mspancache.len-1] // 获取最后一个mspan
+	s := pp.mspancache.buf[pp.mspancache.len-1]
 	pp.mspancache.len--
 	return s
 }
@@ -1289,13 +1291,15 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 		if c.empty() {
 			// 填充cache
 			lock(&h.lock)
-			*c = h.pages.allocToCache() // 获取cache
+			// 获取cache
+			*c = h.pages.allocToCache()
 			unlock(&h.lock)
 		}
 
+		// 获取 page
 		// Try to allocate from the cache.
-		base, scav = c.alloc(npages) // 获取 page
-		if base != 0 {               // 成功获取
+		base, scav = c.alloc(npages)
+		if base != 0 {
 			s = h.tryAllocMSpan()
 			// 如果获取 mspan 成功
 			if s != nil {
@@ -1552,13 +1556,16 @@ func (h *mheap) grow(npage uintptr) (uintptr, bool) {
 	// round up to pallocChunkPages which is on the order
 	// of MiB (generally >= to the huge page size) we
 	// won't be calling it too much.
-	ask := alignUp(npage, pallocChunkPages) * pageSize // 向上取整需要的内存量
+	// 向上取整需要的内存量
+	ask := alignUp(npage, pallocChunkPages) * pageSize
 
 	totalGrowth := uintptr(0)
 	// This may overflow because ask could be very large
 	// and is otherwise unrelated to h.curArena.base.
-	end := h.curArena.base + ask        // 当前基址加上需要的得到 end 可能溢出
-	nBase := alignUp(end, physPageSize) // 向上取整物理页大小
+	// 当前基址加上需要的得到 end 可能溢出
+	end := h.curArena.base + ask
+	// 向上取整物理页大小
+	nBase := alignUp(end, physPageSize)
 	if nBase > h.curArena.end || /* overflow */ end < h.curArena.base {
 		// 检测溢出后
 		// Not enough room in the current arena. Allocate more

@@ -10,7 +10,8 @@ import (
 )
 
 type mOS struct {
-	initialized bool // 是否初始化
+	// 是否初始化
+	initialized bool
 	mutex       pthreadmutex
 	cond        pthreadcond
 	count       int
@@ -362,7 +363,7 @@ const (
 	_SS_DISABLE  = 4
 )
 
-// extern SigTabTT runtime·sigtab[];
+//extern SigTabTT runtime·sigtab[];
 
 type sigset uint32
 

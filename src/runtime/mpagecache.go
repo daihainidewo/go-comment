@@ -43,12 +43,10 @@ func (c *pageCache) alloc(npages uintptr) (uintptr, uintptr) {
 		return 0, 0
 	}
 	if npages == 1 {
-		i := uintptr(sys.TrailingZeros64(c.cache)) // 获取cache值有多少个尾随的0
-		scav := (c.scav >> i) & 1                  // 置1
-		// 标记当前位图的页被使用，将第i位置为0
-		// c.cache = c.cache & (^(1 << i))
-		c.cache &^= 1 << i // 标记使用   // set bit to mark in-use
-		c.scav &^= 1 << i  // 标记未清除 	// clear bit to mark unscavenged
+		i := uintptr(sys.TrailingZeros64(c.cache))
+		scav := (c.scav >> i) & 1
+		c.cache &^= 1 << i // set bit to mark in-use
+		c.scav &^= 1 << i  // clear bit to mark unscavenged
 		return c.base + i*pageSize, uintptr(scav) * pageSize
 	}
 	return c.allocN(npages)
@@ -62,7 +60,8 @@ func (c *pageCache) alloc(npages uintptr) (uintptr, uintptr) {
 // Returns a base address and the amount of scavenged memory in the
 // allocated region in bytes.
 func (c *pageCache) allocN(npages uintptr) (uintptr, uintptr) {
-	i := findBitRange64(c.cache, uint(npages)) // 找一块连续的空闲页
+	// 找一块连续的空闲页
+	i := findBitRange64(c.cache, uint(npages))
 	if i >= 64 {
 		return 0, 0
 	}
@@ -88,8 +87,9 @@ func (c *pageCache) flush(p *pageAlloc) {
 	if c.empty() {
 		return
 	}
-	ci := chunkIndex(c.base)     // 获取块id
-	pi := chunkPageIndex(c.base) // 获取页id
+	// 获取块和页id
+	ci := chunkIndex(c.base)
+	pi := chunkPageIndex(c.base)
 
 	// This method is called very infrequently, so just do the
 	// slower, safer thing by iterating over each bit individually.

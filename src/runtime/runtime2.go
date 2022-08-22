@@ -518,7 +518,7 @@ type g struct {
 	ancestors      *[]ancestorInfo // 创建此goroutine的祖先信息，仅用于debug.tracebackancestors ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)
 	startpc        uintptr         // g 绑定的函数 // pc of goroutine function
 	racectx        uintptr
-	waiting        *sudog         // 当前 g 被封装成等待的 sudog
+	waiting        *sudog         // 当前 g 被封装成等待的 sudog sudog structures this g is waiting on (that have a valid elem ptr); in lock order
 	cgoCtxt        []uintptr      // cgo traceback context
 	labels         unsafe.Pointer // profiler labels
 	timer          *timer         // 缓存的 timer cached timer for time.Sleep
@@ -579,8 +579,8 @@ type m struct {
 	locks         int32  // 引用计数，非零表示禁止抢占当前g
 	dying         int32
 	profilehz     int32 // cpu 采样率
-	spinning      bool  // 是否自旋 等待 g 去执行
-	blocked       bool  // 是否被note阻塞
+	spinning      bool  // 是否自旋 等待 g 去执行 m is out of work and is actively looking for work
+	blocked       bool  // 是否被note阻塞 m is blocked on a note
 	newSigstack   bool  // minit on C thread called sigaltstack
 	printlock     int8
 	incgo         bool   // 是否执行cgo调用 m is executing a cgo call
@@ -642,9 +642,9 @@ type p struct {
 	id          int32      // 编号
 	status      uint32     // one of pidle/prunning/...
 	link        puintptr   // p 链表
-	schedtick   uint32     // 调度次数（重新分配时间片的次数）
-	syscalltick uint32     // 系统调用次数
-	sysmontick  sysmontick // 上次 sysmon 的信息
+	schedtick   uint32     // 调度次数（重新分配时间片的次数） incremented on every scheduler call
+	syscalltick uint32     // 系统调用次数 incremented on every system call
+	sysmontick  sysmontick // 上次 sysmon 的信息 last tick observed by sysmon
 	m           muintptr   // 反向链接m，back-link to associated m (nil if idle)
 	mcache      *mcache    // mcache 内存管理
 	pcache      pageCache  // 页缓存
@@ -676,7 +676,8 @@ type p struct {
 	// only the owner P can CAS it to a valid G.
 	runnext guintptr
 
-	// 空闲G列表 Available G's (status == Gdead)
+	// 空闲G列表
+	// Available G's (status == Gdead)
 	gFree struct {
 		gList       // 列表元素
 		n     int32 // 列表个数
@@ -686,7 +687,8 @@ type p struct {
 	sudogbuf   [128]*sudog // sudog 列表
 
 	// Cache of mspan objects from the heap.
-	mspancache struct { // mspan的缓存
+	mspancache struct {
+		// mspan的缓存
 		// We need an explicit length here because this field is used
 		// in allocation codepaths where write barriers are not allowed,
 		// and eliminating the write barrier/keeping it eliminated from
@@ -749,7 +751,7 @@ type p struct {
 	// TODO: Consider caching this in the running G.
 	wbBuf wbBuf
 
-	runSafePointFn uint32 // if 1, run schedt.safePointFn at next safe point
+	runSafePointFn uint32 // if 1, run sched.safePointFn at next safe point
 
 	// statsSeq is a counter indicating whether this P is currently
 	// writing any stats. Its value is even when not, odd when it is.
@@ -789,9 +791,10 @@ type p struct {
 	scannedStackSize uint64 // stack size of goroutines scanned by this P
 	scannedStacks    uint64 // number of goroutines scanned by this P
 
+	// 标记 p 应该快速进入调度
 	// preempt is set to indicate that this P should be enter the
 	// scheduler ASAP (regardless of what G is running on it).
-	preempt bool // 标记 p 应该快速进入调度
+	preempt bool
 
 	// Padding is no longer needed. False sharing is now not a worry because p is large enough
 	// that its size class is an integer multiple of the cache line size (for any of our architectures).
@@ -807,13 +810,13 @@ type schedt struct {
 	// When increasing nmidle, nmidlelocked, nmsys, or nmfreed, be
 	// sure to call checkdead().
 
-	midle        muintptr // 空闲M队列
-	nmidle       int32    // 空闲M的个数
-	nmidlelocked int32    // 锁定状态的M个数
-	mnext        int64    // 下一个 M 的 id
-	maxmcount    int32    // 最大允许M的个数
-	nmsys        int32    // 系统M个数，不包括锁定的M，只包括 templateThread 和 sysmon
-	nmfreed      int64    // 累计释放 M 的个数
+	midle        muintptr // 空闲M队列 idle m's waiting for work
+	nmidle       int32    // 空闲M的个数 number of idle m's waiting for work
+	nmidlelocked int32    // 锁定状态的M个数 number of locked m's waiting for work
+	mnext        int64    // 下一个 M 的 id number of m's that have been created and next M ID
+	maxmcount    int32    // 最大允许M的个数 maximum number of m's allowed (or die)
+	nmsys        int32    // 系统M个数，不包括锁定的M，只包括 templateThread 和 sysmon number of system m's not counted for deadlock
+	nmfreed      int64    // 累计释放 M 的个数 cumulative number of freed m's
 
 	ngsys atomic.Int32 // number of system goroutines
 

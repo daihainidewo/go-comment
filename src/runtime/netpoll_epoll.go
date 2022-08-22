@@ -112,7 +112,8 @@ func netpollBreak() {
 // delay == 0: does not block, just polls
 // delay > 0: block for up to that many nanoseconds
 func netpoll(delay int64) gList {
-	if epfd == -1 { // 没有初始化就返回空列表
+	if epfd == -1 {
+		// 没有初始化就返回空列表
 		return gList{}
 	}
 	var waitms int32

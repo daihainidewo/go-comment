@@ -77,24 +77,28 @@ func (p gclinkptr) ptr() *gclink {
 }
 
 type stackfreelist struct {
-	list gclinkptr // 释放堆栈的列表 // linked list of free stacks
-	size uintptr   // 链表长度 // total size of stacks in list
+	// 释放堆栈的列表和长度
+	list gclinkptr // linked list of free stacks
+	size uintptr   // total size of stacks in list
 }
 
+// 标记空mspan
 // dummy mspan that contains no free objects.
-var emptymspan mspan // 标记空mspan
+var emptymspan mspan
 
 // allocmcache 初始化 mcache
 func allocmcache() *mcache {
 	var c *mcache
 	systemstack(func() {
 		lock(&mheap_.lock)
-		c = (*mcache)(mheap_.cachealloc.alloc()) // 从mheap那里获取
+		// 从mheap那里获取
+		c = (*mcache)(mheap_.cachealloc.alloc())
 		c.flushGen = mheap_.sweepgen
 		unlock(&mheap_.lock)
 	})
 	for i := range c.alloc {
-		c.alloc[i] = &emptymspan // 绑定空mspan
+		// 绑定空mspan
+		c.alloc[i] = &emptymspan
 	}
 	c.nextSample = nextSample()
 	return c
@@ -294,9 +298,11 @@ func (c *mcache) releaseAll() {
 				dHeapLive -= int64(uintptr(s.nelems)-uintptr(s.allocCount)) * int64(s.elemsize)
 			}
 
+			// 向mcentral归还span
+			// 置空mspan
 			// Release the span to the mcentral.
-			mheap_.central[i].mcentral.uncacheSpan(s) // 向mcentral归还span
-			c.alloc[i] = &emptymspan                  // 置空mspan
+			mheap_.central[i].mcentral.uncacheSpan(s)
+			c.alloc[i] = &emptymspan
 		}
 	}
 	// Clear tinyalloc pool.

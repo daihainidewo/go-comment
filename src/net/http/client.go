@@ -179,7 +179,8 @@ func refererForURL(lastReq, newReq *url.URL) string {
 func (c *Client) send(req *Request, deadline time.Time) (resp *Response, didTimeout func() bool, err error) {
 	if c.Jar != nil {
 		for _, cookie := range c.Jar.Cookies(req.URL) {
-			req.AddCookie(cookie) // 填充cookie
+			// 填充cookie
+			req.AddCookie(cookie)
 		}
 	}
 	resp, didTimeout, err = send(req, c.transport(), deadline)
@@ -188,7 +189,8 @@ func (c *Client) send(req *Request, deadline time.Time) (resp *Response, didTime
 	}
 	if c.Jar != nil {
 		if rc := resp.Cookies(); len(rc) > 0 {
-			c.Jar.SetCookies(req.URL, rc) // 设置cookie
+			// 设置cookie
+			c.Jar.SetCookies(req.URL, rc)
 		}
 	}
 	return resp, nil, nil
@@ -242,7 +244,8 @@ func send(ireq *Request, rt RoundTripper, deadline time.Time) (resp *Response, d
 	// Transport that this has been initialized, though.
 	if req.Header == nil {
 		forkReq()
-		req.Header = make(Header) // 新header
+		// 新header
+		req.Header = make(Header)
 	}
 
 	if u := req.URL.User; u != nil && req.Header.Get("Authorization") == "" {
@@ -418,13 +421,15 @@ func setRequestCancel(req *Request, rt RoundTripper, deadline time.Time) (stopTi
 
 	go func() {
 		select {
-		case <-initialReqCancel: // 调用req的cancel函数
+		case <-initialReqCancel:
+			// 调用req的cancel函数
 			doCancel()
 			timer.Stop()
 		case <-timer.C:
 			timedOut.Store(true)
 			doCancel()
-		case <-stopTimerCh: // 外部调用取消函数
+		case <-stopTimerCh:
+			// 外部调用取消函数
 			timer.Stop()
 		}
 	}()
@@ -544,6 +549,7 @@ func redirectBehavior(reqMethod string, resp *Response, ireq *Request) (redirect
 		redirectMethod = reqMethod
 		shouldRedirect = true
 		includeBody = true
+
 		// 如果有body存在数据则停止重定向
 		if ireq.GetBody == nil && ireq.outgoingLength() != 0 {
 			// We had a request body, and 307/308 require
@@ -655,7 +661,8 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 	for {
 		// For all but the first request, create the next
 		// request hop and replace req.
-		if len(reqs) > 0 { // 重定向执行逻辑
+		if len(reqs) > 0 {
+			// 重定向执行逻辑
 			// 获取重定向地址
 			loc := resp.Header.Get("Location")
 			if loc == "" {
@@ -724,7 +731,8 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 			// fails, the Transport won't reuse it anyway.
 			const maxBodySlurpSize = 2 << 10
 			if resp.ContentLength == -1 || resp.ContentLength <= maxBodySlurpSize {
-				io.CopyN(io.Discard, resp.Body, maxBodySlurpSize) // 丢弃响应body
+				// 丢弃响应body
+				io.CopyN(io.Discard, resp.Body, maxBodySlurpSize)
 			}
 			resp.Body.Close()
 
@@ -739,7 +747,8 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 			}
 		}
 
-		reqs = append(reqs, req) // 追加请求列表
+		// 追加请求列表
+		reqs = append(reqs, req)
 		var err error
 		var didTimeout func() bool
 		// 发送请求

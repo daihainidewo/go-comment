@@ -19,10 +19,11 @@ func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
 	return unsafe.Pointer(uintptr(p) + x)
 }
 
+// 获取当前的g
 // getg returns the pointer to the current g.
 // The compiler rewrites calls to this function into instructions
 // that fetch the g directly (from TLS or from the dedicated register).
-func getg() *g // 获取当前的g
+func getg() *g
 
 // mcall switches from the g to the g0 stack and invokes fn(g),
 // where g is the goroutine that made the call.
@@ -38,7 +39,8 @@ func getg() *g // 获取当前的g
 // This must NOT be go:noescape: if fn is a stack-allocated closure,
 // fn puts g on a run queue, and g executes before fn returns, the
 // closure will be invalidated while it is still executing.
-func mcall(fn func(*g)) // 切换到g0执行fn，fn不能返回
+// 切换到g0执行fn，fn不能返回
+func mcall(fn func(*g))
 
 // systemstack runs fn on a system stack.
 // If systemstack is called from the per-OS-thread (g0) stack, or
@@ -58,7 +60,8 @@ func mcall(fn func(*g)) // 切换到g0执行fn，fn不能返回
 //	... use x ...
 //
 //go:noescape
-func systemstack(fn func()) // 切换到g0执行fn，执行后会切换至原g
+// 切换到g0执行fn，执行后会切换至原g
+func systemstack(fn func())
 
 var badsystemstackMsg = "fatal: systemstack called from unexpected goroutine"
 
@@ -236,7 +239,8 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 // pointer-declared arguments.
 func cgocallback(fn, frame, ctxt uintptr)
 
-func gogo(buf *gobuf) // 切换到buf
+// 切换到buf
+func gogo(buf *gobuf)
 
 // asminit amd64架构不需要汇编初始化
 func asminit()

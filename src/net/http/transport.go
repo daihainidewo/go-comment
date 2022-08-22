@@ -550,7 +550,8 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	}
 	scheme := req.URL.Scheme
 	isHTTP := scheme == "http" || scheme == "https"
-	if isHTTP { // 验证http请求header的kv字段合法性
+	if isHTTP {
+		// 验证http请求header的kv字段合法性
 		for k, vv := range req.Header {
 			if !httpguts.ValidHeaderFieldName(k) {
 				req.closeBody()
@@ -567,7 +568,8 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	}
 
 	origReq := req
-	cancelKey := cancelKey{origReq} // 封装源请求成为map的key
+	// 封装源请求成为map的key
+	cancelKey := cancelKey{origReq}
 	req = setupRewindBody(req)
 
 	// 如果是https2的请求就使用备用的RoundTrip
@@ -578,7 +580,8 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 			return resp, err
 		}
 		var err error
-		req, err = rewindBody(req) // 封装 req 成 readTrackingBody
+		// 封装 req 成 readTrackingBody
+		req, err = rewindBody(req)
 		if err != nil {
 			return nil, err
 		}
@@ -599,7 +602,8 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 
 	for {
 		select {
-		case <-ctx.Done(): // 取消请求
+		case <-ctx.Done():
+			// 取消请求
 			req.closeBody()
 			return nil, ctx.Err()
 		default:
@@ -719,7 +723,8 @@ func rewindBody(req *Request) (rewound *Request, err error) {
 	if req.GetBody == nil {
 		return nil, errCannotRewind
 	}
-	body, err := req.GetBody() // 获取原始的Body
+	// 获取原始的Body
+	body, err := req.GetBody()
 	if err != nil {
 		return nil, err
 	}
@@ -1315,7 +1320,8 @@ func (w *wantConn) tryDeliver(pc *persistConn, err error) bool {
 	if w.pc == nil && w.err == nil {
 		panic("net/http: internal error: misuse of tryDeliver")
 	}
-	close(w.ready) // 标记w准备好了
+	// 标记w准备好了
+	close(w.ready)
 	return true
 }
 
@@ -1484,7 +1490,7 @@ func (t *Transport) getConn(treq *transportRequest, cm connectMethod) (pc *persi
 		}
 		if w.err != nil {
 			// 处理主动取消请求的情况
-			// If the request has been cancelled, that's probably
+			// If the request has been canceled, that's probably
 			// what caused w.err; if so, prefer to return the
 			// cancellation error (see golang.org/issue/16049).
 			select {
@@ -2065,7 +2071,8 @@ func (pc *persistConn) Read(p []byte) (n int, err error) {
 	if err == io.EOF {
 		pc.sawEOF = true
 	}
-	pc.readLimit -= int64(n) // 最多读取readLimit个
+	// 最多读取readLimit个
+	pc.readLimit -= int64(n)
 	return
 }
 
@@ -2340,8 +2347,8 @@ func (pc *persistConn) readLoop() {
 		}
 
 		resp.Body = body
-        // 解压body数据
-        if rc.addedGzip && ascii.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		// 解压body数据
+		if rc.addedGzip && ascii.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 			resp.Body = &gzipReader{body: body}
 			resp.Header.Del("Content-Encoding")
 			resp.Header.Del("Content-Length")
@@ -2651,7 +2658,8 @@ type requestAndChan struct {
 	// to writeLoop via this chan.
 	continueCh chan<- struct{}
 
-	callerGone <-chan struct{} // 当 roundTrip 调用者返回时关闭 closed when roundTrip caller has returned
+	// 当 roundTrip 调用者返回时关闭
+	callerGone <-chan struct{} // closed when roundTrip caller has returned
 }
 
 // A writeRequest is sent by the caller's goroutine to the

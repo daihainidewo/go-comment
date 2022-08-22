@@ -782,7 +782,8 @@ func runOpenDeferFrame(gp *g, d *_defer) bool {
 
 	deferBitsOffset, fd := readvarintUnsafe(fd)
 	nDefers, fd := readvarintUnsafe(fd)
-	deferBits := *(*uint8)(unsafe.Pointer(d.varp - uintptr(deferBitsOffset))) // 获取延迟记录
+	// 获取延迟记录
+	deferBits := *(*uint8)(unsafe.Pointer(d.varp - uintptr(deferBitsOffset)))
 
 	for i := int(nDefers) - 1; i >= 0; i-- {
 		// read the funcdata info for this defer
@@ -933,7 +934,7 @@ func gopanic(e any) {
 		d._panic = nil
 
 		// trigger shrinkage to test stack copy. See stack_test.go:TestStackPanic
-		// GC()
+		//GC()
 
 		pc := d.pc
 		sp := unsafe.Pointer(d.sp) // must be pointer so it gets adjusted during stack copy

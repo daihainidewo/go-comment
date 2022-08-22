@@ -10,7 +10,8 @@ import (
 
 // pageBits是一个位图，表示palloc块中每页一位
 // pageBits is a bitmap representing one bit per page in a palloc chunk.
-type pageBits [pallocChunkPages / 64]uint64 // [8]uint64
+// [8]uint64
+type pageBits [pallocChunkPages / 64]uint64
 
 // get returns the value of the i'th bit in the bitmap.
 func (b *pageBits) get(i uint) uint {

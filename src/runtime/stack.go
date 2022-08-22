@@ -110,7 +110,8 @@ const (
 	// NOSPLIT 函数组能拥有最大的函数栈帧大小
 	// The maximum number of bytes that a chain of NOSPLIT
 	// functions can use.
-	_StackLimit = _StackGuard - _StackSystem - _StackSmall // 928 - 0 - 128 = 800
+	// 928 - 0 - 128 = 800
+	_StackLimit = _StackGuard - _StackSystem - _StackSmall
 )
 
 const (
@@ -383,10 +384,12 @@ func stackalloc(n uint32) stack {
 	// never try to grow the stack during the code that stackalloc runs.
 	// Doing so would cause a deadlock (issue 1547).
 	thisg := getg()
-	if thisg != thisg.m.g0 { // 不能是g0的栈
+	if thisg != thisg.m.g0 {
+		// 不能是g0的栈
 		throw("stackalloc not on scheduler stack")
 	}
-	if n&(n-1) != 0 { // 必须是2的整倍数
+	if n&(n-1) != 0 {
+		// 必须是2的整倍数
 		throw("stack size not a power of 2")
 	}
 	if stackDebug >= 1 {
@@ -975,7 +978,8 @@ func copystack(gp *g, newsize uintptr) {
 	if gp.syscallsp != 0 {
 		throw("stack growth not allowed in system call")
 	}
-	old := gp.stack // 旧栈
+	// 旧栈
+	old := gp.stack
 	if old.lo == 0 {
 		throw("nil stackbase")
 	}
@@ -1090,7 +1094,8 @@ func round2(x int32) int32 {
 //
 //go:nowritebarrierrec
 func newstack() {
-	thisg := getg() // 当前执行的g0
+	// 当前执行的g0
+	thisg := getg()
 	// TODO: double check all gp. shouldn't be getg().
 	// 调用者的栈不能是stackFork
 	if thisg.m.morebuf.g.ptr().stackguard0 == stackFork {
@@ -1175,12 +1180,14 @@ func newstack() {
 		// 回退到调用morestack
 		sp -= goarch.PtrSize
 	}
-	if stackDebug >= 1 || sp < gp.stack.lo { // 栈顶比低地址还小 打印日志
+	if stackDebug >= 1 || sp < gp.stack.lo {
+		// 栈顶比低地址还小 打印日志
 		print("runtime: newstack sp=", hex(sp), " stack=[", hex(gp.stack.lo), ", ", hex(gp.stack.hi), "]\n",
 			"\tmorebuf={pc:", hex(morebuf.pc), " sp:", hex(morebuf.sp), " lr:", hex(morebuf.lr), "}\n",
 			"\tsched={pc:", hex(gp.sched.pc), " sp:", hex(gp.sched.sp), " lr:", hex(gp.sched.lr), " ctxt:", gp.sched.ctxt, "}\n")
 	}
-	if sp < gp.stack.lo { // 栈顶比低地址还小 抛异常
+	if sp < gp.stack.lo {
+		// 栈顶比低地址还小 抛异常
 		print("runtime: gp=", gp, ", goid=", gp.goid, ", gp->status=", hex(readgstatus(gp)), "\n ")
 		print("runtime: split stack overflow: ", hex(sp), " < ", hex(gp.stack.lo), "\n")
 		throw("runtime: split stack overflow")
@@ -1200,7 +1207,8 @@ func newstack() {
 			// We're at a synchronous safe point now, so
 			// do the pending stack shrink.
 			gp.preemptShrink = false
-			shrinkstack(gp) // 收缩栈
+			// 收缩栈
+			shrinkstack(gp)
 		}
 
 		if gp.preemptStop {
@@ -1344,7 +1352,8 @@ func shrinkstack(gp *g) {
 		return
 	}
 	// 获取函数指针
-	f := findfunc(gp.startpc) // 获取gp绑定函数信息
+	// 获取gp绑定函数信息
+	f := findfunc(gp.startpc)
 	if f.valid() && f.funcID == funcID_gcBgMarkWorker {
 		// 如果函数是 gcBgMarkWorker 则返回
 		// We're not allowed to shrink the gcBgMarkWorker

@@ -814,7 +814,7 @@ func TypeSymPrefix(prefix string, t *types.Type) *types.Sym {
 	NeedRuntimeType(t)
 	signatmu.Unlock()
 
-	// print("algsym: %s -> %+S\n", p, s);
+	//print("algsym: %s -> %+S\n", p, s);
 
 	return s
 }

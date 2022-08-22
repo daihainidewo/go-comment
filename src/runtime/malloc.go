@@ -157,8 +157,6 @@ import (
 )
 
 const (
-	debugMalloc = false
-
 	maxTinySize   = _TinySize      // 16
 	tinySizeClass = _TinySizeClass // 2
 	maxSmallSize  = _MaxSmallSize  // 32768
@@ -268,7 +266,8 @@ const (
 	// 32-bit, however, this is one less than 1<<32 because the
 	// number of bytes in the address space doesn't actually fit
 	// in a uintptr.
-	maxAlloc = (1 << heapAddrBits) - (1-_64bit)*1 // 1<<48 256T
+	// 1<<48 256T
+	maxAlloc = (1 << heapAddrBits) - (1-_64bit)*1
 
 	// The number of bits in a heap address, the size of heap
 	// arenas, and the L1 and L2 arena map sizes are related by
@@ -299,7 +298,8 @@ const (
 	// This is particularly important with the race detector,
 	// since it significantly amplifies the cost of committed
 	// memory.
-	heapArenaBytes = 1 << logHeapArenaBytes // 1 << 26 = 64M
+	// 1 << 26 = 64M
+	heapArenaBytes = 1 << logHeapArenaBytes
 
 	heapArenaWords = heapArenaBytes / goarch.PtrSize
 
@@ -312,7 +312,8 @@ const (
 	// heapArenaBitmapWords is the size of each heap arena's bitmap in uintptrs.
 	heapArenaBitmapWords = heapArenaWords / (8 * goarch.PtrSize)
 
-	pagesPerArena = heapArenaBytes / pageSize // 8K
+	// 8K
+	pagesPerArena = heapArenaBytes / pageSize
 
 	// arenaL1Bits L1大小的bit位数
 	// arenaL1Bits is the number of bits of the arena number
@@ -328,7 +329,8 @@ const (
 	// We use the L1 map on 64-bit Windows because the arena size
 	// is small, but the address space is still 48 bits, and
 	// there's a high cost to having a large L2.
-	arenaL1Bits = 6 * (_64bit * goos.IsWindows) // 0
+	// 0
+	arenaL1Bits = 6 * (_64bit * goos.IsWindows)
 
 	// arenaL2Bits L2覆盖bit位数
 	// arenaL2Bits is the number of bits of the arena number
@@ -338,16 +340,19 @@ const (
 	// 1<<arenaL2Bits, so it's important that this not be too
 	// large. 48 bits leads to 32MB arena index allocations, which
 	// is about the practical threshold.
-	arenaL2Bits = heapAddrBits - logHeapArenaBytes - arenaL1Bits // 48 - 26 - 0 = 22
+	// 48 - 26 - 0 = 22
+	arenaL2Bits = heapAddrBits - logHeapArenaBytes - arenaL1Bits
 
 	// arenaL1Shift is the number of bits to shift an arena frame
 	// number by to compute an index into the first level arena map.
-	arenaL1Shift = arenaL2Bits // 22
+	// 22
+	arenaL1Shift = arenaL2Bits
 
 	// arenaBits is the total bits in a combined arena map index.
 	// This is split between the index into the L1 arena map and
 	// the L2 arena map.
-	arenaBits = arenaL1Bits + arenaL2Bits // 0 + 22
+	// 0 + 22
+	arenaBits = arenaL1Bits + arenaL2Bits
 
 	// arenaBaseOffset is the pointer value that corresponds to
 	// index 0 in the heap arena map.
@@ -365,9 +370,10 @@ const (
 	// On other platforms, the user address space is contiguous
 	// and starts at 0, so no offset is necessary.
 	// value 0xffff800000000000
-	arenaBaseOffset = 0xffff800000000000*goarch.IsAmd64 + 0x0a00000000000000*goos.IsAix // 0xffff800000000000
+	arenaBaseOffset = 0xffff800000000000*goarch.IsAmd64 + 0x0a00000000000000*goos.IsAix
 	// A typed version of this constant that will make it into DWARF (for viewcore).
-	arenaBaseOffsetUintptr = uintptr(arenaBaseOffset) // 0xffff800000000000
+	// 0xffff800000000000
+	arenaBaseOffsetUintptr = uintptr(arenaBaseOffset)
 
 	// Max number of threads to run garbage collection.
 	// 2, 3, and 4 are all plausible maximums depending
@@ -390,7 +396,8 @@ const (
 //
 // This must be set by the OS init code (typically in osinit) before
 // mallocinit.
-var physPageSize uintptr // 4096
+// 4096
+var physPageSize uintptr
 
 // physHugePageSize 操作系统huge页，对应用程序不透明 假设为2的幂次
 // physHugePageSize == 1 << physHugePageShift
@@ -660,7 +667,8 @@ func mallocinit() {
 func (h *mheap) sysAlloc(n uintptr) (v unsafe.Pointer, size uintptr) {
 	assertLockHeld(&h.lock)
 
-	n = alignUp(n, heapArenaBytes) // 向上对齐 heapArenaBytes
+	// 向上对齐 heapArenaBytes
+	n = alignUp(n, heapArenaBytes)
 
 	// First, try the arena pre-reservation.
 	// Newly-used mappings are considered released.
@@ -724,7 +732,8 @@ func (h *mheap) sysAlloc(n uintptr) (v unsafe.Pointer, size uintptr) {
 		// All of the hints failed, so we'll take any
 		// (sufficiently aligned) address the kernel will give
 		// us.
-		v, size = sysReserveAligned(nil, n, heapArenaBytes) // 从系统中获取
+		// 从系统中获取
+		v, size = sysReserveAligned(nil, n, heapArenaBytes)
 		if v == nil {
 			return nil, 0
 		}
@@ -841,11 +850,14 @@ func sysReserveAligned(v unsafe.Pointer, size, align uintptr) (unsafe.Pointer, u
 	// for a larger region and remove the parts we don't need.
 	retries := 0
 retry:
-	p := uintptr(sysReserve(v, size+align)) // 尝试直接获取
+	// 尝试直接获取
+	p := uintptr(sysReserve(v, size+align))
 	switch {
-	case p == 0: // 系统没有返回
+	case p == 0:
+		// 系统没有返回
 		return nil, 0
-	case p&(align-1) == 0: // sysReserve 有成功返回 直接返回
+	case p&(align-1) == 0:
+		// sysReserve 有成功返回 直接返回
 		// We got lucky and got an aligned region, so we can
 		// use the whole thing.
 		return unsafe.Pointer(p), size + align
@@ -1606,10 +1618,11 @@ type linearAlloc struct {
 	// mapped    映射空间的最后一个字节
 	// end       保留空间的最后一个字节
 	// mapMemory 如果为true 表示内存从保留状态转到准备状态
-	next      uintptr // next free byte
-	mapped    uintptr // one byte past end of mapped space
-	end       uintptr // end of reserved space
-	mapMemory bool    // transition memory from Reserved to Ready if true
+	next   uintptr // next free byte
+	mapped uintptr // one byte past end of mapped space
+	end    uintptr // end of reserved space
+
+	mapMemory bool // transition memory from Reserved to Ready if true
 }
 
 // init 初始化线性分配器
@@ -1628,7 +1641,8 @@ func (l *linearAlloc) init(base, size uintptr, mapMemory bool) {
 
 // alloc 申请内存，并标记使用
 func (l *linearAlloc) alloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
-	p := alignUp(l.next, align) // 字节对齐
+	// 字节对齐
+	p := alignUp(l.next, align)
 	if p+size > l.end {
 		// 超限 返回空
 		return nil

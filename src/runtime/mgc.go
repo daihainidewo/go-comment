@@ -281,6 +281,7 @@ func pollFractionalWorkerExit() bool {
 	// fractional worker isn't behind again the instant it exits.
 	return float64(selfTime)/float64(delta) > 1.2*gcController.fractionalUtilizationGoal
 }
+
 // work 全局 GC 助手
 var work workType
 
@@ -1604,6 +1605,7 @@ func clearpools() {
 	for _, p := range boringCaches {
 		atomicstorep(p, nil)
 	}
+
 	// 清理全局的sudog cache，将链表断开使之没有对象关联
 	// Clear central sudog cache.
 	// Leave per-P caches alone, they have strictly bounded size.

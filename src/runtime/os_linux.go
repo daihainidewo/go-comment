@@ -433,9 +433,9 @@ func unminit() {
 func mdestroy(mp *m) {
 }
 
-// #ifdef GOARCH_386
-// #define sa_handler k_sa_handler
-// #endif
+//#ifdef GOARCH_386
+//#define sa_handler k_sa_handler
+//#endif
 
 func sigreturn()
 func sigtramp() // Called via C ABI
@@ -470,7 +470,8 @@ func raiseproc(sig uint32)
 
 //go:noescape
 func sched_getaffinity(pid, len uintptr, buf *byte) int32
-func osyield() // 线程让出CPU
+// 线程让出CPU
+func osyield()
 
 //go:nosplit
 func osyield_no_g() {

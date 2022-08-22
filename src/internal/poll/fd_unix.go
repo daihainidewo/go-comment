@@ -16,11 +16,13 @@ import (
 // FD is a file descriptor. The net and os packages use this type as a
 // field of a larger type representing a network connection or OS file.
 type FD struct {
+	// 锁
 	// Lock sysfd and serialize access to Read and Write methods.
-	fdmu fdMutex // 锁
+	fdmu fdMutex
 
+	// 系统的文件描述符
 	// System file descriptor. Immutable until Close.
-	Sysfd int // 系统的文件描述符
+	Sysfd int
 
 	// I/O poller.
 	pd pollDesc

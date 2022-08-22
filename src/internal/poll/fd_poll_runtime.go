@@ -36,7 +36,8 @@ type pollDesc struct {
 var serverInit sync.Once
 
 func (pd *pollDesc) init(fd *FD) error {
-	serverInit.Do(runtime_pollServerInit) // 启动轮询服务
+	// 启动轮询服务
+	serverInit.Do(runtime_pollServerInit)
 	ctx, errno := runtime_pollOpen(uintptr(fd.Sysfd))
 	if errno != 0 {
 		return errnoErr(syscall.Errno(errno))
