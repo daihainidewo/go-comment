@@ -105,6 +105,7 @@ func InitConfig() {
 	ir.Syms.GCWriteBarrier = typecheck.LookupRuntimeFunc("gcWriteBarrier")
 	ir.Syms.Goschedguarded = typecheck.LookupRuntimeFunc("goschedguarded")
 	ir.Syms.Growslice = typecheck.LookupRuntimeFunc("growslice")
+	ir.Syms.Memmove = typecheck.LookupRuntimeFunc("memmove")
 	ir.Syms.Msanread = typecheck.LookupRuntimeFunc("msanread")
 	ir.Syms.Msanwrite = typecheck.LookupRuntimeFunc("msanwrite")
 	ir.Syms.Msanmove = typecheck.LookupRuntimeFunc("msanmove")
@@ -630,7 +631,9 @@ func (s *state) zeroResults() {
 		if typ := n.Type(); TypeOK(typ) {
 			s.assign(n, s.zeroVal(typ), false, 0)
 		} else {
-			s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, n, s.mem())
+			if typ.HasPointers() {
+				s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, n, s.mem())
+			}
 			s.zero(n.Type(), s.decladdrs[n])
 		}
 	}
@@ -948,7 +951,6 @@ var (
 	// marker nodes for temporary variables
 	ptrVar       = ssaMarker("ptr")
 	lenVar       = ssaMarker("len")
-	newlenVar    = ssaMarker("newlen")
 	capVar       = ssaMarker("cap")
 	typVar       = ssaMarker("typ")
 	okVar        = ssaMarker("ok")
@@ -1369,7 +1371,47 @@ func (s *state) zero(t *types.Type, dst *ssa.Value) {
 }
 
 func (s *state) move(t *types.Type, dst, src *ssa.Value) {
+	s.moveWhichMayOverlap(t, dst, src, false)
+}
+func (s *state) moveWhichMayOverlap(t *types.Type, dst, src *ssa.Value, mayOverlap bool) {
 	s.instrumentMove(t, dst, src)
+	if mayOverlap && t.IsArray() && t.NumElem() > 1 && !ssa.IsInlinableMemmove(dst, src, t.Size(), s.f.Config) {
+		// Normally, when moving Go values of type T from one location to another,
+		// we don't need to worry about partial overlaps. The two Ts must either be
+		// in disjoint (nonoverlapping) memory or in exactly the same location.
+		// There are 2 cases where this isn't true:
+		//  1) Using unsafe you can arrange partial overlaps.
+		//  2) Since Go 1.17, you can use a cast from a slice to a ptr-to-array.
+		//     https://go.dev/ref/spec#Conversions_from_slice_to_array_pointer
+		//     This feature can be used to construct partial overlaps of array types.
+		//       var a [3]int
+		//       p := (*[2]int)(a[:])
+		//       q := (*[2]int)(a[1:])
+		//       *p = *q
+		// We don't care about solving 1. Or at least, we haven't historically
+		// and no one has complained.
+		// For 2, we need to ensure that if there might be partial overlap,
+		// then we can't use OpMove; we must use memmove instead.
+		// (memmove handles partial overlap by copying in the correct
+		// direction. OpMove does not.)
+		//
+		// Note that we have to be careful here not to introduce a call when
+		// we're marshaling arguments to a call or unmarshaling results from a call.
+		// Cases where this is happening must pass mayOverlap to false.
+		// (Currently this only happens when unmarshaling results of a call.)
+		if t.HasPointers() {
+			s.rtcall(ir.Syms.Typedmemmove, true, nil, s.reflectType(t), dst, src)
+			// We would have otherwise implemented this move with straightline code,
+			// including a write barrier. Pretend we issue a write barrier here,
+			// so that the write barrier tests work. (Otherwise they'd need to know
+			// the details of IsInlineableMemmove.)
+			s.curfn.SetWBPos(s.peekPos())
+		} else {
+			s.rtcall(ir.Syms.Memmove, true, nil, dst, src, s.constInt(types.Types[types.TUINTPTR], t.Size()))
+		}
+		ssa.LogLargeCopy(s.f.Name, s.peekPos(), t.Size())
+		return
+	}
 	store := s.newValue3I(ssa.OpMove, types.TypeMem, t.Size(), dst, src, s.mem())
 	store.Aux = t
 	s.vars[memVar] = store
@@ -1384,11 +1426,8 @@ func (s *state) stmtList(l ir.Nodes) {
 
 // stmt converts the statement n to SSA and adds it to s.
 func (s *state) stmt(n ir.Node) {
-	if !(n.Op() == ir.OVARKILL || n.Op() == ir.OVARLIVE || n.Op() == ir.OVARDEF) {
-		// OVARKILL, OVARLIVE, and OVARDEF are invisible to the programmer, so we don't use their line numbers to avoid confusion in debugging.
-		s.pushLine(n.Pos())
-		defer s.popLine()
-	}
+	s.pushLine(n.Pos())
+	defer s.popLine()
 
 	// If s.curBlock is nil, and n isn't a label (which might have an associated goto somewhere),
 	// then this code is dead. Stop here.
@@ -1420,7 +1459,7 @@ func (s *state) stmt(n ir.Node) {
 		s.callResult(n, callNormal)
 		if n.Op() == ir.OCALLFUNC && n.X.Op() == ir.ONAME && n.X.(*ir.Name).Class == ir.PFUNC {
 			if fn := n.X.Sym().Name; base.Flag.CompilingRuntime && fn == "throw" ||
-				n.X.Sym().Pkg == ir.Pkgs.Runtime && (fn == "throwinit" || fn == "gopanic" || fn == "panicwrap" || fn == "block" || fn == "panicmakeslicelen" || fn == "panicmakeslicecap" || fn == "panicunsafeslicelen" || fn == "panicunsafeslicenilptr") {
+				n.X.Sym().Pkg == ir.Pkgs.Runtime && (fn == "throwinit" || fn == "gopanic" || fn == "panicwrap" || fn == "block" || fn == "panicmakeslicelen" || fn == "panicmakeslicecap" || fn == "panicunsafeslicelen" || fn == "panicunsafeslicenilptr" || fn == "panicunsafestringlen" || fn == "panicunsafestringnilptr") {
 				m := s.mem()
 				b := s.endBlock()
 				b.Kind = ssa.BlockExit
@@ -1548,6 +1587,36 @@ func (s *state) stmt(n ir.Node) {
 			return
 		}
 
+		// mayOverlap keeps track of whether the LHS and RHS might
+		// refer to overlapping memory.
+		mayOverlap := true
+		if n.Y == nil {
+			// Not a move at all, mayOverlap is not relevant.
+		} else if n.Def {
+			// A variable being defined cannot overlap anything else.
+			mayOverlap = false
+		} else if n.X.Op() == ir.ONAME && n.Y.Op() == ir.ONAME {
+			// Two named things never overlap.
+			// (Or they are identical, which we treat as nonoverlapping.)
+			mayOverlap = false
+		} else if n.Y.Op() == ir.ODEREF {
+			p := n.Y.(*ir.StarExpr).X
+			for p.Op() == ir.OCONVNOP {
+				p = p.(*ir.ConvExpr).X
+			}
+			if p.Op() == ir.OSPTR && p.(*ir.UnaryExpr).X.Type().IsString() {
+				// Pointer fields of strings point to unmodifiable memory.
+				// That memory can't overlap with the memory being written.
+				mayOverlap = false
+			}
+		} else if n.Y.Op() == ir.ORESULT || n.Y.Op() == ir.OCALLFUNC || n.Y.Op() == ir.OCALLINTER {
+			// When copying values out of the return area of a call, we know
+			// the source and destination don't overlap. Importantly, we must
+			// set mayOverlap so we don't introduce a call to memmove while
+			// we still have live data in the argument area.
+			mayOverlap = false
+		}
+
 		// Evaluate RHS.
 		rhs := n.Y
 		if rhs != nil {
@@ -1648,7 +1717,7 @@ func (s *state) stmt(n ir.Node) {
 			}
 		}
 
-		s.assign(n.X, r, deref, skip)
+		s.assignWhichMayOverlap(n.X, r, deref, skip, mayOverlap)
 
 	case ir.OIF:
 		n := n.(*ir.IfStmt)
@@ -1932,26 +2001,6 @@ func (s *state) stmt(n ir.Node) {
 
 		s.startBlock(bEnd)
 
-	case ir.OVARDEF:
-		n := n.(*ir.UnaryExpr)
-		if !s.canSSA(n.X) {
-			s.vars[memVar] = s.newValue1Apos(ssa.OpVarDef, types.TypeMem, n.X.(*ir.Name), s.mem(), false)
-		}
-
-	case ir.OVARLIVE:
-		// Insert a varlive op to record that a variable is still live.
-		n := n.(*ir.UnaryExpr)
-		v := n.X.(*ir.Name)
-		if !v.Addrtaken() {
-			s.Fatalf("VARLIVE variable %v must have Addrtaken set", v)
-		}
-		switch v.Class {
-		case ir.PAUTO, ir.PPARAM, ir.PPARAMOUT:
-		default:
-			s.Fatalf("VARLIVE variable %v must be Auto or Arg", v)
-		}
-		s.vars[memVar] = s.newValue1A(ssa.OpVarLive, types.TypeMem, v, s.mem())
-
 	case ir.OCHECKNIL:
 		n := n.(*ir.UnaryExpr)
 		p := s.expr(n.X)
@@ -2001,14 +2050,16 @@ func (s *state) exit() *ssa.Block {
 	for i, f := range resultFields {
 		n := f.Nname.(*ir.Name)
 		if s.canSSA(n) { // result is in some SSA variable
-			if !n.IsOutputParamInRegisters() {
+			if !n.IsOutputParamInRegisters() && n.Type().HasPointers() {
 				// We are about to store to the result slot.
 				s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, n, s.mem())
 			}
 			results[i] = s.variable(n, n.Type())
 		} else if !n.OnStack() { // result is actually heap allocated
 			// We are about to copy the in-heap result to the result slot.
-			s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, n, s.mem())
+			if n.Type().HasPointers() {
+				s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, n, s.mem())
+			}
 			ha := s.expr(n.Heapaddr)
 			s.instrumentFields(n.Type(), ha, instrumentRead)
 			results[i] = s.newValue2(ssa.OpDereference, n.Type(), ha, s.mem())
@@ -3190,6 +3241,12 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 		c := s.expr(n.Cap)
 		return s.newValue3(ssa.OpSliceMake, n.Type(), p, l, c)
 
+	case ir.OSTRINGHEADER:
+		n := n.(*ir.StringHeaderExpr)
+		p := s.expr(n.Ptr)
+		l := s.expr(n.Len)
+		return s.newValue2(ssa.OpStringMake, n.Type(), p, l)
+
 	case ir.OSLICE, ir.OSLICEARR, ir.OSLICE3, ir.OSLICE3ARR:
 		n := n.(*ir.SliceExpr)
 		check := s.checkPtrEnabled && n.Op() == ir.OSLICE3ARR && n.X.Op() == ir.OCONVNOP && n.X.(*ir.ConvExpr).X.Type().IsUnsafePtr()
@@ -3327,46 +3384,46 @@ func (s *state) resultAddrOfCall(c *ssa.Value, which int64, t *types.Type) *ssa.
 // If inplace is true, it writes the result of the OAPPEND expression n
 // back to the slice being appended to, and returns nil.
 // inplace MUST be set to false if the slice can be SSA'd.
+// Note: this code only handles fixed-count appends. Dotdotdot appends
+// have already been rewritten at this point (by walk).
 func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 	// If inplace is false, process as expression "append(s, e1, e2, e3)":
 	//
 	// ptr, len, cap := s
-	// newlen := len + 3
-	// if newlen > cap {
-	//     ptr, len, cap = growslice(s, newlen)
-	//     newlen = len + 3 // recalculate to avoid a spill
+	// len += 3
+	// if uint(len) > uint(cap) {
+	//     ptr, len, cap = growslice(ptr, len, cap, 3, typ)
+	//     Note that len is unmodified by growslice.
 	// }
 	// // with write barriers, if needed:
-	// *(ptr+len) = e1
-	// *(ptr+len+1) = e2
-	// *(ptr+len+2) = e3
-	// return makeslice(ptr, newlen, cap)
+	// *(ptr+(len-3)) = e1
+	// *(ptr+(len-2)) = e2
+	// *(ptr+(len-1)) = e3
+	// return makeslice(ptr, len, cap)
 	//
 	//
 	// If inplace is true, process as statement "s = append(s, e1, e2, e3)":
 	//
 	// a := &s
 	// ptr, len, cap := s
-	// newlen := len + 3
-	// if uint(newlen) > uint(cap) {
-	//    newptr, len, newcap = growslice(ptr, len, cap, newlen)
-	//    vardef(a)       // if necessary, advise liveness we are writing a new a
-	//    *a.cap = newcap // write before ptr to avoid a spill
-	//    *a.ptr = newptr // with write barrier
+	// len += 3
+	// if uint(len) > uint(cap) {
+	//    ptr, len, cap = growslice(ptr, len, cap, 3, typ)
+	//    vardef(a)    // if necessary, advise liveness we are writing a new a
+	//    *a.cap = cap // write before ptr to avoid a spill
+	//    *a.ptr = ptr // with write barrier
 	// }
-	// newlen = len + 3 // recalculate to avoid a spill
-	// *a.len = newlen
+	// *a.len = len
 	// // with write barriers, if needed:
-	// *(ptr+len) = e1
-	// *(ptr+len+1) = e2
-	// *(ptr+len+2) = e3
+	// *(ptr+(len-3)) = e1
+	// *(ptr+(len-2)) = e2
+	// *(ptr+(len-1)) = e3
 
 	et := n.Type().Elem()
 	pt := types.NewPtr(et)
 
 	// Evaluate slice
 	sn := n.Args[0] // the slice node is the first in the list
-
 	var slice, addr *ssa.Value
 	if inplace {
 		addr = s.addr(sn)
@@ -3379,21 +3436,23 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 	grow := s.f.NewBlock(ssa.BlockPlain)
 	assign := s.f.NewBlock(ssa.BlockPlain)
 
-	// Decide if we need to grow
-	nargs := int64(len(n.Args) - 1)
+	// Decomposse input slice.
 	p := s.newValue1(ssa.OpSlicePtr, pt, slice)
 	l := s.newValue1(ssa.OpSliceLen, types.Types[types.TINT], slice)
 	c := s.newValue1(ssa.OpSliceCap, types.Types[types.TINT], slice)
-	nl := s.newValue2(s.ssaOp(ir.OADD, types.Types[types.TINT]), types.Types[types.TINT], l, s.constInt(types.Types[types.TINT], nargs))
 
-	cmp := s.newValue2(s.ssaOp(ir.OLT, types.Types[types.TUINT]), types.Types[types.TBOOL], c, nl)
+	// Add number of new elements to length.
+	nargs := s.constInt(types.Types[types.TINT], int64(len(n.Args)-1))
+	l = s.newValue2(s.ssaOp(ir.OADD, types.Types[types.TINT]), types.Types[types.TINT], l, nargs)
+
+	// Decide if we need to grow
+	cmp := s.newValue2(s.ssaOp(ir.OLT, types.Types[types.TUINT]), types.Types[types.TBOOL], c, l)
+
+	// Record values of ptr/len/cap before branch.
 	s.vars[ptrVar] = p
-
+	s.vars[lenVar] = l
 	if !inplace {
-		s.vars[newlenVar] = nl
 		s.vars[capVar] = c
-	} else {
-		s.vars[lenVar] = l
 	}
 
 	b := s.endBlock()
@@ -3406,8 +3465,16 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 	// Call growslice
 	s.startBlock(grow)
 	taddr := s.expr(n.X)
-	r := s.rtcall(ir.Syms.Growslice, true, []*types.Type{pt, types.Types[types.TINT], types.Types[types.TINT]}, taddr, p, l, c, nl)
+	r := s.rtcall(ir.Syms.Growslice, true, []*types.Type{n.Type()}, p, l, c, nargs, taddr)
 
+	// Decompose output slice
+	p = s.newValue1(ssa.OpSlicePtr, pt, r[0])
+	l = s.newValue1(ssa.OpSliceLen, types.Types[types.TINT], r[0])
+	c = s.newValue1(ssa.OpSliceCap, types.Types[types.TINT], r[0])
+
+	s.vars[ptrVar] = p
+	s.vars[lenVar] = l
+	s.vars[capVar] = c
 	if inplace {
 		if sn.Op() == ir.ONAME {
 			sn := sn.(*ir.Name)
@@ -3417,15 +3484,8 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 			}
 		}
 		capaddr := s.newValue1I(ssa.OpOffPtr, s.f.Config.Types.IntPtr, types.SliceCapOffset, addr)
-		s.store(types.Types[types.TINT], capaddr, r[2])
-		s.store(pt, addr, r[0])
-		// load the value we just stored to avoid having to spill it
-		s.vars[ptrVar] = s.load(pt, addr)
-		s.vars[lenVar] = r[1] // avoid a spill in the fast path
-	} else {
-		s.vars[ptrVar] = r[0]
-		s.vars[newlenVar] = s.newValue2(s.ssaOp(ir.OADD, types.Types[types.TINT]), types.Types[types.TINT], r[1], s.constInt(types.Types[types.TINT], nargs))
-		s.vars[capVar] = r[2]
+		s.store(types.Types[types.TINT], capaddr, c)
+		s.store(pt, addr, p)
 	}
 
 	b = s.endBlock()
@@ -3433,12 +3493,17 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 
 	// assign new elements to slots
 	s.startBlock(assign)
+	p = s.variable(ptrVar, pt)                      // generates phi for ptr
+	l = s.variable(lenVar, types.Types[types.TINT]) // generates phi for len
+	if !inplace {
+		c = s.variable(capVar, types.Types[types.TINT]) // generates phi for cap
+	}
 
 	if inplace {
-		l = s.variable(lenVar, types.Types[types.TINT]) // generates phi for len
-		nl = s.newValue2(s.ssaOp(ir.OADD, types.Types[types.TINT]), types.Types[types.TINT], l, s.constInt(types.Types[types.TINT], nargs))
+		// Update length in place.
+		// We have to wait until here to make sure growslice succeeded.
 		lenaddr := s.newValue1I(ssa.OpOffPtr, s.f.Config.Types.IntPtr, types.SliceLenOffset, addr)
-		s.store(types.Types[types.TINT], lenaddr, nl)
+		s.store(types.Types[types.TINT], lenaddr, l)
 	}
 
 	// Evaluate args
@@ -3448,7 +3513,7 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 		v     *ssa.Value
 		store bool
 	}
-	args := make([]argRec, 0, nargs)
+	args := make([]argRec, 0, len(n.Args[1:]))
 	for _, n := range n.Args[1:] {
 		if TypeOK(n.Type()) {
 			args = append(args, argRec{v: s.expr(n), store: true})
@@ -3458,12 +3523,9 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 		}
 	}
 
-	p = s.variable(ptrVar, pt) // generates phi for ptr
-	if !inplace {
-		nl = s.variable(newlenVar, types.Types[types.TINT]) // generates phi for nl
-		c = s.variable(capVar, types.Types[types.TINT])     // generates phi for cap
-	}
-	p2 := s.newValue2(ssa.OpPtrIndex, pt, p, l)
+	// Write args into slice.
+	oldLen := s.newValue2(s.ssaOp(ir.OSUB, types.Types[types.TINT]), types.Types[types.TINT], l, nargs)
+	p2 := s.newValue2(ssa.OpPtrIndex, pt, p, oldLen)
 	for i, arg := range args {
 		addr := s.newValue2(ssa.OpPtrIndex, pt, p2, s.constInt(types.Types[types.TINT], int64(i)))
 		if arg.store {
@@ -3474,14 +3536,16 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 	}
 
 	delete(s.vars, ptrVar)
+	delete(s.vars, lenVar)
+	if !inplace {
+		delete(s.vars, capVar)
+	}
+
+	// make result
 	if inplace {
-		delete(s.vars, lenVar)
 		return nil
 	}
-	delete(s.vars, newlenVar)
-	delete(s.vars, capVar)
-	// make result
-	return s.newValue3(ssa.OpSliceMake, n.Type(), p, nl, c)
+	return s.newValue3(ssa.OpSliceMake, n.Type(), p, l, c)
 }
 
 // condBranch evaluates the boolean expression cond and branches to yes
@@ -3548,7 +3612,11 @@ const (
 // If deref is true, then we do left = *right instead (and right has already been nil-checked).
 // If deref is true and right == nil, just do left = 0.
 // skip indicates assignments (at the top level) that can be avoided.
+// mayOverlap indicates whether left&right might partially overlap in memory. Default is false.
 func (s *state) assign(left ir.Node, right *ssa.Value, deref bool, skip skipMask) {
+	s.assignWhichMayOverlap(left, right, deref, skip, false)
+}
+func (s *state) assignWhichMayOverlap(left ir.Node, right *ssa.Value, deref bool, skip skipMask, mayOverlap bool) {
 	if left.Op() == ir.ONAME && ir.IsBlank(left) {
 		return
 	}
@@ -3630,7 +3698,7 @@ func (s *state) assign(left ir.Node, right *ssa.Value, deref bool, skip skipMask
 
 	// If this assignment clobbers an entire local variable, then emit
 	// OpVarDef so liveness analysis knows the variable is redefined.
-	if base, ok := clobberBase(left).(*ir.Name); ok && base.OnStack() && skip == 0 {
+	if base, ok := clobberBase(left).(*ir.Name); ok && base.OnStack() && skip == 0 && t.HasPointers() {
 		s.vars[memVar] = s.newValue1Apos(ssa.OpVarDef, types.TypeMem, base, s.mem(), !ir.IsAutoTmp(base))
 	}
 
@@ -3649,7 +3717,7 @@ func (s *state) assign(left ir.Node, right *ssa.Value, deref bool, skip skipMask
 		if right == nil {
 			s.zero(t, addr)
 		} else {
-			s.move(t, addr, right)
+			s.moveWhichMayOverlap(t, addr, right, mayOverlap)
 		}
 		return
 	}
@@ -4587,12 +4655,12 @@ func InitTables() {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue2(ssa.OpRotateLeft32, types.Types[types.TUINT32], args[0], args[1])
 		},
-		sys.AMD64, sys.ARM, sys.ARM64, sys.S390X, sys.PPC64, sys.Wasm)
+		sys.AMD64, sys.ARM, sys.ARM64, sys.S390X, sys.PPC64, sys.Wasm, sys.Loong64)
 	addF("math/bits", "RotateLeft64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue2(ssa.OpRotateLeft64, types.Types[types.TUINT64], args[0], args[1])
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.PPC64, sys.Wasm)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.PPC64, sys.Wasm, sys.Loong64)
 	alias("math/bits", "RotateLeft", "math/bits", "RotateLeft64", p8...)
 
 	makeOnesCountAMD64 := func(op ssa.Op) func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
@@ -4670,14 +4738,14 @@ func InitTables() {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue3(ssa.OpAdd64carry, types.NewTuple(types.Types[types.TUINT64], types.Types[types.TUINT64]), args[0], args[1], args[2])
 		},
-		sys.AMD64, sys.ARM64, sys.PPC64, sys.S390X)
-	alias("math/bits", "Add", "math/bits", "Add64", sys.ArchAMD64, sys.ArchARM64, sys.ArchPPC64, sys.ArchPPC64LE, sys.ArchS390X)
+		sys.AMD64, sys.ARM64, sys.PPC64, sys.S390X, sys.RISCV64)
+	alias("math/bits", "Add", "math/bits", "Add64", sys.ArchAMD64, sys.ArchARM64, sys.ArchPPC64, sys.ArchPPC64LE, sys.ArchS390X, sys.ArchRISCV64)
 	addF("math/bits", "Sub64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue3(ssa.OpSub64borrow, types.NewTuple(types.Types[types.TUINT64], types.Types[types.TUINT64]), args[0], args[1], args[2])
 		},
-		sys.AMD64, sys.ARM64, sys.PPC64, sys.S390X)
-	alias("math/bits", "Sub", "math/bits", "Sub64", sys.ArchAMD64, sys.ArchARM64, sys.ArchS390X)
+		sys.AMD64, sys.ARM64, sys.PPC64, sys.S390X, sys.RISCV64)
+	alias("math/bits", "Sub", "math/bits", "Sub64", sys.ArchAMD64, sys.ArchARM64, sys.ArchS390X, sys.ArchRISCV64)
 	addF("math/bits", "Div64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			// check for divide-by-zero/overflow and panic with appropriate message
@@ -4866,14 +4934,18 @@ func (s *state) openDeferSave(t *types.Type, val *ssa.Value) *ssa.Value {
 		// Force the tmp storing this defer function to be declared in the entry
 		// block, so that it will be live for the defer exit code (which will
 		// actually access it only if the associated defer call has been activated).
-		s.defvars[s.f.Entry.ID][memVar] = s.f.Entry.NewValue1A(src.NoXPos, ssa.OpVarDef, types.TypeMem, temp, s.defvars[s.f.Entry.ID][memVar])
+		if t.HasPointers() {
+			s.defvars[s.f.Entry.ID][memVar] = s.f.Entry.NewValue1A(src.NoXPos, ssa.OpVarDef, types.TypeMem, temp, s.defvars[s.f.Entry.ID][memVar])
+		}
 		s.defvars[s.f.Entry.ID][memVar] = s.f.Entry.NewValue1A(src.NoXPos, ssa.OpVarLive, types.TypeMem, temp, s.defvars[s.f.Entry.ID][memVar])
 		addrTemp = s.f.Entry.NewValue2A(src.NoXPos, ssa.OpLocalAddr, types.NewPtr(temp.Type()), temp, s.sp, s.defvars[s.f.Entry.ID][memVar])
 	} else {
 		// Special case if we're still in the entry block. We can't use
 		// the above code, since s.defvars[s.f.Entry.ID] isn't defined
 		// until we end the entry block with s.endBlock().
-		s.vars[memVar] = s.newValue1Apos(ssa.OpVarDef, types.TypeMem, temp, s.mem(), false)
+		if t.HasPointers() {
+			s.vars[memVar] = s.newValue1Apos(ssa.OpVarDef, types.TypeMem, temp, s.mem(), false)
+		}
 		s.vars[memVar] = s.newValue1Apos(ssa.OpVarLive, types.TypeMem, temp, s.mem(), false)
 		addrTemp = s.newValue2Apos(ssa.OpLocalAddr, types.NewPtr(temp.Type()), temp, s.sp, s.mem(), false)
 	}
@@ -5055,7 +5127,9 @@ func (s *state) call(n *ir.CallExpr, k callKind, returnResultAddr bool) *ssa.Val
 		t := deferstruct()
 		d := typecheck.TempAt(n.Pos(), s.curfn, t)
 
-		s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, d, s.mem())
+		if t.HasPointers() {
+			s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, d, s.mem())
+		}
 		addr := s.addr(d)
 
 		// Must match deferstruct() below and src/runtime/runtime2.go:_defer.
@@ -5160,9 +5234,17 @@ func (s *state) call(n *ir.CallExpr, k callKind, returnResultAddr bool) *ssa.Val
 	}
 	s.prevCall = call
 	s.vars[memVar] = s.newValue1I(ssa.OpSelectN, types.TypeMem, int64(len(ACResults)), call)
-	// Insert OVARLIVE nodes
-	for _, name := range n.KeepAlive {
-		s.stmt(ir.NewUnaryExpr(n.Pos(), ir.OVARLIVE, name))
+	// Insert VarLive opcodes.
+	for _, v := range n.KeepAlive {
+		if !v.Addrtaken() {
+			s.Fatalf("KeepAlive variable %v must have Addrtaken set", v)
+		}
+		switch v.Class {
+		case ir.PAUTO, ir.PPARAM, ir.PPARAMOUT:
+		default:
+			s.Fatalf("KeepAlive variable %v must be Auto or Arg", v)
+		}
+		s.vars[memVar] = s.newValue1A(ssa.OpVarLive, types.TypeMem, v, s.mem())
 	}
 
 	// Finish block for defers
@@ -6443,7 +6525,9 @@ func (s *state) dottype1(pos src.XPos, src, dst *types.Type, iface, source, targ
 // temp allocates a temp of type t at position pos
 func (s *state) temp(pos src.XPos, t *types.Type) (*ir.Name, *ssa.Value) {
 	tmp := typecheck.TempAt(pos, s.curfn, t)
-	s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, tmp, s.mem())
+	if t.HasPointers() {
+		s.vars[memVar] = s.newValue1A(ssa.OpVarDef, types.TypeMem, tmp, s.mem())
+	}
 	addr := s.addr(tmp)
 	return tmp, addr
 }
@@ -7165,7 +7249,7 @@ func genssa(f *ssa.Func, pp *objw.Progs) {
 		}
 	}
 	if f.HTMLWriter != nil { // spew to ssa.html
-		var buf bytes.Buffer
+		var buf strings.Builder
 		buf.WriteString("<code>")
 		buf.WriteString("<dl class=\"ssa-gen\">")
 		filename := ""
@@ -7187,7 +7271,7 @@ func genssa(f *ssa.Func, pp *objw.Progs) {
 			}
 			buf.WriteString("</dt>")
 			buf.WriteString("<dd class=\"ssa-prog\">")
-			buf.WriteString(fmt.Sprintf("%.5d <span class=\"l%v line-number\">(%s)</span> %s", p.Pc, p.InnermostLineNumber(), p.InnermostLineNumberHTML(), html.EscapeString(p.InstructionString())))
+			fmt.Fprintf(&buf, "%.5d <span class=\"l%v line-number\">(%s)</span> %s", p.Pc, p.InnermostLineNumber(), p.InnermostLineNumberHTML(), html.EscapeString(p.InstructionString()))
 			buf.WriteString("</dd>")
 		}
 		buf.WriteString("</dl>")
@@ -7252,7 +7336,8 @@ func genssa(f *ssa.Func, pp *objw.Progs) {
 func defframe(s *State, e *ssafn, f *ssa.Func) {
 	pp := s.pp
 
-	frame := types.RoundUp(s.maxarg+e.stksize, int64(types.RegSize))
+	s.maxarg = types.RoundUp(s.maxarg, e.stkalign)
+	frame := s.maxarg + e.stksize
 	if Arch.PadFrame != nil {
 		frame = Arch.PadFrame(frame)
 	}
@@ -7690,7 +7775,14 @@ type ssafn struct {
 	strings    map[string]*obj.LSym // map from constant string to data symbols
 	stksize    int64                // stack size for current frame
 	stkptrsize int64                // prefix of stack containing pointers
-	log        bool                 // print ssa debug to the stdout
+
+	// alignment for current frame.
+	// NOTE: when stkalign > PtrSize, currently this only ensures the offsets of
+	// objects in the stack frame are aligned. The stack pointer is still aligned
+	// only PtrSize.
+	stkalign int64
+
+	log bool // print ssa debug to the stdout
 }
 
 // StringData returns a symbol which

@@ -5,7 +5,6 @@
 package testing
 
 import (
-	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,7 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"sync/atomic"
+	"strings"
 	"time"
 )
 
@@ -380,7 +379,7 @@ func (f *F) Fuzz(ff any) {
 			// fuzz worker. This would become very verbose, particularly during
 			// minimization. Return the error instead, and let the caller deal
 			// with the output.
-			var buf bytes.Buffer
+			var buf strings.Builder
 			if ok := run(&buf, e); !ok {
 				return errors.New(buf.String())
 			}
@@ -472,12 +471,12 @@ func runFuzzTests(deps testDeps, fuzzTests []InternalFuzzTarget, deadline time.T
 	if len(fuzzTests) == 0 || *isFuzzWorker {
 		return ran, ok
 	}
-	m := newMatcher(deps.MatchString, *match, "-test.run")
+	m := newMatcher(deps.MatchString, *match, "-test.run", *skip)
 	tctx := newTestContext(*parallel, m)
 	tctx.deadline = deadline
 	var mFuzz *matcher
 	if *matchFuzz != "" {
-		mFuzz = newMatcher(deps.MatchString, *matchFuzz, "-test.fuzz")
+		mFuzz = newMatcher(deps.MatchString, *matchFuzz, "-test.fuzz", *skip)
 	}
 	fctx := &fuzzContext{deps: deps, mode: seedCorpusOnly}
 	root := common{w: os.Stdout} // gather output in one place
@@ -533,7 +532,7 @@ func runFuzzing(deps testDeps, fuzzTests []InternalFuzzTarget) (ok bool) {
 	if len(fuzzTests) == 0 || *matchFuzz == "" {
 		return true
 	}
-	m := newMatcher(deps.MatchString, *matchFuzz, "-test.fuzz")
+	m := newMatcher(deps.MatchString, *matchFuzz, "-test.fuzz", *skip)
 	tctx := newTestContext(1, m)
 	tctx.isFuzzing = true
 	fctx := &fuzzContext{
@@ -615,7 +614,7 @@ func fRunner(f *F, fn func(*F)) {
 		// the original panic should still be
 		// clear.
 		if f.Failed() {
-			atomic.AddUint32(&numFailed, 1)
+			numFailed.Add(1)
 		}
 		err := recover()
 		if err == nil {

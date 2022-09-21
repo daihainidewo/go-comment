@@ -14,7 +14,6 @@ import (
 	"flag"
 	"fmt"
 	"go/format"
-	"io/ioutil"
 	"log"
 	"os"
 	"path"
@@ -94,7 +93,7 @@ type regInfo struct {
 type regMask uint64
 
 func (a arch) regMaskComment(r regMask) string {
-	var buf bytes.Buffer
+	var buf strings.Builder
 	for i := uint64(0); r != 0; i++ {
 		if r&1 != 0 {
 			if buf.Len() == 0 {
@@ -500,7 +499,7 @@ func genOp() {
 		panic(err)
 	}
 
-	if err := ioutil.WriteFile("../opGen.go", b, 0666); err != nil {
+	if err := os.WriteFile("../opGen.go", b, 0666); err != nil {
 		log.Fatalf("can't write output: %v\n", err)
 	}
 
@@ -521,7 +520,7 @@ func genOp() {
 			log.Fatalf("bad opcode regexp %s: %v", pattern, err)
 		}
 
-		src, err := ioutil.ReadFile(a.genfile)
+		src, err := os.ReadFile(a.genfile)
 		if err != nil {
 			log.Fatalf("can't read %s: %v", a.genfile, err)
 		}

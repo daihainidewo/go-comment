@@ -1964,7 +1964,7 @@ func (w *exportWriter) expr(n ir.Node) {
 		w.expr(n.Max)
 		w.typ(n.Type())
 
-	case ir.OCOPY, ir.OCOMPLEX, ir.OUNSAFEADD, ir.OUNSAFESLICE:
+	case ir.OCOPY, ir.OCOMPLEX, ir.OUNSAFEADD, ir.OUNSAFESLICE, ir.OUNSAFESTRING:
 		// treated like other builtin calls (see e.g., OREAL)
 		n := n.(*ir.BinaryExpr)
 		w.op(n.Op())
@@ -1974,7 +1974,7 @@ func (w *exportWriter) expr(n ir.Node) {
 		w.expr(n.Y)
 		w.typ(n.Type())
 
-	case ir.OCONV, ir.OCONVIFACE, ir.OCONVIDATA, ir.OCONVNOP, ir.OBYTES2STR, ir.ORUNES2STR, ir.OSTR2BYTES, ir.OSTR2RUNES, ir.ORUNESTR, ir.OSLICE2ARRPTR:
+	case ir.OCONV, ir.OCONVIFACE, ir.OCONVIDATA, ir.OCONVNOP, ir.OBYTES2STR, ir.ORUNES2STR, ir.OSTR2BYTES, ir.OSTR2RUNES, ir.ORUNESTR, ir.OSLICE2ARR, ir.OSLICE2ARRPTR:
 		n := n.(*ir.ConvExpr)
 		w.op(n.Op())
 		w.pos(n.Pos())
@@ -1982,7 +1982,7 @@ func (w *exportWriter) expr(n ir.Node) {
 		w.expr(n.X)
 		w.bool(n.Implicit())
 
-	case ir.OREAL, ir.OIMAG, ir.OCAP, ir.OCLOSE, ir.OLEN, ir.ONEW, ir.OPANIC:
+	case ir.OREAL, ir.OIMAG, ir.OCAP, ir.OCLOSE, ir.OLEN, ir.ONEW, ir.OPANIC, ir.OUNSAFESTRINGDATA, ir.OUNSAFESLICEDATA:
 		n := n.(*ir.UnaryExpr)
 		w.op(n.Op())
 		w.pos(n.Pos())

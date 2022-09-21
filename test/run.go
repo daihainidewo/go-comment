@@ -535,10 +535,6 @@ func (ctxt *context) match(name string) bool {
 
 func init() {
 	checkShouldTest()
-	// TODO(cuonglm): remove once we fix non-unified frontend or when it gone.
-	if optimizationOff() {
-		delete(go118Failures, "fixedbugs/issue53702.go")
-	}
 }
 
 // goGcflags returns the -gcflags argument to use with go build / go run.
@@ -1969,7 +1965,6 @@ func overlayDir(dstRoot, srcRoot string) error {
 
 // List of files that the compiler cannot errorcheck with the new typechecker (types2).
 var types2Failures = setOf(
-	"notinheap.go",            // types2 doesn't report errors about conversions that are invalid due to //go:notinheap
 	"shift1.go",               // types2 reports two new errors which are probably not right
 	"fixedbugs/issue10700.go", // types2 should give hint about ptr to interface
 	"fixedbugs/issue18331.go", // missing error about misuse of //go:noescape (irgen needs code from noder)
@@ -1977,6 +1972,7 @@ var types2Failures = setOf(
 	"fixedbugs/issue20233.go", // types2 reports two instead of one error (preference: 1.17 compiler)
 	"fixedbugs/issue20245.go", // types2 reports two instead of one error (preference: 1.17 compiler)
 	"fixedbugs/issue31053.go", // types2 reports "unknown field" instead of "cannot refer to unexported field"
+	"fixedbugs/notinheap.go",  // types2 doesn't report errors about conversions that are invalid due to //go:notinheap
 )
 
 var types2Failures32Bit = setOf(
@@ -1986,11 +1982,12 @@ var types2Failures32Bit = setOf(
 )
 
 var go118Failures = setOf(
-	"fixedbugs/issue53702.go",  // 1.18 compiler failed with "Value live at entry" error
 	"fixedbugs/issue54343.go",  // 1.18 compiler assigns receiver parameter to global variable
 	"typeparam/nested.go",      // 1.18 compiler doesn't support function-local types with generics
 	"typeparam/issue51521.go",  // 1.18 compiler produces bad panic message and link error
+	"typeparam/issue54456.go",  // 1.18 compiler fails to distinguish local generic types
 	"typeparam/issue54497.go",  // 1.18 compiler is more conservative about inlining due to repeated issues
+	"typeparam/issue55101.go",  // 1.18 compiler ICEs writing export data
 	"typeparam/mdempsky/16.go", // 1.18 compiler uses interface shape type in failed type assertions
 	"typeparam/mdempsky/17.go", // 1.18 compiler mishandles implicit conversions from range loops
 	"typeparam/mdempsky/18.go", // 1.18 compiler mishandles implicit conversions in select statements

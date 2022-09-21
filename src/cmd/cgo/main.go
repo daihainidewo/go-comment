@@ -18,7 +18,6 @@ import (
 	"go/token"
 	"internal/buildcfg"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -153,7 +152,6 @@ type Type struct {
 	EnumValues map[string]int64
 	Typedef    string
 	BadPointer bool // this pointer type should be represented as a uintptr (deprecated)
-	NotInHeap  bool // this type should have a go:notinheap annotation
 }
 
 // A FuncType collects information about a function type in both the C and Go worlds.
@@ -253,8 +251,7 @@ var gccBaseCmd []string
 
 func main() {
 	objabi.AddVersionFlag() // -V
-	flag.Usage = usage
-	flag.Parse()
+	objabi.Flagparse(usage)
 
 	if *dynobj != "" {
 		// cgo -dynimport is essentially a separate helper command
@@ -347,7 +344,7 @@ func main() {
 			input = aname
 		}
 
-		b, err := ioutil.ReadFile(input)
+		b, err := os.ReadFile(input)
 		if err != nil {
 			fatalf("%s", err)
 		}

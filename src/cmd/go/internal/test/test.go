@@ -306,6 +306,7 @@ control the execution of any test:
 	    run too, so that -run=X/Y matches and runs and reports the result
 	    of all tests matching X, even those without sub-tests matching Y,
 	    because it must run them to look for those sub-tests.
+	    See also -skip.
 
 	-short
 	    Tell long-running tests to shorten their run time.
@@ -319,6 +320,14 @@ control the execution of any test:
 	    the randomizer using the system clock. If -shuffle is set to an
 	    integer N, then N will be used as the seed value. In both cases,
 	    the seed will be reported for reproducibility.
+
+	-skip regexp
+	    Run only those tests, examples, fuzz tests, and benchmarks that
+	    do not match the regular expression. Like for -run and -bench,
+	    for tests and benchmarks, the regular expression is split by unbracketed
+	    slash (/) characters into a sequence of regular expressions, and each
+	    part of a test's identifier must match the corresponding element in
+	    the sequence, if any.
 
 	-timeout d
 	    If a test binary runs longer than duration d, panic.
@@ -744,8 +753,12 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 		}
 	}
 
-	var b work.Builder
-	b.Init()
+	b := work.NewBuilder("")
+	defer func() {
+		if err := b.Close(); err != nil {
+			base.Fatalf("go: %v", err)
+		}
+	}()
 
 	if cfg.BuildI {
 		fmt.Fprint(os.Stderr, "go: -i flag is deprecated\n")
@@ -800,7 +813,19 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 		if !testC || a.Failed {
 			return
 		}
-		b.Init()
+
+		// TODO(bcmills): I have no idea why the Builder must be reset here, but
+		// without this reset dance, TestGoTestDashIDashOWritesBinary fails with
+		// lots of "vet config not found" errors. This was added in CL 5699088,
+		// which had almost no public discussion, a very short commit description,
+		// and left no comment in the code to explain what is going on here. 🤯
+		//
+		// Maybe this has the effect of removing actions that were registered by the
+		// call to CompileAction above?
+		if err := b.Close(); err != nil {
+			base.Fatalf("go: %v", err)
+		}
+		b = work.NewBuilder("")
 	}
 
 	var builds, runs, prints []*work.Action
@@ -916,7 +941,7 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 			ensureImport(p, "sync/atomic")
 		}
 
-		buildTest, runTest, printTest, err := builderTest(&b, ctx, pkgOpts, p, allImports[p])
+		buildTest, runTest, printTest, err := builderTest(b, ctx, pkgOpts, p, allImports[p])
 		if err != nil {
 			str := err.Error()
 			str = strings.TrimPrefix(str, "\n")

@@ -5,10 +5,10 @@
 package types2
 
 import (
-	"bytes"
 	"cmd/compile/internal/syntax"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // ----------------------------------------------------------------------------
@@ -71,7 +71,7 @@ func (s *_TypeSet) String() string {
 	hasMethods := len(s.methods) > 0
 	hasTerms := s.hasTerms()
 
-	var buf bytes.Buffer
+	var buf strings.Builder
 	buf.WriteByte('{')
 	if s.comparable {
 		buf.WriteString("comparable")
@@ -421,7 +421,7 @@ func computeUnionTypeSet(check *Checker, unionSets map[*Union]*_TypeSet, pos syn
 		allTerms = allTerms.union(terms)
 		if len(allTerms) > maxTermCount {
 			if check != nil {
-				check.errorf(pos, "cannot handle more than %d union terms (implementation limitation)", maxTermCount)
+				check.errorf(pos, _InvalidUnion, "cannot handle more than %d union terms (implementation limitation)", maxTermCount)
 			}
 			unionSets[utyp] = &invalidTypeSet
 			return unionSets[utyp]

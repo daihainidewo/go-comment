@@ -129,6 +129,14 @@ func walkExpr1(n ir.Node, init *ir.Nodes) ir.Node {
 		n := n.(*ir.BinaryExpr)
 		return walkUnsafeSlice(n, init)
 
+	case ir.OUNSAFESTRING:
+		n := n.(*ir.BinaryExpr)
+		return walkUnsafeString(n, init)
+
+	case ir.OUNSAFESTRINGDATA, ir.OUNSAFESLICEDATA:
+		n := n.(*ir.UnaryExpr)
+		return walkUnsafeData(n, init)
+
 	case ir.ODOT, ir.ODOTPTR:
 		n := n.(*ir.SelectorExpr)
 		return walkDot(n, init)
@@ -219,6 +227,10 @@ func walkExpr1(n ir.Node, init *ir.Nodes) ir.Node {
 		n := n.(*ir.ConvExpr)
 		return walkConv(n, init)
 
+	case ir.OSLICE2ARR:
+		n := n.(*ir.ConvExpr)
+		return walkSliceToArray(n, init)
+
 	case ir.OSLICE2ARRPTR:
 		n := n.(*ir.ConvExpr)
 		n.X = walkExpr(n.X, init)
@@ -243,6 +255,10 @@ func walkExpr1(n ir.Node, init *ir.Nodes) ir.Node {
 	case ir.OSLICEHEADER:
 		n := n.(*ir.SliceHeaderExpr)
 		return walkSliceHeader(n, init)
+
+	case ir.OSTRINGHEADER:
+		n := n.(*ir.StringHeaderExpr)
+		return walkStringHeader(n, init)
 
 	case ir.OSLICE, ir.OSLICEARR, ir.OSLICESTR, ir.OSLICE3, ir.OSLICE3ARR:
 		n := n.(*ir.SliceExpr)
@@ -545,8 +561,7 @@ func walkCall(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 			var e ir.Node = ir.NewLinksymExpr(n.Pos(), fn.Sym().LinksymABI(abi), types.Types[types.TUINTPTR])
 			e = ir.NewAddrExpr(n.Pos(), e)
 			e.SetType(types.Types[types.TUINTPTR].PtrTo())
-			e = ir.NewConvExpr(n.Pos(), ir.OCONVNOP, n.Type(), e)
-			return e
+			return typecheck.Expr(ir.NewConvExpr(n.Pos(), ir.OCONVNOP, n.Type(), e))
 		}
 		// fn is not a defined function. It must be ABIInternal.
 		// Read the address from func value, i.e. *(*uintptr)(idata(fn)).
@@ -556,8 +571,10 @@ func walkCall(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 		arg = walkExpr(arg, init)
 		var e ir.Node = ir.NewUnaryExpr(n.Pos(), ir.OIDATA, arg)
 		e.SetType(n.Type().PtrTo())
+		e.SetTypecheck(1)
 		e = ir.NewStarExpr(n.Pos(), e)
 		e.SetType(n.Type())
+		e.SetTypecheck(1)
 		return e
 	}
 
@@ -845,6 +862,13 @@ func walkSliceHeader(n *ir.SliceHeaderExpr, init *ir.Nodes) ir.Node {
 	n.Ptr = walkExpr(n.Ptr, init)
 	n.Len = walkExpr(n.Len, init)
 	n.Cap = walkExpr(n.Cap, init)
+	return n
+}
+
+// walkStringHeader walks an OSTRINGHEADER node.
+func walkStringHeader(n *ir.StringHeaderExpr, init *ir.Nodes) ir.Node {
+	n.Ptr = walkExpr(n.Ptr, init)
+	n.Len = walkExpr(n.Len, init)
 	return n
 }
 

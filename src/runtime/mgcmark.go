@@ -218,8 +218,7 @@ func markroot(gcw *gcWork, i uint32, flushBgCredit bool) int64 {
 			userG := getg().m.curg
 			selfScan := gp == userG && readgstatus(userG) == _Grunning
 			if selfScan {
-				casgstatus(userG, _Grunning, _Gwaiting)
-				userG.waitreason = waitReasonGarbageCollectionScan
+				casGToWaiting(userG, _Grunning, waitReasonGarbageCollectionScan)
 			}
 
 			// TODO: suspendG blocks (and spins) until gp
@@ -588,8 +587,7 @@ func gcAssistAlloc1(gp *g, scanWork int64) {
 	}
 
 	// gcDrainN requires the caller to be preemptible.
-	casgstatus(gp, _Grunning, _Gwaiting)
-	gp.waitreason = waitReasonGCAssistMarking
+	casGToWaiting(gp, _Grunning, waitReasonGCAssistMarking)
 
 	// 获取当前 p 的工作缓冲区缓存
 	// drain own cached work first in the hopes that it
@@ -982,10 +980,10 @@ func scanframeworker(frame *stkframe, state *stackScanState, gcw *gcWork) {
 		}
 
 		// Scan arguments to this frame.
-		if frame.arglen != 0 {
+		if n := frame.argBytes(); n != 0 {
 			// TODO: We could pass the entry argument map
 			// to narrow this down further.
-			scanConservative(frame.argp, frame.arglen, nil, gcw, state)
+			scanConservative(frame.argp, n, nil, gcw, state)
 		}
 
 		if isAsyncPreempt || isDebugCall {
@@ -1003,7 +1001,7 @@ func scanframeworker(frame *stkframe, state *stackScanState, gcw *gcWork) {
 		return
 	}
 
-	locals, args, objs := getStackMap(frame, &state.cache, false)
+	locals, args, objs := frame.getStackMap(&state.cache, false)
 
 	// Scan local variables if stack frame has been allocated.
 	if locals.n > 0 {
@@ -1322,6 +1320,8 @@ func scanobject(b uintptr, gcw *gcWork) {
 		throw("scanobject n == 0")
 	}
 	if s.spanclass.noscan() {
+		// Correctness-wise this is ok, but it's inefficient
+		// if noscan objects reach here.
 		throw("scanobject of a noscan object")
 	}
 
@@ -1612,7 +1612,7 @@ func gcDumpObject(label string, obj, off uintptr) {
 //
 //go:nowritebarrier
 //go:nosplit
-func gcmarknewobject(span *mspan, obj, size, scanSize uintptr) {
+func gcmarknewobject(span *mspan, obj, size uintptr) {
 	if useCheckmark { // The world should be stopped so this should not happen.
 		throw("gcmarknewobject called while doing checkmark")
 	}

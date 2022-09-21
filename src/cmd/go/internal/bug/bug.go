@@ -22,6 +22,7 @@ import (
 	"cmd/go/internal/cfg"
 	"cmd/go/internal/envcmd"
 	"cmd/go/internal/web"
+	"cmd/go/internal/work"
 )
 
 var CmdBug = &base.Command{
@@ -42,7 +43,9 @@ func runBug(ctx context.Context, cmd *base.Command, args []string) {
 	if len(args) > 0 {
 		base.Fatalf("go: bug takes no arguments")
 	}
-	var buf bytes.Buffer
+	work.BuildInit()
+
+	var buf strings.Builder
 	buf.WriteString(bugHeader)
 	printGoVersion(&buf)
 	buf.WriteString("### Does this issue reproduce with the latest release?\n\n\n")

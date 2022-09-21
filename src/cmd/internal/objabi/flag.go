@@ -5,12 +5,10 @@
 package objabi
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"internal/buildcfg"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"reflect"
@@ -58,7 +56,7 @@ func expandArgs(in []string) (out []string) {
 				out = make([]string, 0, len(in)*2)
 				out = append(out, in[:i]...)
 			}
-			slurp, err := ioutil.ReadFile(s[1:])
+			slurp, err := os.ReadFile(s[1:])
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -179,8 +177,7 @@ func DecodeArg(arg string) string {
 		return arg
 	}
 
-	// We can't use strings.Builder as this must work at bootstrap.
-	var b bytes.Buffer
+	var b strings.Builder
 	var wasBS bool
 	for _, r := range arg {
 		if wasBS {

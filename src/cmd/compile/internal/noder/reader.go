@@ -89,7 +89,7 @@ func (pr *pkgReader) newReader(k pkgbits.RelocKind, idx pkgbits.Index, marker pk
 	}
 }
 
-// A writer provides APIs for reading an individual element.
+// A reader provides APIs for reading an individual element.
 type reader struct {
 	pkgbits.Decoder
 
@@ -135,6 +135,10 @@ type reader struct {
 	inlFunc      *ir.Func
 	inlTreeIndex int
 	inlPosBases  map[*src.PosBase]*src.PosBase
+
+	// suppressInlPos tracks whether position base rewriting for
+	// inlining should be suppressed. See funcLit.
+	suppressInlPos int
 
 	delayResults bool
 
@@ -286,9 +290,15 @@ func (pr *pkgReader) posBaseIdx(idx pkgbits.Index) *src.PosBase {
 	return b
 }
 
-// TODO(mdempsky): Document this.
+// inlPosBase returns the inlining-adjusted src.PosBase corresponding
+// to oldBase, which must be a non-inlined position. When not
+// inlining, this is just oldBase.
 func (r *reader) inlPosBase(oldBase *src.PosBase) *src.PosBase {
-	if r.inlCall == nil {
+	if index := oldBase.InliningIndex(); index >= 0 {
+		base.Fatalf("oldBase %v already has inlining index %v", oldBase, index)
+	}
+
+	if r.inlCall == nil || r.suppressInlPos != 0 {
 		return oldBase
 	}
 
@@ -301,8 +311,10 @@ func (r *reader) inlPosBase(oldBase *src.PosBase) *src.PosBase {
 	return newBase
 }
 
-// TODO(mdempsky): Document this.
-func (r *reader) updatePos(xpos src.XPos) src.XPos {
+// inlPos returns the inlining-adjusted src.XPos corresponding to
+// xpos, which must be a non-inlined position. When not inlining, this
+// is just xpos.
+func (r *reader) inlPos(xpos src.XPos) src.XPos {
 	pos := base.Ctxt.PosTable.Pos(xpos)
 	pos.SetBase(r.inlPosBase(pos.Base()))
 	return base.Ctxt.PosTable.XPos(pos)
@@ -777,8 +789,13 @@ func (dict *readerDict) mangle(sym *types.Sym) *types.Sym {
 		return sym
 	}
 
+	// If sym is a locally defined generic type, we need the suffix to
+	// stay at the end after mangling so that types/fmt.go can strip it
+	// out again when writing the type's runtime descriptor (#54456).
+	base, suffix := types.SplitVargenSuffix(sym.Name)
+
 	var buf strings.Builder
-	buf.WriteString(sym.Name)
+	buf.WriteString(base)
 	buf.WriteByte('[')
 	for i, targ := range dict.targs {
 		if i > 0 {
@@ -791,6 +808,7 @@ func (dict *readerDict) mangle(sym *types.Sym) *types.Sym {
 		buf.WriteString(targ.LinkString())
 	}
 	buf.WriteByte(']')
+	buf.WriteString(suffix)
 	return sym.Pkg.Lookup(buf.String())
 }
 
@@ -799,7 +817,22 @@ func (dict *readerDict) mangle(sym *types.Sym) *types.Sym {
 // If basic is true, then the type argument is used to instantiate a
 // type parameter whose constraint is a basic interface.
 func shapify(targ *types.Type, basic bool) *types.Type {
-	base.Assertf(targ.Kind() != types.TFORW, "%v is missing its underlying type", targ)
+	if targ.Kind() == types.TFORW {
+		if targ.IsFullyInstantiated() {
+			// For recursive instantiated type argument, it may  still be a TFORW
+			// when shapifying happens. If we don't have targ's underlying type,
+			// shapify won't work. The worst case is we end up not reusing code
+			// optimally in some tricky cases.
+			if base.Debug.Shapify != 0 {
+				base.Warn("skipping shaping of recursive type %v", targ)
+			}
+			if targ.HasShape() {
+				return targ
+			}
+		} else {
+			base.Fatalf("%v is missing its underlying type", targ)
+		}
+	}
 
 	// When a pointer type is used to instantiate a type parameter
 	// constrained by a basic interface, we know the pointer's element
@@ -1063,9 +1096,6 @@ func (r *reader) typeExt(name *ir.Name) {
 	}
 
 	name.SetPragma(r.pragmaFlag())
-	if name.Pragma()&ir.NotInHeap != 0 {
-		typ.SetNotInHeap(true)
-	}
 
 	typecheck.SetBaseTypeIndex(typ, r.Int64(), r.Int64())
 }
@@ -1356,27 +1386,18 @@ func (pr *pkgReader) dictNameOf(dict *readerDict) *ir.Name {
 		reflectdata.MarkTypeUsedInInterface(typ, lsym)
 	}
 
-	// For each (typ, iface) pair, we write *runtime._type pointers
-	// for typ and iface, as well as the *runtime.itab pointer for the
-	// pair. This is wasteful, but it simplifies worrying about tricky
-	// cases like instantiating type parameters with interface types.
-	//
-	// TODO(mdempsky): Add the needed *runtime._type pointers into the
-	// rtypes section above instead, and omit itabs entries when we
-	// statically know it won't be needed.
+	// For each (typ, iface) pair, we write the *runtime.itab pointer
+	// for the pair. For pairs that don't actually require an itab
+	// (i.e., typ is an interface, or iface is an empty interface), we
+	// write a nil pointer instead. This is wasteful, but rare in
+	// practice (e.g., instantiating a type parameter with an interface
+	// type).
 	assertOffset("itabs", dict.itabsOffset())
 	for _, info := range dict.itabs {
 		typ := pr.typIdx(info.typ, dict, true)
 		iface := pr.typIdx(info.iface, dict, true)
 
-		if !iface.IsInterface() {
-			ot += 3 * types.PtrSize
-			continue
-		}
-
-		ot = objw.SymPtr(lsym, ot, reflectdata.TypeLinksym(typ), 0)
-		ot = objw.SymPtr(lsym, ot, reflectdata.TypeLinksym(iface), 0)
-		if !typ.IsInterface() && !iface.IsEmptyInterface() {
+		if !typ.IsInterface() && iface.IsInterface() && !iface.IsEmptyInterface() {
 			ot = objw.SymPtr(lsym, ot, reflectdata.ITabLsym(typ, iface), 0)
 		} else {
 			ot += types.PtrSize
@@ -1422,7 +1443,7 @@ func (dict *readerDict) itabsOffset() int {
 // numWords returns the total number of words that comprise dict's
 // runtime dictionary variable.
 func (dict *readerDict) numWords() int64 {
-	return int64(dict.itabsOffset() + 3*len(dict.itabs))
+	return int64(dict.itabsOffset() + len(dict.itabs))
 }
 
 // varType returns the type of dict's runtime dictionary variable.
@@ -1466,7 +1487,7 @@ func (r *reader) funcarg(param *types.Field, sym *types.Sym, ctxt ir.Class) {
 		return
 	}
 
-	name := ir.NewNameAt(r.updatePos(param.Pos), sym)
+	name := ir.NewNameAt(r.inlPos(param.Pos), sym)
 	setType(name, param.Type)
 	r.addLocal(name, ctxt)
 
@@ -1936,7 +1957,7 @@ func (r *reader) switchStmt(label *types.Sym) ir.Node {
 		pos := r.pos()
 		if r.Bool() {
 			pos := r.pos()
-			sym := typecheck.Lookup(r.String())
+			_, sym := r.localIdent()
 			ident = ir.NewIdent(pos, sym)
 		}
 		x := r.expr()
@@ -2361,26 +2382,52 @@ func (r *reader) expr() (res ir.Node) {
 		typ := r.exprType()
 		return typecheck.Expr(ir.NewUnaryExpr(pos, ir.ONEW, typ))
 
+	case exprReshape:
+		typ := r.typ()
+		x := r.expr()
+
+		if types.IdenticalStrict(x.Type(), typ) {
+			return x
+		}
+
+		// Comparison expressions are constructed as "untyped bool" still.
+		//
+		// TODO(mdempsky): It should be safe to reshape them here too, but
+		// maybe it's better to construct them with the proper type
+		// instead.
+		if x.Type() == types.UntypedBool && typ.IsBoolean() {
+			return x
+		}
+
+		base.AssertfAt(x.Type().HasShape() || typ.HasShape(), x.Pos(), "%L and %v are not shape types", x, typ)
+		base.AssertfAt(types.Identical(x.Type(), typ), x.Pos(), "%L is not shape-identical to %v", x, typ)
+
+		// We use ir.HasUniquePos here as a check that x only appears once
+		// in the AST, so it's okay for us to call SetType without
+		// breaking any other uses of it.
+		//
+		// Notably, any ONAMEs should already have the exactly right shape
+		// type and been caught by types.IdenticalStrict above.
+		base.AssertfAt(ir.HasUniquePos(x), x.Pos(), "cannot call SetType(%v) on %L", typ, x)
+
+		if base.Debug.Reshape != 0 {
+			base.WarnfAt(x.Pos(), "reshaping %L to %v", x, typ)
+		}
+
+		x.SetType(typ)
+		return x
+
 	case exprConvert:
 		implicit := r.Bool()
 		typ := r.typ()
 		pos := r.pos()
 		typeWord, srcRType := r.convRTTI(pos)
 		dstTypeParam := r.Bool()
+		identical := r.Bool()
 		x := r.expr()
 
 		// TODO(mdempsky): Stop constructing expressions of untyped type.
 		x = typecheck.DefaultLit(x, typ)
-
-		if op, why := typecheck.Convertop(x.Op() == ir.OLITERAL, x.Type(), typ); op == ir.OXXX {
-			// types2 ensured that x is convertable to typ under standard Go
-			// semantics, but cmd/compile also disallows some conversions
-			// involving //go:notinheap.
-			//
-			// TODO(mdempsky): This can be removed after #46731 is implemented.
-			base.ErrorfAt(pos, "cannot convert %L to type %v%v", x, typ, why)
-			base.ErrorExit() // harsh, but prevents constructing invalid IR
-		}
 
 		ce := ir.NewConvExpr(pos, ir.OCONV, typ, x)
 		ce.TypeWord, ce.SrcRType = typeWord, srcRType
@@ -2405,8 +2452,10 @@ func (r *reader) expr() (res ir.Node) {
 		// Should this be moved down into typecheck.{Assign,Convert}op?
 		// This would be a non-issue if itabs were unique for each
 		// *underlying* interface type instead.
-		if n, ok := n.(*ir.ConvExpr); ok && n.Op() == ir.OCONVNOP && n.Type().IsInterface() && !n.Type().IsEmptyInterface() && (n.Type().HasShape() || n.X.Type().HasShape()) {
-			n.SetOp(ir.OCONVIFACE)
+		if !identical {
+			if n, ok := n.(*ir.ConvExpr); ok && n.Op() == ir.OCONVNOP && n.Type().IsInterface() && !n.Type().IsEmptyInterface() && (n.Type().HasShape() || n.X.Type().HasShape()) {
+				n.SetOp(ir.OCONVIFACE)
+			}
 		}
 
 		// spec: "If the type is a type parameter, the constant is converted
@@ -2674,7 +2723,13 @@ func syntheticSig(sig *types.Type) (params, results []*types.Field) {
 			if sym == nil || sym.Name == "_" {
 				sym = typecheck.LookupNum(".anon", i)
 			}
-			res[i] = types.NewField(param.Pos, sym, param.Type)
+			// TODO(mdempsky): It would be nice to preserve the original
+			// parameter positions here instead, but at least
+			// typecheck.NewMethodType replaces them with base.Pos, making
+			// them useless. Worse, the positions copied from base.Pos may
+			// have inlining contexts, which we definitely don't want here
+			// (e.g., #54625).
+			res[i] = types.NewField(base.AutogeneratedPos, sym, param.Type)
 			res[i].SetIsDDD(param.IsDDD())
 		}
 		return res
@@ -2715,7 +2770,7 @@ func (r *reader) optExpr() ir.Node {
 // otherwise, they need to create their own wrapper.
 func (r *reader) methodExpr() (wrapperFn, baseFn, dictPtr ir.Node) {
 	recv := r.typ()
-	sig0 := r.signature(types.LocalPkg, nil)
+	sig0 := r.typ()
 	pos := r.pos()
 	_, sym := r.selector()
 
@@ -2978,13 +3033,30 @@ func wrapName(pos src.XPos, x ir.Node) ir.Node {
 func (r *reader) funcLit() ir.Node {
 	r.Sync(pkgbits.SyncFuncLit)
 
+	// The underlying function declaration (including its parameters'
+	// positions, if any) need to remain the original, uninlined
+	// positions. This is because we track inlining-context on nodes so
+	// we can synthesize the extra implied stack frames dynamically when
+	// generating tracebacks, whereas those stack frames don't make
+	// sense *within* the function literal. (Any necessary inlining
+	// adjustments will have been applied to the call expression
+	// instead.)
+	//
+	// This is subtle, and getting it wrong leads to cycles in the
+	// inlining tree, which lead to infinite loops during stack
+	// unwinding (#46234, #54625).
+	//
+	// Note that we *do* want the inline-adjusted position for the
+	// OCLOSURE node, because that position represents where any heap
+	// allocation of the closure is credited (#49171).
+	r.suppressInlPos++
 	pos := r.pos()
 	xtype2 := r.signature(types.LocalPkg, nil)
+	r.suppressInlPos--
 
-	opos := pos
-
-	fn := ir.NewClosureFunc(opos, r.curfn != nil)
+	fn := ir.NewClosureFunc(pos, r.curfn != nil)
 	clo := fn.OClosure
+	clo.SetPos(r.inlPos(pos)) // see comment above
 	ir.NameClosure(clo, r.curfn)
 
 	setType(fn.Nname, xtype2)
@@ -3071,28 +3143,35 @@ func (r *reader) varDictIndex(name *ir.Name) {
 	}
 }
 
+// itab returns a (typ, iface) pair of types.
+//
+// typRType and ifaceRType are expressions that evaluate to the
+// *runtime._type for typ and iface, respectively.
+//
+// If typ is a concrete type and iface is a non-empty interface type,
+// then itab is an expression that evaluates to the *runtime.itab for
+// the pair. Otherwise, itab is nil.
 func (r *reader) itab(pos src.XPos) (typ *types.Type, typRType ir.Node, iface *types.Type, ifaceRType ir.Node, itab ir.Node) {
-	if r.Bool() { // derived types
-		idx := r.Len()
-		info := r.dict.itabs[idx]
-		typ = r.p.typIdx(info.typ, r.dict, true)
-		typRType = r.rttiWord(pos, r.dict.itabsOffset()+3*idx)
-		iface = r.p.typIdx(info.iface, r.dict, true)
-		ifaceRType = r.rttiWord(pos, r.dict.itabsOffset()+3*idx+1)
-		itab = r.rttiWord(pos, r.dict.itabsOffset()+3*idx+2)
-		return
+	typ, typRType = r.rtype0(pos)
+	iface, ifaceRType = r.rtype0(pos)
+
+	idx := -1
+	if r.Bool() {
+		idx = r.Len()
 	}
 
-	typ = r.typ()
-	iface = r.typ()
-	if iface.IsInterface() {
-		typRType = reflectdata.TypePtrAt(pos, typ)
-		ifaceRType = reflectdata.TypePtrAt(pos, iface)
-		if !typ.IsInterface() && !iface.IsEmptyInterface() {
+	if !typ.IsInterface() && iface.IsInterface() && !iface.IsEmptyInterface() {
+		if idx >= 0 {
+			itab = r.rttiWord(pos, r.dict.itabsOffset()+idx)
+		} else {
+			base.AssertfAt(!typ.HasShape(), pos, "%v is a shape type", typ)
+			base.AssertfAt(!iface.HasShape(), pos, "%v is a shape type", iface)
+
 			lsym := reflectdata.ITabLsym(typ, iface)
 			itab = typecheck.LinksymAddr(pos, lsym, types.Types[types.TUINT8])
 		}
 	}
+
 	return
 }
 
@@ -3134,9 +3213,7 @@ func (r *reader) exprType() ir.Node {
 
 	if r.Bool() {
 		typ, rtype, _, _, itab = r.itab(pos)
-		if typ.IsInterface() {
-			itab = nil
-		} else {
+		if !typ.IsInterface() {
 			rtype = nil // TODO(mdempsky): Leave set?
 		}
 	} else {
@@ -3283,22 +3360,28 @@ func (r *reader) pkgObjs(target *ir.Package) []*ir.Name {
 
 // @@@ Inlining
 
+// unifiedHaveInlineBody reports whether we have the function body for
+// fn, so we can inline it.
+func unifiedHaveInlineBody(fn *ir.Func) bool {
+	if fn.Inl == nil {
+		return false
+	}
+
+	_, ok := bodyReaderFor(fn)
+	return ok
+}
+
 var inlgen = 0
 
-// InlineCall implements inline.NewInline by re-reading the function
+// unifiedInlineCall implements inline.NewInline by re-reading the function
 // body from its Unified IR export data.
-func InlineCall(call *ir.CallExpr, fn *ir.Func, inlIndex int) *ir.InlinedCallExpr {
+func unifiedInlineCall(call *ir.CallExpr, fn *ir.Func, inlIndex int) *ir.InlinedCallExpr {
 	// TODO(mdempsky): Turn callerfn into an explicit parameter.
 	callerfn := ir.CurFunc
 
 	pri, ok := bodyReaderFor(fn)
 	if !ok {
-		// TODO(mdempsky): Reconsider this diagnostic's wording, if it's
-		// to be included in Go 1.20.
-		if base.Flag.LowerM != 0 {
-			base.WarnfAt(call.Pos(), "cannot inline call to %v: missing inline body", fn)
-		}
-		return nil
+		base.FatalfAt(call.Pos(), "cannot inline call to %v: missing inline body", fn)
 	}
 
 	if fn.Inl.Body == nil {

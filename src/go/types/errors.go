@@ -62,7 +62,7 @@ func (err *error_) msg(fset *token.FileSet, qf Qualifier) string {
 	if err.empty() {
 		return "no error"
 	}
-	var buf bytes.Buffer
+	var buf strings.Builder
 	for i := range err.desc {
 		p := &err.desc[i]
 		if i > 0 {
@@ -138,7 +138,7 @@ func (check *Checker) sprintf(format string, args ...any) string {
 	return sprintf(fset, qf, false, format, args...)
 }
 
-func sprintf(fset *token.FileSet, qf Qualifier, debug bool, format string, args ...any) string {
+func sprintf(fset *token.FileSet, qf Qualifier, tpSubscripts bool, format string, args ...any) string {
 	for i, arg := range args {
 		switch a := arg.(type) {
 		case nil:
@@ -162,26 +162,34 @@ func sprintf(fset *token.FileSet, qf Qualifier, debug bool, format string, args 
 		case Object:
 			arg = ObjectString(a, qf)
 		case Type:
-			arg = typeString(a, qf, debug)
+			var buf bytes.Buffer
+			w := newTypeWriter(&buf, qf)
+			w.tpSubscripts = tpSubscripts
+			w.typ(a)
+			arg = buf.String()
 		case []Type:
 			var buf bytes.Buffer
+			w := newTypeWriter(&buf, qf)
+			w.tpSubscripts = tpSubscripts
 			buf.WriteByte('[')
 			for i, x := range a {
 				if i > 0 {
 					buf.WriteString(", ")
 				}
-				buf.WriteString(typeString(x, qf, debug))
+				w.typ(x)
 			}
 			buf.WriteByte(']')
 			arg = buf.String()
 		case []*TypeParam:
 			var buf bytes.Buffer
+			w := newTypeWriter(&buf, qf)
+			w.tpSubscripts = tpSubscripts
 			buf.WriteByte('[')
 			for i, x := range a {
 				if i > 0 {
 					buf.WriteString(", ")
 				}
-				buf.WriteString(typeString(x, qf, debug)) // use typeString so we get subscripts when debugging
+				w.typ(x)
 			}
 			buf.WriteByte(']')
 			arg = buf.String()
@@ -370,15 +378,15 @@ func spanOf(at positioner) posSpan {
 
 // stripAnnotations removes internal (type) annotations from s.
 func stripAnnotations(s string) string {
-	var b strings.Builder
+	var buf strings.Builder
 	for _, r := range s {
 		// strip #'s and subscript digits
 		if r < '₀' || '₀'+10 <= r { // '₀' == U+2080
-			b.WriteRune(r)
+			buf.WriteRune(r)
 		}
 	}
-	if b.Len() < len(s) {
-		return b.String()
+	if buf.Len() < len(s) {
+		return buf.String()
 	}
 	return s
 }

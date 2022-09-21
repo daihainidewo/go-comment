@@ -12,7 +12,6 @@ import (
 	"internal/itoa"
 	"internal/oserror"
 	"internal/race"
-	"internal/unsafeheader"
 	"runtime"
 	"sync"
 	"unicode/utf16"
@@ -43,7 +42,13 @@ func UTF16FromString(s string) ([]uint16, error) {
 	if bytealg.IndexByteString(s, 0) != -1 {
 		return nil, EINVAL
 	}
-	return utf16.Encode([]rune(s + "\x00")), nil
+	// In the worst case all characters require two uint16.
+	// Also account for the terminating NULL character.
+	buf := make([]uint16, 0, len(s)*2+1)
+	for _, r := range s {
+		buf = utf16.AppendRune(buf, r)
+	}
+	return utf16.AppendRune(buf, '\x00'), nil
 }
 
 // UTF16ToString returns the UTF-8 encoding of the UTF-16 sequence s,
@@ -72,11 +77,7 @@ func utf16PtrToString(p *uint16) string {
 		n++
 	}
 	// Turn *uint16 into []uint16.
-	var s []uint16
-	hdr := (*unsafeheader.Slice)(unsafe.Pointer(&s))
-	hdr.Data = unsafe.Pointer(p)
-	hdr.Cap = n
-	hdr.Len = n
+	s := unsafe.Slice(p, n)
 	// Decode []uint16 into string.
 	return string(utf16.Decode(s))
 }

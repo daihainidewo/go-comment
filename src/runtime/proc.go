@@ -307,10 +307,10 @@ func forcegchelper() {
 	lockInit(&forcegc.lock, lockRankForcegc)
 	for {
 		lock(&forcegc.lock)
-		if forcegc.idle != 0 {
+		if forcegc.idle.Load() {
 			throw("forcegc: phase error")
 		}
-		atomic.Store(&forcegc.idle, 1)
+		forcegc.idle.Store(true)
 		goparkunlock(&forcegc.lock, waitReasonForceGCIdle, traceEvGoBlock, 1)
 		// this goroutine is explicitly resumed by sysmon
 		if debug.gctrace > 0 {
@@ -336,6 +336,18 @@ func Gosched() {
 //go:nosplit
 func goschedguarded() {
 	mcall(goschedguarded_m)
+}
+
+// goschedIfBusy yields the processor like gosched, but only does so if
+// there are no idle Ps or if we're on the only P and there's nothing in
+// the run queue. In both cases, there is freely available idle time.
+//
+//go:nosplit
+func goschedIfBusy() {
+	if sched.npidle.Load() > 0 {
+		return
+	}
+	mcall(gosched_m)
 }
 
 // gopark 解绑当前g 开启下次调度
@@ -656,7 +668,7 @@ func cpuinit() {
 
 		for i := int32(0); i < n; i++ {
 			p := argv_index(argv, argc+1+i)
-			s := *(*string)(unsafe.Pointer(&stringStruct{unsafe.Pointer(p), findnull(p)}))
+			s := unsafe.String(p, findnull(p))
 
 			if hasPrefix(s, prefix) {
 				env = gostring(p)[len(prefix):]
@@ -967,7 +979,7 @@ func freezetheworld() {
 //
 //go:nosplit
 func readgstatus(gp *g) uint32 {
-	return atomic.Load(&gp.atomicstatus)
+	return gp.atomicstatus.Load()
 }
 
 // casfrom_Gscanstatus cas操作并释放锁
@@ -990,7 +1002,7 @@ func casfrom_Gscanstatus(gp *g, oldval, newval uint32) {
 		_Gscansyscall,
 		_Gscanpreempted:
 		if newval == oldval&^_Gscan {
-			success = atomic.Cas(&gp.atomicstatus, oldval, newval)
+			success = gp.atomicstatus.CompareAndSwap(oldval, newval)
 		}
 	}
 	if !success {
@@ -1011,7 +1023,7 @@ func castogscanstatus(gp *g, oldval, newval uint32) bool {
 		_Gwaiting,
 		_Gsyscall:
 		if newval == oldval|_Gscan {
-			r := atomic.Cas(&gp.atomicstatus, oldval, newval)
+			r := gp.atomicstatus.CompareAndSwap(oldval, newval)
 			if r {
 				acquireLockRank(lockRankGscan)
 			}
@@ -1023,6 +1035,10 @@ func castogscanstatus(gp *g, oldval, newval uint32) bool {
 	throw("castogscanstatus")
 	panic("not reached")
 }
+
+// casgstatusAlwaysTrack is a debug flag that causes casgstatus to always track
+// various latencies on every transition instead of sampling them.
+var casgstatusAlwaysTrack = false
 
 // casgstatus 将 gp 的状态有 oldval 转为 newval
 // If asked to move to or from a Gscanstatus this will throw. Use the castogscanstatus
@@ -1048,15 +1064,15 @@ func casgstatus(gp *g, oldval, newval uint32) {
 
 	// loop if gp->atomicstatus is in a scan state giving
 	// GC time to finish and change the state to oldval.
-	for i := 0; !atomic.Cas(&gp.atomicstatus, oldval, newval); i++ {
-		if oldval == _Gwaiting && gp.atomicstatus == _Grunnable {
+	for i := 0; !gp.atomicstatus.CompareAndSwap(oldval, newval); i++ {
+		if oldval == _Gwaiting && gp.atomicstatus.Load() == _Grunnable {
 			throw("casgstatus: waiting for Gwaiting but is Grunnable")
 		}
 		if i == 0 {
 			nextYield = nanotime() + yieldDelay
 		}
 		if nanotime() < nextYield {
-			for x := 0; x < 10 && gp.atomicstatus != oldval; x++ {
+			for x := 0; x < 10 && gp.atomicstatus.Load() != oldval; x++ {
 				procyield(1)
 			}
 		} else {
@@ -1065,37 +1081,75 @@ func casgstatus(gp *g, oldval, newval uint32) {
 		}
 	}
 
-	// Handle tracking for scheduling latencies.
 	if oldval == _Grunning {
-		// Track every 8th time a goroutine transitions out of running.
-		if gp.trackingSeq%gTrackingPeriod == 0 {
+		// Track every gTrackingPeriod time a goroutine transitions out of running.
+		if casgstatusAlwaysTrack || gp.trackingSeq%gTrackingPeriod == 0 {
 			gp.tracking = true
 		}
 		gp.trackingSeq++
 	}
-	if gp.tracking {
-		if oldval == _Grunnable {
-			// We transitioned out of runnable, so measure how much
-			// time we spent in this state and add it to
-			// runnableTime.
-			now := nanotime()
-			gp.runnableTime += now - gp.runnableStamp
-			gp.runnableStamp = 0
-		}
-		if newval == _Grunnable {
-			// We just transitioned into runnable, so record what
-			// time that happened.
-			now := nanotime()
-			gp.runnableStamp = now
-		} else if newval == _Grunning {
-			// We're transitioning into running, so turn off
-			// tracking and record how much time we spent in
-			// runnable.
-			gp.tracking = false
-			sched.timeToRun.record(gp.runnableTime)
-			gp.runnableTime = 0
-		}
+	if !gp.tracking {
+		return
 	}
+
+	// Handle various kinds of tracking.
+	//
+	// Currently:
+	// - Time spent in runnable.
+	// - Time spent blocked on a sync.Mutex or sync.RWMutex.
+	switch oldval {
+	case _Grunnable:
+		// We transitioned out of runnable, so measure how much
+		// time we spent in this state and add it to
+		// runnableTime.
+		now := nanotime()
+		gp.runnableTime += now - gp.trackingStamp
+		gp.trackingStamp = 0
+	case _Gwaiting:
+		if !gp.waitreason.isMutexWait() {
+			// Not blocking on a lock.
+			break
+		}
+		// Blocking on a lock, measure it. Note that because we're
+		// sampling, we have to multiply by our sampling period to get
+		// a more representative estimate of the absolute value.
+		// gTrackingPeriod also represents an accurate sampling period
+		// because we can only enter this state from _Grunning.
+		now := nanotime()
+		sched.totalMutexWaitTime.Add((now - gp.trackingStamp) * gTrackingPeriod)
+		gp.trackingStamp = 0
+	}
+	switch newval {
+	case _Gwaiting:
+		if !gp.waitreason.isMutexWait() {
+			// Not blocking on a lock.
+			break
+		}
+		// Blocking on a lock. Write down the timestamp.
+		now := nanotime()
+		gp.trackingStamp = now
+	case _Grunnable:
+		// We just transitioned into runnable, so record what
+		// time that happened.
+		now := nanotime()
+		gp.trackingStamp = now
+	case _Grunning:
+		// We're transitioning into running, so turn off
+		// tracking and record how much time we spent in
+		// runnable.
+		gp.tracking = false
+		sched.timeToRun.record(gp.runnableTime)
+		gp.runnableTime = 0
+	}
+}
+
+// casGToWaiting transitions gp from old to _Gwaiting, and sets the wait reason.
+//
+// Use this over casgstatus when possible to ensure that a waitreason is set.
+func casGToWaiting(gp *g, old uint32, reason waitReason) {
+	// Set the wait reason before calling casgstatus, because casgstatus will use it.
+	gp.waitreason = reason
+	casgstatus(gp, old, _Gwaiting)
 }
 
 // casgcopystack 切换gp的状态为 _Gcopystack ，并返回原来的状态
@@ -1112,7 +1166,7 @@ func casgcopystack(gp *g) uint32 {
 		if oldstatus != _Gwaiting && oldstatus != _Grunnable {
 			throw("copystack: bad status, not Gwaiting or Grunnable")
 		}
-		if atomic.Cas(&gp.atomicstatus, oldstatus, _Gcopystack) {
+		if gp.atomicstatus.CompareAndSwap(oldstatus, _Gcopystack) {
 			return oldstatus
 		}
 	}
@@ -1128,7 +1182,7 @@ func casGToPreemptScan(gp *g, old, new uint32) {
 		throw("bad g transition")
 	}
 	acquireLockRank(lockRankGscan)
-	for !atomic.Cas(&gp.atomicstatus, _Grunning, _Gscan|_Gpreempted) {
+	for !gp.atomicstatus.CompareAndSwap(_Grunning, _Gscan|_Gpreempted) {
 	}
 }
 
@@ -1140,7 +1194,8 @@ func casGFromPreempted(gp *g, old, new uint32) bool {
 	if old != _Gpreempted || new != _Gwaiting {
 		throw("bad g transition")
 	}
-	return atomic.Cas(&gp.atomicstatus, _Gpreempted, _Gwaiting)
+	gp.waitreason = waitReasonPreempted
+	return gp.atomicstatus.CompareAndSwap(_Gpreempted, _Gwaiting)
 }
 
 // stopTheWorld 停止所有的P执行goroutine，返回时只有当前goroutine的P运行。
@@ -1179,7 +1234,8 @@ func stopTheWorld(reason string) {
 		// must have preempted all goroutines, including any attempting
 		// to scan our stack, in which case, any stack shrinking will
 		// have already completed by the time we exit.
-		casgstatus(gp, _Grunning, _Gwaiting)
+		// Don't provide a wait reason because we're still executing.
+		casGToWaiting(gp, _Grunning, waitReasonStoppingTheWorld)
 		stopTheWorldWithSema()
 		casgstatus(gp, _Gwaiting, _Grunning)
 	})
@@ -2015,7 +2071,7 @@ var earlycgocallback = []byte("fatal error: cgo callback before cgo call\n")
 // It is called with a working local m, so that it can do things
 // like call schedlock and allocate.
 func newextram() {
-	c := atomic.Xchg(&extraMWaiters, 0)
+	c := extraMWaiters.Swap(0)
 	if c > 0 {
 		for i := uint32(0); i < c; i++ {
 			oneNewExtraM()
@@ -2142,9 +2198,9 @@ func getm() uintptr {
 	return uintptr(unsafe.Pointer(getg().m))
 }
 
-var extram uintptr
+var extram atomic.Uintptr
 var extraMCount uint32 // Protected by lockextra
-var extraMWaiters uint32
+var extraMWaiters atomic.Uint32
 
 // lockextra locks the extra list and returns the list head.
 // The caller must unlock the list by storing a new list head
@@ -2158,7 +2214,7 @@ func lockextra(nilokay bool) *m {
 
 	incr := false
 	for {
-		old := atomic.Loaduintptr(&extram)
+		old := extram.Load()
 		if old == locked {
 			osyield_no_g()
 			continue
@@ -2168,13 +2224,13 @@ func lockextra(nilokay bool) *m {
 				// Add 1 to the number of threads
 				// waiting for an M.
 				// This is cleared by newextram.
-				atomic.Xadd(&extraMWaiters, 1)
+				extraMWaiters.Add(1)
 				incr = true
 			}
 			usleep_no_g(1)
 			continue
 		}
-		if atomic.Casuintptr(&extram, old, locked) {
+		if extram.CompareAndSwap(old, locked) {
 			return (*m)(unsafe.Pointer(old))
 		}
 		osyield_no_g()
@@ -2184,7 +2240,7 @@ func lockextra(nilokay bool) *m {
 
 //go:nosplit
 func unlockextra(mp *m) {
-	atomic.Storeuintptr(&extram, uintptr(unsafe.Pointer(mp)))
+	extram.Store(uintptr(unsafe.Pointer(mp)))
 }
 
 var (
@@ -2804,7 +2860,7 @@ top:
 
 	// 如果有finalizer可用，直接唤醒
 	// Wake up the finalizer G.
-	if fingwait && fingwake {
+	if fingStatus.Load()&(fingWait|fingWake) == fingWait|fingWake {
 		if gp := wakefing(); gp != nil {
 			ready(gp, 0, true)
 		}
@@ -2840,7 +2896,7 @@ top:
 	// blocked thread (e.g. it has already returned from netpoll, but does
 	// not set lastpoll yet), this thread will do blocking netpoll below
 	// anyway.
-	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && sched.lastpoll.Load() != 0 {
+	if netpollinited() && netpollWaiters.Load() > 0 && sched.lastpoll.Load() != 0 {
 		if list := netpoll(0); !list.empty() { // non-blocking
 			gp := list.pop()
 			injectglist(&list)
@@ -3038,7 +3094,7 @@ top:
 
 	// 等待网络工作协程直到下一个计时器
 	// Poll network until next timer.
-	if netpollinited() && (atomic.Load(&netpollWaiters) > 0 || pollUntil != 0) && sched.lastpoll.Swap(0) != 0 {
+	if netpollinited() && (netpollWaiters.Load() > 0 || pollUntil != 0) && sched.lastpoll.Swap(0) != 0 {
 		sched.pollUntil.Store(pollUntil)
 		if mp.p != 0 {
 			throw("findrunnable: netpoll with p")
@@ -3118,7 +3174,7 @@ func pollWork() bool {
 	if !runqempty(p) {
 		return true
 	}
-	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && sched.lastpoll.Load() != 0 {
+	if netpollinited() && netpollWaiters.Load() > 0 && sched.lastpoll.Load() != 0 {
 		if list := netpoll(0); !list.empty() {
 			injectglist(&list)
 			return true
@@ -3567,7 +3623,7 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 		// if we would clear deleted timers.
 		// This corresponds to the condition below where
 		// we decide whether to call clearDeletedTimers.
-		if pp != getg().m.p.ptr() || int(atomic.Load(&pp.deletedTimers)) <= int(atomic.Load(&pp.numTimers)/4) {
+		if pp != getg().m.p.ptr() || int(pp.deletedTimers.Load()) <= int(pp.numTimers.Load()/4) {
 			return now, next, false
 		}
 	}
@@ -3592,7 +3648,7 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	// If this is the local P, and there are a lot of deleted timers,
 	// clear them out. We only do this for the local P to reduce
 	// lock contention on timersLock.
-	if pp == getg().m.p.ptr() && int(atomic.Load(&pp.deletedTimers)) > len(pp.timers)/4 {
+	if pp == getg().m.p.ptr() && int(pp.deletedTimers.Load()) > len(pp.timers)/4 {
 		clearDeletedTimers(pp)
 	}
 
@@ -3638,6 +3694,8 @@ func park_m(gp *g) {
 		traceGoPark(mp.waittraceev, mp.waittraceskip)
 	}
 
+	// N.B. Not using casGToWaiting here because the waitreason is
+	// set by park_m's caller.
 	casgstatus(gp, _Grunning, _Gwaiting)
 	// 解绑curg和m
 	dropg()
@@ -3718,7 +3776,6 @@ func preemptPark(gp *g) {
 		dumpgstatus(gp)
 		throw("bad g status")
 	}
-	gp.waitreason = waitReasonPreempted
 
 	if gp.asyncSafePoint {
 		// Double-check that async preemption does not
@@ -3801,7 +3858,7 @@ func goexit0(gp *g) {
 	gp._defer = nil // should be true already but just in case.
 	gp._panic = nil // non-nil for Goexit during panic. points at stack-allocated data.
 	gp.writebuf = nil
-	gp.waitreason = 0
+	gp.waitreason = waitReasonZero
 	gp.param = nil
 	gp.labels = nil
 	gp.timer = nil
@@ -5102,8 +5159,8 @@ func (pp *p) destroy() {
 		lock(&pp.timersLock)
 		moveTimers(plocal, pp.timers)
 		pp.timers = nil
-		pp.numTimers = 0
-		pp.deletedTimers = 0
+		pp.numTimers.Store(0)
+		pp.deletedTimers.Store(0)
 		pp.timer0When.Store(0)
 		unlock(&pp.timersLock)
 		unlock(&plocal.timersLock)
@@ -5675,9 +5732,9 @@ func sysmon() {
 		}
 		// 检查是否需要强制GC
 		// check if we need to force a GC
-		if t := (gcTrigger{kind: gcTriggerTime, now: now}); t.test() && atomic.Load(&forcegc.idle) != 0 {
+		if t := (gcTrigger{kind: gcTriggerTime, now: now}); t.test() && forcegc.idle.Load() {
 			lock(&forcegc.lock)
-			forcegc.idle = 0
+			forcegc.idle.Store(false)
 			var list gList
 			list.push(forcegc.g)
 			// 将GC任务添加进可执行队列 等待执行
@@ -6137,7 +6194,7 @@ func (p pMask) clear(id int32) {
 // TODO(prattmic): Additional targeted updates may improve the above cases.
 // e.g., updating the mask when stealing a timer.
 func updateTimerPMask(pp *p) {
-	if atomic.Load(&pp.numTimers) > 0 {
+	if pp.numTimers.Load() > 0 {
 		return
 	}
 
@@ -6145,7 +6202,7 @@ func updateTimerPMask(pp *p) {
 	// decrement numTimers when handling a timerModified timer in
 	// checkTimers. We must take timersLock to serialize with these changes.
 	lock(&pp.timersLock)
-	if atomic.Load(&pp.numTimers) == 0 {
+	if pp.numTimers.Load() == 0 {
 		timerpMask.clear(pp.id)
 	}
 	unlock(&pp.timersLock)

@@ -21,12 +21,12 @@ type mOS struct {
 	// profileTimer holds the ID of the POSIX interval timer for profiling CPU
 	// usage on this thread.
 	//
-	// It is valid when the profileTimerValid field is non-zero. A thread
+	// It is valid when the profileTimerValid field is true. A thread
 	// creates and manages its own timer, and these fields are read and written
 	// only by this thread. But because some of the reads on profileTimerValid
-	// are in signal handling code, access to that field uses atomic operations.
+	// are in signal handling code, this field should be atomic type.
 	profileTimer      int32
-	profileTimerValid uint32
+	profileTimerValid atomic.Bool
 
 	// needPerThreadSyscall indicates that a per-thread syscall is required
 	// for doAllThreadsSyscall.
@@ -622,7 +622,7 @@ func validSIGPROF(mp *m, c *sigctxt) bool {
 
 	// Having an M means the thread interacts with the Go scheduler, and we can
 	// check whether there's an active per-thread timer for this thread.
-	if atomic.Load(&mp.profileTimerValid) != 0 {
+	if mp.profileTimerValid.Load() {
 		// If this M has its own per-thread CPU profiling interval timer, we
 		// should track the SIGPROF signals that come from that timer (for
 		// accurate reporting of its CPU usage; see issue 35057) and ignore any
@@ -648,9 +648,9 @@ func setThreadCPUProfiler(hz int32) {
 	}
 
 	// destroy any active timer
-	if atomic.Load(&mp.profileTimerValid) != 0 {
+	if mp.profileTimerValid.Load() {
 		timerid := mp.profileTimer
-		atomic.Store(&mp.profileTimerValid, 0)
+		mp.profileTimerValid.Store(false)
 		mp.profileTimer = 0
 
 		ret := timer_delete(timerid)
@@ -710,7 +710,7 @@ func setThreadCPUProfiler(hz int32) {
 	}
 
 	mp.profileTimer = timerid
-	atomic.Store(&mp.profileTimerValid, 1)
+	mp.profileTimerValid.Store(true)
 }
 
 // perThreadSyscallArgs contains the system call number, arguments, and
@@ -914,4 +914,18 @@ func runPerThreadSyscall() {
 	}
 
 	gp.m.needPerThreadSyscall.Store(0)
+}
+
+const (
+	_SI_USER  = 0
+	_SI_TKILL = -6
+)
+
+// sigFromUser reports whether the signal was sent because of a call
+// to kill or tgkill.
+//
+//go:nosplit
+func (c *sigctxt) sigFromUser() bool {
+	code := int32(c.sigcode())
+	return code == _SI_USER || code == _SI_TKILL
 }

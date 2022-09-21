@@ -88,8 +88,8 @@ func progedit(ctxt *obj.Link, p *obj.Prog, newprog obj.ProgAlloc) {
 		}
 	}
 
-	// Rewrite SUB constants into ADD.
 	switch p.As {
+	// Rewrite SUB constants into ADD.
 	case ASUBC:
 		if p.From.Type == obj.TYPE_CONST {
 			p.From.Offset = -p.From.Offset
@@ -107,7 +107,21 @@ func progedit(ctxt *obj.Link, p *obj.Prog, newprog obj.ProgAlloc) {
 			p.From.Offset = -p.From.Offset
 			p.As = AADD
 		}
+
+	// To maintain backwards compatibility, we accept some 4 argument usage of
+	// several opcodes which was likely not intended, but did work. These are not
+	// added to optab to avoid the chance this behavior might be used with newer
+	// instructions.
+	//
+	// Rewrite argument ordering like "ADDEX R3, $3, R4, R5" into
+	//                                "ADDEX R3, R4, $3, R5"
+	case AVSHASIGMAW, AVSHASIGMAD, AADDEX, AXXSLDWI, AXXPERMDI:
+		if len(p.RestArgs) == 2 && p.Reg == 0 && p.RestArgs[0].Addr.Type == obj.TYPE_CONST && p.RestArgs[1].Addr.Type == obj.TYPE_REG {
+			p.Reg = p.RestArgs[1].Addr.Reg
+			p.RestArgs = p.RestArgs[:1]
+		}
 	}
+
 	if c.ctxt.Headtype == objabi.Haix {
 		c.rewriteToUseTOC(p)
 	} else if c.ctxt.Flag_dynlink {
@@ -1368,12 +1382,23 @@ func (c *ctxt9) stacksplit(p *obj.Prog, framesize int32) *obj.Prog {
 	return p
 }
 
+// MMA accumulator to/from instructions are slightly ambiguous since
+// the argument represents both source and destination, specified as
+// an accumulator. It is treated as a unary destination to simplify
+// the code generation in ppc64map.
+var unaryDst = map[obj.As]bool{
+	AXXSETACCZ: true,
+	AXXMTACC:   true,
+	AXXMFACC:   true,
+}
+
 var Linkppc64 = obj.LinkArch{
 	Arch:           sys.ArchPPC64,
 	Init:           buildop,
 	Preprocess:     preprocess,
 	Assemble:       span9,
 	Progedit:       progedit,
+	UnaryDst:       unaryDst,
 	DWARFRegisters: PPC64DWARFRegisters,
 }
 
@@ -1383,5 +1408,6 @@ var Linkppc64le = obj.LinkArch{
 	Preprocess:     preprocess,
 	Assemble:       span9,
 	Progedit:       progedit,
+	UnaryDst:       unaryDst,
 	DWARFRegisters: PPC64DWARFRegisters,
 }

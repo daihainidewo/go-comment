@@ -494,8 +494,7 @@ func (n name) readvarint(off int) (int, int) {
 	}
 }
 
-// 获取字段名
-func (n name) name() (s string) {
+func (n name) name() string {
 	if n.bytes == nil {
 		return ""
 	}
@@ -503,26 +502,17 @@ func (n name) name() (s string) {
 	if l == 0 {
 		return ""
 	}
-	// 填入字符串
-	hdr := (*stringStruct)(unsafe.Pointer(&s))
-	hdr.str = unsafe.Pointer(n.data(1 + i))
-	hdr.len = l
-	return
+	return unsafe.String(n.data(1+i), l)
 }
 
-// 获取 tag
-func (n name) tag() (s string) {
+func (n name) tag() string {
 	if *n.data(0)&(1<<1) == 0 {
 		// 没有tag 返回空
 		return ""
 	}
 	i, l := n.readvarint(1)
 	i2, l2 := n.readvarint(1 + i + l)
-	// 填充字符串
-	hdr := (*stringStruct)(unsafe.Pointer(&s))
-	hdr.str = unsafe.Pointer(n.data(1 + i + l + i2))
-	hdr.len = l2
-	return
+	return unsafe.String(n.data(1+i+l+i2), l2)
 }
 
 // 获取包路径

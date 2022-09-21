@@ -242,7 +242,7 @@ func (b *B) run1() bool {
 	b.mu.RLock()
 	finished := b.finished
 	b.mu.RUnlock()
-	if atomic.LoadInt32(&b.hasSub) != 0 || finished {
+	if b.hasSub.Load() || finished {
 		tag := "BENCH"
 		if b.skipped {
 			tag = "SKIP"
@@ -335,6 +335,17 @@ func (b *B) launch() {
 		}
 	}
 	b.result = BenchmarkResult{b.N, b.duration, b.bytes, b.netAllocs, b.netBytes, b.extra}
+}
+
+// Elapsed returns the measured elapsed time of the benchmark.
+// The duration reported by Elapsed matches the one measured by
+// StartTimer, StopTimer, and ResetTimer.
+func (b *B) Elapsed() time.Duration {
+	d := b.duration
+	if b.timerOn {
+		d += time.Since(b.start)
+	}
+	return d
 }
 
 // ReportMetric adds "n unit" to the reported benchmark results.
@@ -525,7 +536,7 @@ func runBenchmarks(importPath string, matchString func(pat, str string) (bool, e
 		}
 	}
 	ctx := &benchContext{
-		match:  newMatcher(matchString, *matchBenchmarks, "-test.bench"),
+		match:  newMatcher(matchString, *matchBenchmarks, "-test.bench", *skip),
 		extLen: len(benchmarkName("", maxprocs)),
 	}
 	var bs []InternalBenchmark
@@ -628,7 +639,7 @@ var hideStdoutForTesting = false
 func (b *B) Run(name string, f func(b *B)) bool {
 	// Since b has subbenchmarks, we will no longer run it as a benchmark itself.
 	// Release the lock and acquire it on exit to ensure locks stay paired.
-	atomic.StoreInt32(&b.hasSub, 1)
+	b.hasSub.Store(true)
 	benchmarkLock.Unlock()
 	defer benchmarkLock.Lock()
 
@@ -660,7 +671,7 @@ func (b *B) Run(name string, f func(b *B)) bool {
 	if partial {
 		// Partial name match, like -bench=X/Y matching BenchmarkX.
 		// Only process sub-benchmarks, if any.
-		atomic.StoreInt32(&sub.hasSub, 1)
+		sub.hasSub.Store(true)
 	}
 
 	if b.chatty != nil {

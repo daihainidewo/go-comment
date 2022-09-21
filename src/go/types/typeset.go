@@ -5,10 +5,10 @@
 package types
 
 import (
-	"bytes"
 	"fmt"
 	"go/token"
 	"sort"
+	"strings"
 )
 
 // ----------------------------------------------------------------------------
@@ -71,7 +71,7 @@ func (s *_TypeSet) String() string {
 	hasMethods := len(s.methods) > 0
 	hasTerms := s.hasTerms()
 
-	var buf bytes.Buffer
+	var buf strings.Builder
 	buf.WriteByte('{')
 	if s.comparable {
 		buf.WriteString("comparable")
@@ -286,7 +286,7 @@ func computeInterfaceTypeSet(check *Checker, pos token.Pos, ityp *Interface) *_T
 			terms = tset.terms
 		case *Union:
 			if check != nil && !check.allowVersion(check.pkg, 1, 18) {
-				check.errorf(atPos(pos), _InvalidIfaceEmbed, "embedding interface element %s requires go1.18 or later", u)
+				check.errorf(atPos(pos), _UnsupportedFeature, "embedding interface element %s requires go1.18 or later", u)
 				continue
 			}
 			tset := computeUnionTypeSet(check, unionSets, pos, u)
@@ -301,7 +301,7 @@ func computeInterfaceTypeSet(check *Checker, pos token.Pos, ityp *Interface) *_T
 				continue
 			}
 			if check != nil && !check.allowVersion(check.pkg, 1, 18) {
-				check.errorf(atPos(pos), _InvalidIfaceEmbed, "embedding non-interface type %s requires go1.18 or later", typ)
+				check.errorf(atPos(pos), _UnsupportedFeature, "embedding non-interface type %s requires go1.18 or later", typ)
 				continue
 			}
 			terms = termlist{{false, typ}}

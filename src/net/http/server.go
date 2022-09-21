@@ -2005,10 +2005,18 @@ func (c *conn) serve(ctx context.Context) {
 
 		if d := c.server.idleTimeout(); d != 0 {
 			c.rwc.SetReadDeadline(time.Now().Add(d))
-			if _, err := c.bufr.Peek(4); err != nil {
-				return
-			}
+		} else {
+			c.rwc.SetReadDeadline(time.Time{})
 		}
+
+		// Wait for the connection to become readable again before trying to
+		// read the next request. This prevents a ReadHeaderTimeout or
+		// ReadTimeout from starting until the first bytes of the next request
+		// have been received.
+		if _, err := c.bufr.Peek(4); err != nil {
+			return
+		}
+
 		c.rwc.SetReadDeadline(time.Time{})
 	}
 }
@@ -2676,42 +2684,16 @@ type Server struct {
 
 	inShutdown atomic.Bool // true when server is in shutdown
 
-	disableKeepAlives int32     // accessed atomically.
+	disableKeepAlives atomic.Bool
 	nextProtoOnce     sync.Once // guards setupHTTP2_* init
 	nextProtoErr      error     // result of http2.ConfigureServer if used
 
 	mu         sync.Mutex
 	listeners  map[*net.Listener]struct{}
 	activeConn map[*conn]struct{}
-	doneChan   chan struct{}
 	onShutdown []func()
 
 	listenerGroup sync.WaitGroup
-}
-
-func (s *Server) getDoneChan() <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.getDoneChanLocked()
-}
-
-func (s *Server) getDoneChanLocked() chan struct{} {
-	if s.doneChan == nil {
-		s.doneChan = make(chan struct{})
-	}
-	return s.doneChan
-}
-
-func (s *Server) closeDoneChanLocked() {
-	ch := s.getDoneChanLocked()
-	select {
-	case <-ch:
-		// Already closed. Don't close again.
-	default:
-		// Safe to close here. We're the only closer, guarded
-		// by s.mu.
-		close(ch)
-	}
 }
 
 // Close immediately closes all active net.Listeners and any
@@ -2727,7 +2709,6 @@ func (srv *Server) Close() error {
 	srv.inShutdown.Store(true)
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	srv.closeDoneChanLocked()
 	err := srv.closeListenersLocked()
 
 	// Unlock srv.mu while waiting for listenerGroup.
@@ -2779,7 +2760,6 @@ func (srv *Server) Shutdown(ctx context.Context) error {
 
 	srv.mu.Lock()
 	lnerr := srv.closeListenersLocked()
-	srv.closeDoneChanLocked()
 	for _, f := range srv.onShutdown {
 		go f()
 	}
@@ -2928,12 +2908,12 @@ func (sh serverHandler) ServeHTTP(rw ResponseWriter, req *Request) {
 	}
 
 	if req.URL != nil && strings.Contains(req.URL.RawQuery, ";") {
-		var allowQuerySemicolonsInUse int32
+		var allowQuerySemicolonsInUse atomic.Bool
 		req = req.WithContext(context.WithValue(req.Context(), silenceSemWarnContextKey, func() {
-			atomic.StoreInt32(&allowQuerySemicolonsInUse, 1)
+			allowQuerySemicolonsInUse.Store(true)
 		}))
 		defer func() {
-			if atomic.LoadInt32(&allowQuerySemicolonsInUse) == 0 {
+			if !allowQuerySemicolonsInUse.Load() {
 				sh.srv.logf("http: URL query contains semicolon, which is no longer a supported separator; parts of the query may be stripped when parsed; see golang.org/issue/25192")
 			}
 		}()
@@ -3064,10 +3044,8 @@ func (srv *Server) Serve(l net.Listener) error {
 	for {
 		rw, err := l.Accept()
 		if err != nil {
-			select {
-			case <-srv.getDoneChan():
+			if srv.shuttingDown() {
 				return ErrServerClosed
-			default:
 			}
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
 				if tempDelay == 0 {
@@ -3194,7 +3172,7 @@ func (s *Server) readHeaderTimeout() time.Duration {
 }
 
 func (s *Server) doKeepAlives() bool {
-	return atomic.LoadInt32(&s.disableKeepAlives) == 0 && !s.shuttingDown()
+	return !s.disableKeepAlives.Load() && !s.shuttingDown()
 }
 
 func (s *Server) shuttingDown() bool {
@@ -3207,10 +3185,10 @@ func (s *Server) shuttingDown() bool {
 // shutting down should disable them.
 func (srv *Server) SetKeepAlivesEnabled(v bool) {
 	if v {
-		atomic.StoreInt32(&srv.disableKeepAlives, 0)
+		srv.disableKeepAlives.Store(false)
 		return
 	}
-	atomic.StoreInt32(&srv.disableKeepAlives, 1)
+	srv.disableKeepAlives.Store(true)
 
 	// Close idle HTTP/1 conns:
 	srv.closeIdleConns()

@@ -471,15 +471,15 @@ func Convertop(srcConstant bool, src, dst *types.Type) (ir.Op, string) {
 		return ir.OXXX, ""
 	}
 
-	// Conversions from regular to go:notinheap are not allowed
+	// Conversions from regular to not-in-heap are not allowed
 	// (unless it's unsafe.Pointer). These are runtime-specific
 	// rules.
-	// (a) Disallow (*T) to (*U) where T is go:notinheap but U isn't.
+	// (a) Disallow (*T) to (*U) where T is not-in-heap but U isn't.
 	if src.IsPtr() && dst.IsPtr() && dst.Elem().NotInHeap() && !src.Elem().NotInHeap() {
 		why := fmt.Sprintf(":\n\t%v is incomplete (or unallocatable), but %v is not", dst.Elem(), src.Elem())
 		return ir.OXXX, why
 	}
-	// (b) Disallow string to []T where T is go:notinheap.
+	// (b) Disallow string to []T where T is not-in-heap.
 	if src.IsString() && dst.IsSlice() && dst.Elem().NotInHeap() && (dst.Elem().Kind() == types.ByteType.Kind() || dst.Elem().Kind() == types.RuneType.Kind()) {
 		why := fmt.Sprintf(":\n\t%v is incomplete (or unallocatable)", dst.Elem())
 		return ir.OXXX, why
@@ -579,11 +579,16 @@ func Convertop(srcConstant bool, src, dst *types.Type) (ir.Op, string) {
 		return ir.OCONVNOP, ""
 	}
 
-	// 11. src is a slice and dst is a pointer-to-array.
+	// 11. src is a slice and dst is an array or pointer-to-array.
 	// They must have same element type.
-	if src.IsSlice() && dst.IsPtr() && dst.Elem().IsArray() &&
-		types.Identical(src.Elem(), dst.Elem().Elem()) {
-		return ir.OSLICE2ARRPTR, ""
+	if src.IsSlice() {
+		if dst.IsArray() && types.Identical(src.Elem(), dst.Elem()) {
+			return ir.OSLICE2ARR, ""
+		}
+		if dst.IsPtr() && dst.Elem().IsArray() &&
+			types.Identical(src.Elem(), dst.Elem().Elem()) {
+			return ir.OSLICE2ARRPTR, ""
+		}
 	}
 
 	return ir.OXXX, ""

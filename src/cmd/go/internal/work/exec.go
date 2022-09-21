@@ -2159,7 +2159,7 @@ func (b *Builder) runOut(a *Action, dir string, env []string, cmdargs ...any) ([
 // output unambiguous.
 // TODO: See issue 5279. The printing of commands needs a complete redo.
 func joinUnambiguously(a []string) string {
-	var buf bytes.Buffer
+	var buf strings.Builder
 	for i, s := range a {
 		if i > 0 {
 			buf.WriteByte(' ')
@@ -3407,10 +3407,10 @@ func passLongArgsInResponseFiles(cmd *exec.Cmd) (cleanup func()) {
 func useResponseFile(path string, argLen int) bool {
 	// Unless the program uses objabi.Flagparse, which understands
 	// response files, don't use response files.
-	// TODO: do we need more commands? asm? cgo? For now, no.
+	// TODO: Note that other toolchains like CC are missing here for now.
 	prog := strings.TrimSuffix(filepath.Base(path), ".exe")
 	switch prog {
-	case "compile", "link":
+	case "compile", "link", "cgo", "asm":
 	default:
 		return false
 	}

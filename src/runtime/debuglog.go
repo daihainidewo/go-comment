@@ -64,7 +64,7 @@ func dlog() *dlogger {
 		allp := (*uintptr)(unsafe.Pointer(&allDloggers))
 		all := (*dlogger)(unsafe.Pointer(atomic.Loaduintptr(allp)))
 		for l1 := all; l1 != nil; l1 = l1.allLink {
-			if atomic.Load(&l1.owned) == 0 && atomic.Cas(&l1.owned, 0, 1) {
+			if l1.owned.Load() == 0 && l1.owned.CompareAndSwap(0, 1) {
 				l = l1
 				break
 			}
@@ -80,7 +80,7 @@ func dlog() *dlogger {
 			throw("failed to allocate debug log")
 		}
 		l.w.r.data = &l.w.data
-		l.owned = 1
+		l.owned.Store(1)
 
 		// Prepend to allDloggers list.
 		headp := (*uintptr)(unsafe.Pointer(&allDloggers))
@@ -131,7 +131,7 @@ type dlogger struct {
 
 	// owned indicates that this dlogger is owned by an M. This is
 	// accessed atomically.
-	owned uint32
+	owned atomic.Uint32
 }
 
 // allDloggers is a list of all dloggers, linked through
@@ -160,7 +160,7 @@ func (l *dlogger) end() {
 	}
 
 	// Return the logger to the global pool.
-	atomic.Store(&l.owned, 0)
+	l.owned.Store(0)
 }
 
 const (
@@ -292,21 +292,19 @@ func (l *dlogger) s(x string) *dlogger {
 	if !dlogEnabled {
 		return l
 	}
-	str := stringStructOf(&x)
+
+	strData := unsafe.StringData(x)
 	datap := &firstmoduledata
-	if len(x) > 4 && datap.etext <= uintptr(str.str) && uintptr(str.str) < datap.end {
+	if len(x) > 4 && datap.etext <= uintptr(unsafe.Pointer(strData)) && uintptr(unsafe.Pointer(strData)) < datap.end {
 		// String constants are in the rodata section, which
 		// isn't recorded in moduledata. But it has to be
 		// somewhere between etext and end.
 		l.w.byte(debugLogConstString)
-		l.w.uvarint(uint64(str.len))
-		l.w.uvarint(uint64(uintptr(str.str) - datap.etext))
+		l.w.uvarint(uint64(len(x)))
+		l.w.uvarint(uint64(uintptr(unsafe.Pointer(strData)) - datap.etext))
 	} else {
 		l.w.byte(debugLogString)
-		var b []byte
-		bb := (*slice)(unsafe.Pointer(&b))
-		bb.array = str.str
-		bb.len, bb.cap = str.len, str.len
+		b := unsafe.Slice(strData, len(x))
 		if len(b) > debugLogStringLimit {
 			b = b[:debugLogStringLimit]
 		}
@@ -657,11 +655,7 @@ func (r *debugLogReader) printVal() bool {
 	case debugLogConstString:
 		len, ptr := int(r.uvarint()), uintptr(r.uvarint())
 		ptr += firstmoduledata.etext
-		str := stringStruct{
-			str: unsafe.Pointer(ptr),
-			len: len,
-		}
-		s := *(*string)(unsafe.Pointer(&str))
+		s := unsafe.String((*byte)(unsafe.Pointer(ptr)), len)
 		print(s)
 
 	case debugLogStringOverflow:

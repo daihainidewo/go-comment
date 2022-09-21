@@ -1196,9 +1196,9 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		}
 	}
 
-	var scanSize uintptr
 	if !noscan {
 		// 有指针的块，标记内存与类型
+		var scanSize uintptr
 		heapBitsSetType(uintptr(x), size, dataSize, typ)
 		if dataSize > typ.size {
 			// Array allocation. If there are any
@@ -1227,7 +1227,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// This may be racing with GC so do it atomically if there can be
 	// a race marking the bit.
 	if gcphase != _GCoff {
-		gcmarknewobject(span, uintptr(x), size, scanSize)
+		gcmarknewobject(span, uintptr(x), size)
 	}
 
 	if raceenabled {

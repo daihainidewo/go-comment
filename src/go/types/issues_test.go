@@ -7,7 +7,6 @@
 package types_test
 
 import (
-	"bytes"
 	"fmt"
 	"go/ast"
 	"go/importer"
@@ -429,7 +428,7 @@ func TestIssue29029(t *testing.T) {
 
 	// printInfo prints the *Func definitions recorded in info, one *Func per line.
 	printInfo := func(info *Info) string {
-		var buf bytes.Buffer
+		var buf strings.Builder
 		for _, obj := range info.Defs {
 			if fn, ok := obj.(*Func); ok {
 				fmt.Fprintln(&buf, fn)
@@ -662,5 +661,42 @@ func TestIssue50646(t *testing.T) {
 	}
 	if !AssignableTo(comparableType, anyType) {
 		t.Errorf("comparable not assignable to any")
+	}
+}
+
+func TestIssue55030(t *testing.T) {
+	// makeSig makes the signature func(typ...)
+	makeSig := func(typ Type) {
+		par := NewVar(token.NoPos, nil, "", typ)
+		params := NewTuple(par)
+		NewSignatureType(nil, nil, nil, params, nil, true)
+	}
+
+	// makeSig must not panic for the following (example) types:
+	// []int
+	makeSig(NewSlice(Typ[Int]))
+
+	// string
+	makeSig(Typ[String])
+
+	// P where P's core type is string
+	{
+		P := NewTypeName(token.NoPos, nil, "P", nil) // [P string]
+		makeSig(NewTypeParam(P, NewInterfaceType(nil, []Type{Typ[String]})))
+	}
+
+	// P where P's core type is an (unnamed) slice
+	{
+		P := NewTypeName(token.NoPos, nil, "P", nil) // [P []int]
+		makeSig(NewTypeParam(P, NewInterfaceType(nil, []Type{NewSlice(Typ[Int])})))
+	}
+
+	// P where P's core type is bytestring (i.e., string or []byte)
+	{
+		t1 := NewTerm(true, Typ[String])             // ~string
+		t2 := NewTerm(false, NewSlice(Typ[Byte]))    // []byte
+		u := NewUnion([]*Term{t1, t2})               // ~string | []byte
+		P := NewTypeName(token.NoPos, nil, "P", nil) // [P ~string | []byte]
+		makeSig(NewTypeParam(P, NewInterfaceType(nil, []Type{u})))
 	}
 }

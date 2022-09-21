@@ -927,8 +927,11 @@ func (w *writer) qualifiedIdent(obj types2.Object) {
 		decl, ok := w.p.typDecls[obj.(*types2.TypeName)]
 		assert(ok)
 		if decl.gen != 0 {
-			// TODO(mdempsky): Find a better solution than embedding middle
-			// dot in the symbol name; this is terrible.
+			// For local defined types, we embed a scope-disambiguation
+			// number directly into their name. types.SplitVargenSuffix then
+			// knows to look for this.
+			//
+			// TODO(mdempsky): Find a better solution; this is terrible.
 			name = fmt.Sprintf("%s·%v", name, decl.gen)
 		}
 	}
@@ -1481,6 +1484,10 @@ func (w *writer) switchStmt(stmt *syntax.SwitchStmt) {
 		w.pos(guard)
 		if tag := guard.Lhs; w.Bool(tag != nil) {
 			w.pos(tag)
+
+			// Like w.localIdent, but we don't have a types2.Object.
+			w.Sync(pkgbits.SyncLocalIdent)
+			w.pkg(w.p.curpkg)
 			w.String(tag.Value)
 		}
 		w.expr(guard.X)
@@ -1619,6 +1626,16 @@ func (w *writer) expr(expr syntax.Expr) {
 			w.pos(expr)
 			w.typ(tv.Type)
 			return
+		}
+
+		// With shape types (and particular pointer shaping), we may have
+		// an expression of type "go.shape.*uint8", but need to reshape it
+		// to another shape-identical type to allow use in field
+		// selection, indexing, etc.
+		if typ := tv.Type; !tv.IsBuiltin() && !isTuple(typ) && !isUntyped(typ) {
+			w.Code(exprReshape)
+			w.typ(typ)
+			// fallthrough
 		}
 	}
 
@@ -1781,14 +1798,7 @@ func (w *writer) expr(expr syntax.Expr) {
 		if tv.IsType() {
 			assert(len(expr.ArgList) == 1)
 			assert(!expr.HasDots)
-
-			w.Code(exprConvert)
-			w.Bool(false) // explicit
-			w.typ(tv.Type)
-			w.pos(expr)
-			w.convRTTI(w.p.typeOf(expr.ArgList[0]), tv.Type)
-			w.Bool(isTypeParam(tv.Type))
-			w.expr(expr.ArgList[0])
+			w.convertExpr(tv.Type, expr.ArgList[0], false)
 			break
 		}
 
@@ -1960,7 +1970,7 @@ func (w *writer) methodExpr(expr *syntax.SelectorExpr, recv types2.Type, sel *ty
 	sig := fun.Type().(*types2.Signature)
 
 	w.typ(recv)
-	w.signature(sig)
+	w.typ(sig)
 	w.pos(expr)
 	w.selector(fun)
 
@@ -2056,19 +2066,30 @@ func (w *writer) multiExpr(pos poser, dstType func(int) types2.Type, exprs []syn
 // from expr's type, then an implicit conversion operation is inserted
 // at expr's position.
 func (w *writer) implicitConvExpr(dst types2.Type, expr syntax.Expr) {
+	w.convertExpr(dst, expr, true)
+}
+
+func (w *writer) convertExpr(dst types2.Type, expr syntax.Expr, implicit bool) {
 	src := w.p.typeOf(expr)
-	if dst != nil && !types2.Identical(src, dst) {
-		if !types2.AssignableTo(src, dst) {
-			w.p.fatalf(expr.Pos(), "%v is not assignable to %v", src, dst)
-		}
-		w.Code(exprConvert)
-		w.Bool(true) // implicit
-		w.typ(dst)
-		w.pos(expr)
-		w.convRTTI(src, dst)
-		w.Bool(isTypeParam(dst))
-		// fallthrough
+
+	// Omit implicit no-op conversions.
+	identical := dst == nil || types2.Identical(src, dst)
+	if implicit && identical {
+		w.expr(expr)
+		return
 	}
+
+	if implicit && !types2.AssignableTo(src, dst) {
+		w.p.fatalf(expr, "%v is not assignable to %v", src, dst)
+	}
+
+	w.Code(exprConvert)
+	w.Bool(implicit)
+	w.typ(dst)
+	w.pos(expr)
+	w.convRTTI(src, dst)
+	w.Bool(isTypeParam(dst))
+	w.Bool(identical)
 	w.expr(expr)
 }
 
@@ -2166,9 +2187,13 @@ func (w *writer) exprs(exprs []syntax.Expr) {
 func (w *writer) rtype(typ types2.Type) {
 	typ = types2.Default(typ)
 
+	info := w.p.typIdx(typ, w.dict)
+	w.rtypeInfo(info)
+}
+
+func (w *writer) rtypeInfo(info typeInfo) {
 	w.Sync(pkgbits.SyncRType)
 
-	info := w.p.typIdx(typ, w.dict)
 	if w.Bool(info.derived) {
 		w.Len(w.dict.rtypeIdx(info))
 	} else {
@@ -2190,17 +2215,22 @@ func isUntyped(typ types2.Type) bool {
 	return ok && basic.Info()&types2.IsUntyped != 0
 }
 
+func isTuple(typ types2.Type) bool {
+	_, ok := typ.(*types2.Tuple)
+	return ok
+}
+
 func (w *writer) itab(typ, iface types2.Type) {
 	typ = types2.Default(typ)
 	iface = types2.Default(iface)
 
 	typInfo := w.p.typIdx(typ, w.dict)
 	ifaceInfo := w.p.typIdx(iface, w.dict)
+
+	w.rtypeInfo(typInfo)
+	w.rtypeInfo(ifaceInfo)
 	if w.Bool(typInfo.derived || ifaceInfo.derived) {
 		w.Len(w.dict.itabIdx(typInfo, ifaceInfo))
-	} else {
-		w.typInfo(typInfo)
-		w.typInfo(ifaceInfo)
 	}
 }
 
@@ -2337,7 +2367,7 @@ func (c *declCollector) Visit(n syntax.Node) syntax.Visitor {
 		if n.Alias {
 			pw.checkPragmas(n.Pragma, 0, false)
 		} else {
-			pw.checkPragmas(n.Pragma, typePragmas, false)
+			pw.checkPragmas(n.Pragma, 0, false)
 
 			// Assign a unique ID to function-scoped defined types.
 			if c.withinFunc {

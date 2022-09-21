@@ -14,12 +14,19 @@
 // Within these functions, use the Error, Fail or related methods to signal failure.
 //
 // To write a new test suite, create a file whose name ends _test.go that
-// contains the TestXxx functions as described here. Put the file in the same
-// package as the one being tested. The file will be excluded from regular
+// contains the TestXxx functions as described here.
+// The file will be excluded from regular
 // package builds but will be included when the "go test" command is run.
-// For more detail, run "go help test" and "go help testflag".
 //
-// A simple test function looks like this:
+// The test file can be in the same package as the one being tested,
+// or in a corresponding package with the suffix "_test".
+//
+// If the test file is in the same package, it may refer to unexported
+// identifiers within the package, as in this example:
+//
+//	package abs
+//
+//	import "testing"
 //
 //	func TestAbs(t *testing.T) {
 //	    got := Abs(-1)
@@ -27,6 +34,27 @@
 //	        t.Errorf("Abs(-1) = %d; want 1", got)
 //	    }
 //	}
+//
+// If the file is in a separate "_test" package, the package being tested
+// must be imported explicitly and only its exported identifiers may be used.
+// This is known as "black box" testing.
+//
+//	package abs_test
+//
+//	import (
+//		"testing"
+//
+//		"path_to_pkg/abs"
+//	)
+//
+//	func TestAbs(t *testing.T) {
+//	    got := abs.Abs(-1)
+//	    if got != 1 {
+//	        t.Errorf("Abs(-1) = %d; want 1", got)
+//	    }
+//	}
+//
+// For more detail, run "go help test" and "go help testflag".
 //
 // # Benchmarks
 //
@@ -394,6 +422,7 @@ func Init() {
 	coverProfile = flag.String("test.coverprofile", "", "write a coverage profile to `file`")
 	matchList = flag.String("test.list", "", "list tests, examples, and benchmarks matching `regexp` then exit")
 	match = flag.String("test.run", "", "run only tests and examples matching `regexp`")
+	skip = flag.String("test.skip", "", "do not list or run tests matching `regexp`")
 	memProfile = flag.String("test.memprofile", "", "write an allocation profile to `file`")
 	memProfileRate = flag.Int("test.memprofilerate", 0, "set memory allocation profiling `rate` (see runtime.MemProfileRate)")
 	cpuProfile = flag.String("test.cpuprofile", "", "write a cpu profile to `file`")
@@ -423,6 +452,7 @@ var (
 	coverProfile         *string
 	matchList            *string
 	match                *string
+	skip                 *string
 	memProfile           *string
 	memProfileRate       *int
 	cpuProfile           *string
@@ -443,7 +473,7 @@ var (
 	cpuList     []int
 	testlogFile *os.File
 
-	numFailed uint32 // number of test failures
+	numFailed atomic.Uint32 // number of test failures
 )
 
 type chattyPrinter struct {
@@ -511,7 +541,7 @@ type common struct {
 
 	chatty     *chattyPrinter // A copy of chattyPrinter, if the chatty flag is set.
 	bench      bool           // Whether the current test is a benchmark.
-	hasSub     int32          // Written atomically.
+	hasSub     atomic.Bool    // whether there are sub-benchmarks.
 	raceErrors int            // Number of races detected during test.
 	runner     string         // Function name of tRunner running the test.
 
@@ -1099,12 +1129,17 @@ func (c *common) TempDir() string {
 			})
 		}
 	}
+
+	if c.tempDirErr == nil {
+		c.tempDirSeq++
+	}
+	seq := c.tempDirSeq
 	c.tempDirMu.Unlock()
 
 	if c.tempDirErr != nil {
 		c.Fatalf("TempDir: %v", c.tempDirErr)
 	}
-	seq := atomic.AddInt32(&c.tempDirSeq, 1)
+
 	dir := fmt.Sprintf("%s%c%03d", c.tempDir, os.PathSeparator, seq)
 	if err := os.Mkdir(dir, 0777); err != nil {
 		c.Fatalf("TempDir: %v", err)
@@ -1312,7 +1347,7 @@ func tRunner(t *T, fn func(t *T)) {
 	// a signal saying that the test is done.
 	defer func() {
 		if t.Failed() {
-			atomic.AddUint32(&numFailed, 1)
+			numFailed.Add(1)
 		}
 
 		if t.raceErrors+race.Errors() > 0 {
@@ -1431,7 +1466,7 @@ func tRunner(t *T, fn func(t *T)) {
 		// Do not lock t.done to allow race detector to detect race in case
 		// the user does not appropriately synchronize a goroutine.
 		t.done = true
-		if t.parent != nil && atomic.LoadInt32(&t.hasSub) == 0 {
+		if t.parent != nil && !t.hasSub.Load() {
 			t.setRan()
 		}
 	}()
@@ -1458,7 +1493,7 @@ func tRunner(t *T, fn func(t *T)) {
 // Run may be called simultaneously from multiple goroutines, but all such calls
 // must return before the outer test function for t returns.
 func (t *T) Run(name string, f func(t *T)) bool {
-	atomic.StoreInt32(&t.hasSub, 1)
+	t.hasSub.Store(true)
 	testName, ok, _ := t.context.match.fullName(&t.common, name)
 	if !ok || shouldFailFast() {
 		return true
@@ -1657,6 +1692,8 @@ func MainStart(deps testDeps, tests []InternalTest, benchmarks []InternalBenchma
 	}
 }
 
+var testingTesting bool
+
 // Run runs the tests. It returns an exit code to pass to os.Exit.
 func (m *M) Run() (code int) {
 	defer func() {
@@ -1687,7 +1724,7 @@ func (m *M) Run() (code int) {
 		return
 	}
 
-	if len(*matchList) != 0 {
+	if *matchList != "" {
 		listTests(m.deps.MatchString, m.tests, m.benchmarks, m.fuzzTargets, m.examples)
 		m.exitCode = 0
 		return
@@ -1729,6 +1766,16 @@ func (m *M) Run() (code int) {
 		m.stopAlarm()
 		if !testRan && !exampleRan && !fuzzTargetsRan && *matchBenchmarks == "" && *matchFuzz == "" {
 			fmt.Fprintln(os.Stderr, "testing: warning: no tests to run")
+			if testingTesting && *match != "^$" {
+				// If this happens during testing of package testing it could be that
+				// package testing's own logic for when to run a test is broken,
+				// in which case every test will run nothing and succeed,
+				// with no obvious way to detect this problem (since no tests are running).
+				// So make 'no tests to run' a hard failure when testing package testing itself.
+				// The compile-only builders use -run=^$ to run no tests, so allow that.
+				fmt.Println("FAIL: package testing must run tests")
+				testOk = false
+			}
 		}
 		if !testOk || !exampleOk || !fuzzTargetsOk || !runBenchmarks(m.deps.ImportPath(), m.deps.MatchString, m.benchmarks) || race.Errors() > 0 {
 			fmt.Println("FAIL")
@@ -1828,7 +1875,7 @@ func runTests(matchString func(pat, str string) (bool, error), tests []InternalT
 				// to keep trying.
 				break
 			}
-			ctx := newTestContext(*parallel, newMatcher(matchString, *match, "-test.run"))
+			ctx := newTestContext(*parallel, newMatcher(matchString, *match, "-test.run", *skip))
 			ctx.deadline = deadline
 			t := &T{
 				common: common{
@@ -2064,5 +2111,5 @@ func parseCpuList() {
 }
 
 func shouldFailFast() bool {
-	return *failFast && atomic.LoadUint32(&numFailed) > 0
+	return *failFast && numFailed.Load() > 0
 }
