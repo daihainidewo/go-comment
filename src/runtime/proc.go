@@ -3643,6 +3643,7 @@ func park_m(gp *g) {
 	dropg()
 
 	if fn := mp.waitunlockf; fn != nil {
+		// 尝试解锁lock
 		ok := fn(gp, mp.waitlock)
 		mp.waitunlockf = nil
 		mp.waitlock = nil

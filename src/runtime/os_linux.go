@@ -33,7 +33,8 @@ type mOS struct {
 	needPerThreadSyscall atomic.Uint8
 }
 
-// 调用系统调用 futex 锁住
+// 调用系统调用 futex
+// man 手册 https://man7.org/linux/man-pages/man2/futex.2.html
 //go:noescape
 func futex(addr unsafe.Pointer, op int32, val uint32, ts, addr2 unsafe.Pointer, val3 uint32) int32
 
@@ -55,11 +56,14 @@ const (
 	// 此操作为内存原子操作
 	_FUTEX_WAIT_PRIVATE = 0 | _FUTEX_PRIVATE_FLAG
 	// 唤醒被WAIT的锁
-	// 通常 1 唤醒单个等待者 INT_MAX 唤醒所有等待者
+	// 通常 1 唤醒单个等待者
+	// INT_MAX 唤醒所有等待者
 	// 不保证唤醒顺序
 	_FUTEX_WAKE_PRIVATE = 1 | _FUTEX_PRIVATE_FLAG
 )
 
+// futexsleep 锁住 addr
+//
 // Atomically,
 //
 //	if(*addr == val) sleep
@@ -75,7 +79,7 @@ func futexsleep(addr *uint32, val uint32, ns int64) {
 	// here, and so can we: as it says a few lines up,
 	// spurious wakeups are allowed.
 	if ns < 0 {
-		// 一直等待
+		// 一直等待被 wake 唤醒
 		futex(unsafe.Pointer(addr), _FUTEX_WAIT_PRIVATE, val, nil, nil, 0)
 		return
 	}
@@ -86,6 +90,7 @@ func futexsleep(addr *uint32, val uint32, ns int64) {
 	futex(unsafe.Pointer(addr), _FUTEX_WAIT_PRIVATE, val, unsafe.Pointer(&ts), nil, 0)
 }
 
+// futexwakeup 最多唤醒 cnt 个等待者
 // If any procs are sleeping on addr, wake up at most cnt.
 //
 //go:nosplit

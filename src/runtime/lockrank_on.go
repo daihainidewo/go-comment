@@ -173,6 +173,7 @@ func unlockWithRank(l *mutex) {
 		found := false
 		for i := gp.m.locksHeldLen - 1; i >= 0; i-- {
 			if gp.m.locksHeld[i].lockAddr == uintptr(unsafe.Pointer(l)) {
+				// 找到锁 从队列弹出当前锁
 				found = true
 				copy(gp.m.locksHeld[i:gp.m.locksHeldLen-1], gp.m.locksHeld[i+1:gp.m.locksHeldLen])
 				gp.m.locksHeldLen--

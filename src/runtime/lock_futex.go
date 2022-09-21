@@ -125,9 +125,11 @@ func unlock(l *mutex) {
 	unlockWithRank(l)
 }
 
+// unlock2 解锁 l
 func unlock2(l *mutex) {
 	v := atomic.Xchg(key32(&l.key), mutex_unlocked)
 	if v == mutex_unlocked {
+		// 已经解锁 panic
 		throw("unlock of unlocked lock")
 	}
 	if v == mutex_sleeping {
@@ -143,6 +145,7 @@ func unlock2(l *mutex) {
 	if gp.m.locks == 0 && gp.preempt { // restore the preemption request in case we've cleared it in newstack
 		// m没有锁定的g 且 g可被抢占
 		// 则标记g可抢占
+		// 防止在 newstack 中清理掉
 		gp.stackguard0 = stackPreempt
 	}
 }
@@ -188,16 +191,19 @@ func notesleep(n *note) {
 	}
 }
 
+// notetsleep_internal 休眠 note 具体实现
 // May run with m.p==nil if called from notetsleep, so write barriers
 // are not allowed.
 //
 //go:nosplit
 //go:nowritebarrier
 func notetsleep_internal(n *note, ns int64) bool {
+	// 获取 g0
 	gp := getg()
 
 	if ns < 0 {
 		if *cgo_yield != nil {
+			// 固定拦截器查询间隔
 			// Sleep for an arbitrary-but-moderate interval to poll libc interceptors.
 			ns = 10e6
 		}
@@ -239,6 +245,7 @@ func notetsleep_internal(n *note, ns int64) bool {
 	return atomic.Load(key32(&n.key)) != 0
 }
 
+// notetsleep 休眠 g0
 func notetsleep(n *note, ns int64) bool {
 	gp := getg()
 	if gp != gp.m.g0 && gp.m.preemptoff != "" {
@@ -248,6 +255,7 @@ func notetsleep(n *note, ns int64) bool {
 	return notetsleep_internal(n, ns)
 }
 
+// notetsleepg 休眠用户 g
 // same as runtime·notetsleep, but called on user g (not g0)
 // calls only nosplit functions between entersyscallblock/exitsyscall
 func notetsleepg(n *note, ns int64) bool {

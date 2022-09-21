@@ -45,6 +45,7 @@ type semaRoot struct {
 	nwait uint32 // Number of waiters. Read w/o the lock.
 }
 
+// 信号表
 var semtable semTable
 
 // Prime to not correlate with any user patterns.
@@ -57,6 +58,7 @@ type semTable [semTabSize]struct {
 	pad  [cpu.CacheLinePadSize - unsafe.Sizeof(semaRoot{})]byte
 }
 
+// 获取地址所属根结点
 func (t *semTable) rootFor(addr *uint32) *semaRoot {
 	return &t[(uintptr(unsafe.Pointer(addr))>>3)%semTabSize].root
 }
@@ -214,7 +216,7 @@ func semrelease1(addr *uint32, handoff bool, skipframes int) {
 			throw("corrupted semaphore ticket")
 		}
 		if handoff && cansemacquire(addr) {
-			// 标记下次执行 并且 可以add还可以被获取
+			// 标记下次执行 并且 addr还可以被获取
 			s.ticket = 1
 		}
 		// 唤醒s
@@ -270,6 +272,7 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 	// var pt **sudog
 	pt := &root.treap
 	for t := *pt; t != nil; t = *pt {
+		// 遍历所有节点 查找 addr 是否已经入 treap
 		if t.elem == unsafe.Pointer(addr) {
 			// Already have addr in list.
 			if lifo {
@@ -289,7 +292,7 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 				if s.next != nil {
 					s.next.parent = s
 				}
-				// 交接链表信息
+				// 修正队首尾
 				// Add t first in s's wait list.
 				s.waitlink = t
 				s.waittail = t.waittail
@@ -312,6 +315,7 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 				t.waittail = s
 				s.waitlink = nil
 			}
+			// 修改后 就返回
 			return
 		}
 		// 向下个节点偏移 根据地址 决定向前向后
@@ -339,9 +343,10 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 	s.ticket = fastrand() | 1
 	// last 作为新叶子节点的父节点
 	s.parent = last
-	// pt 后面没用 为啥要赋值?
+	// 将 s 置入 pt 插入新节点
 	*pt = s
 
+	// 插入新节点 需要保持树的平衡性
 	// Rotate up into tree according to ticket (priority).
 	for s.parent != nil && s.parent.ticket > s.ticket {
 		if s.parent.prev == s {
@@ -358,6 +363,8 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 }
 
 // 出队单个sudog
+// 如果正在分析 sudog 则 dequeue 将返回唤醒它的时间
+// 否则返为0
 // dequeue searches for and finds the first goroutine
 // in semaRoot blocked on addr.
 // If the sudog was being profiled, dequeue returns the time
@@ -408,23 +415,28 @@ Found:
 		s.waitlink = nil
 		s.waittail = nil
 	} else {
-		// 没有链表元素 需要删除树节点 进行树的再平衡
+		// 没有后续链表元素 需要删除树节点 进行树的再平衡
 		// Rotate s down to be leaf of tree for removal, respecting priorities.
 		for s.next != nil || s.prev != nil {
+			// 有非空子树 就进行旋转 将 s 旋转为叶子节点
 			if s.next == nil || s.prev != nil && s.prev.ticket < s.next.ticket {
+				// 有左子树
 				root.rotateRight(s)
 			} else {
+				// 否则 左旋
 				root.rotateLeft(s)
 			}
 		}
 		// Remove s, now a leaf.
 		if s.parent != nil {
+			// 有父节点 移除父节点指向
 			if s.parent.prev == s {
 				s.parent.prev = nil
 			} else {
 				s.parent.next = nil
 			}
 		} else {
+			// 没有父节点 说明是最后一个节点
 			root.treap = nil
 		}
 	}
@@ -548,7 +560,7 @@ func less(a, b uint32) bool {
 	return int32(a-b) < 0
 }
 
-// 返回当前的等待者id
+// 生成等待者id
 // notifyListAdd adds the caller to a notify list such that it can receive
 // notifications. The caller must eventually call notifyListWait to wait for
 // such a notification, passing the returned ticket number.
@@ -575,6 +587,7 @@ func notifyListWait(l *notifyList, t uint32) {
 		return
 	}
 
+	// 入队 插入队尾
 	// Enqueue itself.
 	s := acquireSudog()
 	s.g = getg()
@@ -681,6 +694,7 @@ func notifyListNotifyOne(l *notifyList) {
 	// the (few) other g's that we find on the list.
 	for p, s := (*sudog)(nil), l.head; s != nil; p, s = s, s.next {
 		if s.ticket == t {
+			// 从队列中摘除 s
 			n := s.next
 			if p != nil {
 				p.next = n

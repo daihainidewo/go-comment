@@ -155,6 +155,7 @@ const (
 
 // mutex 互斥锁，在没有竞争的情况下和自旋锁一样快，在竞争情况下会休眠于内核，不需要初始化每个锁
 // 锁住的是 g
+// mutex 设计为 runtime 锁
 // Mutual exclusion locks.  In the uncontended case,
 // as fast as spin locks (just a few user-level instructions),
 // but on the contention path they sleep in the kernel.
@@ -178,6 +179,7 @@ type mutex struct {
 // notesleep / notetsleep 通常在g0上调用
 // notetsleepg 和 notetsleep 类似，在用户g上调用
 // 锁住的是 m
+// note 设计为 os 锁
 // sleep and wakeup on one-time events.
 // before any calls to notesleep or notewakeup,
 // must call noteclear to initialize the Note.
@@ -199,6 +201,8 @@ type mutex struct {
 // notesleep/notetsleep are generally called on g0,
 // notetsleepg is similar to notetsleep but is called on user g.
 type note struct {
+	// 采用 futex （共享内存） 实现则是 uint32
+	// 采用 sema （信号量） 实现则是 *m waitm
 	// Futex-based impl treats it as uint32 key,
 	// while sema-based impl as M* waitm.
 	// Used to be a union, but unions break precise GC.
@@ -389,6 +393,8 @@ type sudog struct {
 	// g.selectDone must be CAS'd to win the wake-up race.
 	isSelect bool
 
+	// 用于 channel 是否塞入或读取成功
+	// false 表示 channel 已关闭
 	// success indicates whether communication over channel c
 	// succeeded. It is true if the goroutine was awoken because a
 	// value was delivered over channel c, and false if awoken

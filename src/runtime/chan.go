@@ -298,6 +298,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	mysg.c = nil
 	releaseSudog(mysg)
 	if closed {
+		// 如果 channel 关闭 panic
 		if c.closed == 0 {
 			throw("chansend: spurious wakeup")
 		}
