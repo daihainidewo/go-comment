@@ -285,6 +285,10 @@ func resumeG(state suspendGState) {
 //
 //go:nosplit
 func canPreemptM(mp *m) bool {
+	// m 没有被 g 锁定
+	// m 没有申请内存
+	// m 可以抢占
+	// p 状态可用
 	return mp.locks == 0 && mp.mallocing == 0 && mp.preemptoff == "" && mp.p.ptr().status == _Prunning
 }
 

@@ -374,8 +374,9 @@ type sudog struct {
 
 	g *g // 关联的G
 
-	next *sudog // 链表前驱
-	prev *sudog // 链表后继
+	// 链表前驱后继
+	next *sudog
+	prev *sudog
 	// 元素地址 可表示锁地址 可能指向栈
 	elem unsafe.Pointer // data element (may point to stack)
 
@@ -384,9 +385,12 @@ type sudog struct {
 	// For semaphores, all fields (including the ones above)
 	// are only accessed when holding a semaRoot lock.
 
-	acquiretime int64  // 获取时间
-	releasetime int64  // 释放时间
-	ticket      uint32 // 票据 类似当前 sudog 的唯一id
+	// acquiretime 获取时间
+	// releasetime 释放时间
+	// ticket 票据 类似当前 sudog 的唯一id
+	acquiretime int64
+	releasetime int64
+	ticket      uint32
 
 	// isSelect 是否在等待 select 信号
 	// isSelect indicates g is participating in a select, so
@@ -806,8 +810,8 @@ type p struct {
 
 type schedt struct {
 	goidgen   atomic.Uint64 // 已分配的goroutine id的值
-	lastpoll  atomic.Int64 // time of last network poll, 0 if currently polling
-	pollUntil atomic.Int64 // time to which current poll is sleeping
+	lastpoll  atomic.Int64  // time of last network poll, 0 if currently polling
+	pollUntil atomic.Int64  // time to which current poll is sleeping
 
 	lock mutex // schedt 锁结构体
 

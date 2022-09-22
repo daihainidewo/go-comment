@@ -323,6 +323,7 @@ func forcegchelper() {
 
 //go:nosplit
 
+// Gosched 主动让出调度 并将当前 g 存到全局队列中
 // Gosched yields the processor, allowing other goroutines to run. It does not
 // suspend the current goroutine, so execution resumes automatically.
 func Gosched() {
@@ -330,6 +331,8 @@ func Gosched() {
 	mcall(gosched_m)
 }
 
+// goschedguarded 与 Gosched 类似
+// 如果当前 g 可以被抢占则放入全局队列中
 // goschedguarded yields the processor like gosched, but also checks
 // for forbidden states and opts out of the yield in those cases.
 //
@@ -338,6 +341,9 @@ func goschedguarded() {
 	mcall(goschedguarded_m)
 }
 
+// goschedIfBusy 与 Gosched 类似
+// 如果当前 p 有空闲则返回
+// 没有空闲则放入全局队列中
 // goschedIfBusy yields the processor like gosched, but only does so if
 // there are no idle Ps or if we're on the only P and there's nothing in
 // the run queue. In both cases, there is freely available idle time.
@@ -345,12 +351,14 @@ func goschedguarded() {
 //go:nosplit
 func goschedIfBusy() {
 	if sched.npidle.Load() > 0 {
+		// 有空闲的 p 返回
 		return
 	}
 	mcall(gosched_m)
 }
 
-// gopark 解绑当前g 开启下次调度
+// gopark 解锁 lock 并将 g 状态置为 _Gwaiting 并开始下次调度
+// 解绑当前g 开启下次调度
 // 如果 unlockf 返回 false 则 g 被恢复
 // unlockf 不能访问这个 G 的堆栈
 // 因为它可能会在调用 gopark 和调用 unlockf 之间移动
@@ -400,7 +408,7 @@ func goparkunlock(lock *mutex, reason waitReason, traceEv byte, traceskip int) {
 	gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceEv, traceskip)
 }
 
-// goready 唤醒 gp
+// goready 唤醒 gp 并且设置为下次调度优先执行
 func goready(gp *g, traceskip int) {
 	systemstack(func() {
 		ready(gp, traceskip, true)
@@ -3657,28 +3665,7 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	return now, pollUntil, ran
 }
 
-// shouldStealTimers 报告我们是否应该尝试从p2窃取计时器。
-// 我们不会从未标记为抢占的正在运行的P中窃取计时器，前提是该计时器将运行自己的计时器。
-// 这减少了计时器锁定上的争用。
-// shouldStealTimers reports whether we should try stealing the timers from p2.
-// We don't steal timers from a running P that is not marked for preemption,
-// on the assumption that it will run its own timers. This reduces
-// contention on the timers lock.
-func shouldStealTimers(p2 *p) bool {
-	if p2.status != _Prunning {
-		return true
-	}
-	mp := p2.m.ptr()
-	if mp == nil || mp.locks > 0 {
-		return false
-	}
-	gp := mp.curg
-	if gp == nil || gp.atomicstatus != _Grunning || !gp.preempt {
-		return false
-	}
-	return true
-}
-
+// parkunlock_c goparkunlock 默认解锁函数
 func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
 	unlock((*mutex)(lock))
 	return true
@@ -3701,7 +3688,7 @@ func park_m(gp *g) {
 	dropg()
 
 	if fn := mp.waitunlockf; fn != nil {
-		// 尝试解锁lock
+		// 处理解锁函数
 		ok := fn(gp, mp.waitlock)
 		mp.waitunlockf = nil
 		mp.waitlock = nil
@@ -3735,6 +3722,7 @@ func goschedImpl(gp *g) {
 	schedule()
 }
 
+// gosched_m 将 g 存放到全局队列中
 // Gosched continuation on g0.
 func gosched_m(gp *g) {
 	if trace.enabled {
@@ -3743,16 +3731,19 @@ func gosched_m(gp *g) {
 	goschedImpl(gp)
 }
 
+// goschedguarded 尝试被抢占 如果能被抢占则加入全局等待队列
 // goschedguarded is a forbidden-states-avoided version of gosched_m
 func goschedguarded_m(gp *g) {
 
 	if !canPreemptM(gp.m) {
+		// 不能抢占就恢复当前 g
 		gogo(&gp.sched) // never return
 	}
 
 	if trace.enabled {
 		traceGoSched()
 	}
+	// 将 gp 存入全局等待队列
 	goschedImpl(gp)
 }
 
@@ -3804,6 +3795,9 @@ func preemptPark(gp *g) {
 	schedule()
 }
 
+// goyield 和 Gosched 类似
+// 发出抢占事件替代调度事件
+// 将 g 放入本地 p.runq 而不是全局 schedt.runq
 // goyield is like Gosched, but it:
 // - emits a GoPreempt trace event instead of a GoSched trace event
 // - puts the current G on the runq of the current P instead of the globrunq
@@ -3820,6 +3814,7 @@ func goyield_m(gp *g) {
 	pp := gp.m.p.ptr()
 	casgstatus(gp, _Grunning, _Grunnable)
 	dropg()
+	// 不置为下次优先调度
 	runqput(pp, gp, false)
 	schedule()
 }

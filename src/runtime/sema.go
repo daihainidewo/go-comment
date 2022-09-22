@@ -102,6 +102,7 @@ func poll_runtime_Semrelease(addr *uint32) {
 // 唤醒sudog
 func readyWithTime(s *sudog, traceskip int) {
 	if s.releasetime != 0 {
+		// 设置唤醒时间
 		s.releasetime = cputicks()
 	}
 	goready(s.g, traceskip)
@@ -145,13 +146,17 @@ func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes i
 	s.acquiretime = 0
 	s.ticket = 0
 	if profile&semaBlockProfile != 0 && blockprofilerate > 0 {
+		// 阻塞事件
 		t0 = cputicks()
+		// 阻塞没有释放时间
 		s.releasetime = -1
 	}
 	if profile&semaMutexProfile != 0 && mutexprofilerate > 0 {
+		// 锁事件
 		if t0 == 0 {
 			t0 = cputicks()
 		}
+		// 记录获取时间
 		s.acquiretime = t0
 	}
 	for {
@@ -174,10 +179,13 @@ func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes i
 		// 等待被唤醒
 		goparkunlock(&root.lock, reason, traceEvGoBlockSync, 4+skipframes)
 		if s.ticket != 0 || cansemacquire(addr) {
+			// s 入队后被唤醒 或 addr 还可以获取 sema
 			break
 		}
 	}
+	// 被唤醒后是否记录阻塞事件
 	if s.releasetime > 0 {
+		// 尝试记录阻塞事件
 		blockevent(s.releasetime-t0, 3+skipframes)
 	}
 	releaseSudog(s)
@@ -221,6 +229,7 @@ func semrelease1(addr *uint32, handoff bool, skipframes int) {
 	if s != nil { // May be slow or even yield, so unlock first
 		acquiretime := s.acquiretime
 		if acquiretime != 0 {
+			// 有 acquiretime 表示是锁事件 尝试记录锁事件
 			mutexevent(t0-acquiretime, 3+skipframes)
 		}
 		if s.ticket != 0 {
@@ -230,11 +239,18 @@ func semrelease1(addr *uint32, handoff bool, skipframes int) {
 			// 标记下次执行 并且 addr还可以被获取
 			s.ticket = 1
 		}
-		// 唤醒s
+		// 唤醒s 加入就绪队列
 		readyWithTime(s, 5+skipframes)
 		if s.ticket == 1 && getg().m.locks == 0 {
 			// 标记为1 并且 m 没有被其他 g 锁住
 			// 让出 m 等待下次调度
+			// 即直接调度 s 对应的 g
+			// 请注意，继承了我们的时间片：这是可取的，以避免一个高度竞争的信号量无限期地占用 P
+			// goyield 类似于 Gosched，但它会发出一个“抢占式”跟踪事件
+			// 更重要的是，将当前 G 放在本地 runq 而不是全局 runq 上
+			// 我们只在饥饿状态下执行此操作（handoff=true）
+			// 因为在非饥饿情况下，在我们让出调度时，其他服务员可能会获取信号量，这将是一种浪费
+			// 相反，我们等待进入饥饿状态，然后我们开始直接切换票和 P
 			// Direct G handoff
 			// readyWithTime has added the waiter G as runnext in the
 			// current P; we now call the scheduler so that we start running
@@ -261,10 +277,11 @@ func cansemacquire(addr *uint32) bool {
 	for {
 		v := atomic.Load(addr)
 		if v == 0 {
+			// 0 表示没有
 			return false
 		}
 		if atomic.Cas(addr, v, v-1) {
-			// 锁原始值为1 改成0
+			// 成功获取 1 个信号量
 			return true
 		}
 	}
@@ -293,6 +310,7 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 				*pt = s
 				// 交接二叉树链接信息
 				s.ticket = t.ticket
+				// 使用最开始的获取时间
 				s.acquiretime = t.acquiretime
 				s.parent = t.parent
 				s.prev = t.prev
@@ -422,6 +440,7 @@ Found:
 		} else {
 			t.waittail = nil
 		}
+		// 重置获取时间
 		t.acquiretime = now
 		s.waitlink = nil
 		s.waittail = nil

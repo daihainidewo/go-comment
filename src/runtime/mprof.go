@@ -454,6 +454,7 @@ func mProf_Free(b *bucket, size uintptr) {
 
 var blockprofilerate uint64 // in CPU ticks
 
+// SetBlockProfileRate 设置阻塞事件采样率
 // SetBlockProfileRate controls the fraction of goroutine blocking events
 // that are reported in the blocking profile. The profiler aims to sample
 // an average of one blocking event per rate nanoseconds spent blocked.
@@ -477,6 +478,7 @@ func SetBlockProfileRate(rate int) {
 	atomic.Store64(&blockprofilerate, uint64(r))
 }
 
+// 记录阻塞事件
 func blockevent(cycles int64, skip int) {
 	if cycles <= 0 {
 		cycles = 1
@@ -488,6 +490,7 @@ func blockevent(cycles int64, skip int) {
 	}
 }
 
+// 计算是否阻塞事件采样
 // blocksampled returns true for all events where cycles >= rate. Shorter
 // events have a cycles/rate random chance of returning true.
 func blocksampled(cycles, rate int64) bool {
@@ -540,6 +543,7 @@ func SetMutexProfileFraction(rate int) int {
 	return int(old)
 }
 
+// mutexevent 记录锁事件
 //go:linkname mutexevent sync.event
 func mutexevent(cycles int64, skip int) {
 	if cycles < 0 {
