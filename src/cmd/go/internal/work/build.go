@@ -7,6 +7,7 @@ package work
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"go/build"
 	"os"
@@ -53,9 +54,6 @@ in the last two paragraphs. If the named output is an existing directory or
 ends with a slash or backslash, then any resulting executables
 will be written to that directory.
 
-The -i flag installs the packages that are dependencies of the target.
-The -i flag is deprecated. Compiled packages are cached automatically.
-
 The build flags are shared by the build, clean, get, install, list, run,
 and test commands:
 
@@ -73,14 +71,23 @@ and test commands:
 		linux/ppc64le and linux/arm64 (only for 48-bit VMA).
 	-msan
 		enable interoperation with memory sanitizer.
-		Supported only on linux/amd64, linux/arm64
+		Supported only on linux/amd64, linux/arm64, freebsd/amd64
 		and only with Clang/LLVM as the host C compiler.
-		On linux/arm64, pie build mode will be used.
+		PIE build mode will be used on all platforms except linux/amd64.
 	-asan
 		enable interoperation with address sanitizer.
 		Supported only on linux/arm64, linux/amd64.
 		Supported only on linux/amd64 or linux/arm64 and only with GCC 7 and higher
 		or Clang/LLVM 9 and higher.
+	-cover
+		enable code coverage instrumentation (requires
+		that GOEXPERIMENT=coverageredesign be set).
+	-coverpkg pattern1,pattern2,pattern3
+		For a build that targets package 'main' (e.g. building a Go
+		executable), apply coverage analysis to each package matching
+		the patterns. The default is to apply coverage analysis to
+		packages in the main Go module. See 'go help packages' for a
+		description of package patterns.  Sets -cover.
 	-v
 		print the names of packages as they are compiled.
 	-work
@@ -206,13 +213,14 @@ func init() {
 	CmdBuild.Run = runBuild
 	CmdInstall.Run = runInstall
 
-	CmdBuild.Flag.BoolVar(&cfg.BuildI, "i", false, "")
 	CmdBuild.Flag.StringVar(&cfg.BuildO, "o", "", "output file or directory")
-
-	CmdInstall.Flag.BoolVar(&cfg.BuildI, "i", false, "")
 
 	AddBuildFlags(CmdBuild, DefaultBuildFlags)
 	AddBuildFlags(CmdInstall, DefaultBuildFlags)
+	if cfg.Experiment != nil && cfg.Experiment.CoverageRedesign {
+		AddCoverFlags(CmdBuild, nil)
+		AddCoverFlags(CmdInstall, nil)
+	}
 }
 
 // Note that flags consulted by other parts of the code
@@ -311,6 +319,31 @@ func AddBuildFlags(cmd *base.Command, mask BuildFlagMask) {
 	// Undocumented, unstable debugging flags.
 	cmd.Flag.StringVar(&cfg.DebugActiongraph, "debug-actiongraph", "", "")
 	cmd.Flag.StringVar(&cfg.DebugTrace, "debug-trace", "", "")
+}
+
+// AddCoverFlags adds coverage-related flags to "cmd". If the
+// CoverageRedesign experiment is enabled, we add -cover{mode,pkg} to
+// the build command and only -coverprofile to the test command. If
+// the CoverageRedesign experiment is disabled, -cover* flags are
+// added only to the test command.
+func AddCoverFlags(cmd *base.Command, coverProfileFlag *string) {
+	addCover := false
+	if cfg.Experiment != nil && cfg.Experiment.CoverageRedesign {
+		// New coverage enabled: both build and test commands get
+		// coverage flags.
+		addCover = true
+	} else {
+		// New coverage disabled: only test command gets cover flags.
+		addCover = coverProfileFlag != nil
+	}
+	if addCover {
+		cmd.Flag.BoolVar(&cfg.BuildCover, "cover", false, "")
+		cmd.Flag.Var(coverFlag{(*coverModeFlag)(&cfg.BuildCoverMode)}, "covermode", "")
+		cmd.Flag.Var(coverFlag{commaListFlag{&cfg.BuildCoverPkg}}, "coverpkg", "")
+	}
+	if coverProfileFlag != nil {
+		cmd.Flag.Var(coverFlag{V: stringFlag{coverProfileFlag}}, "coverprofile", "")
+	}
 }
 
 // tagsFlag is the implementation of the -tags flag.
@@ -436,16 +469,16 @@ func runBuild(ctx context.Context, cmd *base.Command, args []string) {
 	}
 
 	depMode := ModeBuild
-	if cfg.BuildI {
-		depMode = ModeInstall
-		fmt.Fprint(os.Stderr, "go: -i flag is deprecated\n")
-	}
 
 	pkgs = omitTestOnly(pkgsFilter(pkgs))
 
 	// Special case -o /dev/null by not writing at all.
 	if cfg.BuildO == os.DevNull {
 		cfg.BuildO = ""
+	}
+
+	if cfg.Experiment.CoverageRedesign && cfg.BuildCover {
+		load.PrepareForCoverageBuild(pkgs)
 	}
 
 	if cfg.BuildO != "" {
@@ -550,9 +583,6 @@ When module-aware mode is disabled, other packages are installed in the
 directory $GOPATH/pkg/$GOOS_$GOARCH. When module-aware mode is enabled,
 other packages are built and cached but not installed.
 
-The -i flag installs the dependencies of the named packages as well.
-The -i flag is deprecated. Compiled packages are cached automatically.
-
 For more about the build flags, see 'go help build'.
 For more about specifying packages, see 'go help packages'.
 
@@ -623,16 +653,8 @@ func libname(args []string, pkgs []*load.Package) (string, error) {
 }
 
 func runInstall(ctx context.Context, cmd *base.Command, args []string) {
-	// TODO(golang.org/issue/41696): print a deprecation message for the -i flag
-	// whenever it's set (or just remove it). For now, we don't print a message
-	// if all named packages are in GOROOT. cmd/dist (run by make.bash) uses
-	// 'go install -i' when bootstrapping, and we don't want to show deprecation
-	// messages in that case.
 	for _, arg := range args {
 		if strings.Contains(arg, "@") && !build.IsLocalImport(arg) && !filepath.IsAbs(arg) {
-			if cfg.BuildI {
-				fmt.Fprint(os.Stderr, "go: -i flag is deprecated\n")
-			}
 			installOutsideModule(ctx, args)
 			return
 		}
@@ -664,17 +686,9 @@ func runInstall(ctx context.Context, cmd *base.Command, args []string) {
 		}
 	}
 	load.CheckPackageErrors(pkgs)
-	if cfg.BuildI {
-		allGoroot := true
-		for _, pkg := range pkgs {
-			if !pkg.Goroot {
-				allGoroot = false
-				break
-			}
-		}
-		if !allGoroot {
-			fmt.Fprintf(os.Stderr, "go: -i flag is deprecated\n")
-		}
+
+	if cfg.Experiment.CoverageRedesign && cfg.BuildCover {
+		load.PrepareForCoverageBuild(pkgs)
 	}
 
 	InstallPackages(ctx, args, pkgs)
@@ -740,9 +754,6 @@ func InstallPackages(ctx context.Context, patterns []string, pkgs []*load.Packag
 	}()
 
 	depMode := ModeBuild
-	if cfg.BuildI {
-		depMode = ModeInstall
-	}
 	a := &Action{Mode: "go install"}
 	var tools []*Action
 	for _, p := range pkgs {
@@ -861,4 +872,54 @@ func FindExecCmd() []string {
 		ExecCmd = []string{path}
 	}
 	return ExecCmd
+}
+
+// A coverFlag is a flag.Value that also implies -cover.
+type coverFlag struct{ V flag.Value }
+
+func (f coverFlag) String() string { return f.V.String() }
+
+func (f coverFlag) Set(value string) error {
+	if err := f.V.Set(value); err != nil {
+		return err
+	}
+	cfg.BuildCover = true
+	return nil
+}
+
+type coverModeFlag string
+
+func (f *coverModeFlag) String() string { return string(*f) }
+func (f *coverModeFlag) Set(value string) error {
+	switch value {
+	case "", "set", "count", "atomic":
+		*f = coverModeFlag(value)
+		cfg.BuildCoverMode = value
+		return nil
+	default:
+		return errors.New(`valid modes are "set", "count", or "atomic"`)
+	}
+}
+
+// A commaListFlag is a flag.Value representing a comma-separated list.
+type commaListFlag struct{ Vals *[]string }
+
+func (f commaListFlag) String() string { return strings.Join(*f.Vals, ",") }
+
+func (f commaListFlag) Set(value string) error {
+	if value == "" {
+		*f.Vals = nil
+	} else {
+		*f.Vals = strings.Split(value, ",")
+	}
+	return nil
+}
+
+// A stringFlag is a flag.Value representing a single string.
+type stringFlag struct{ val *string }
+
+func (f stringFlag) String() string { return *f.val }
+func (f stringFlag) Set(value string) error {
+	*f.val = value
+	return nil
 }

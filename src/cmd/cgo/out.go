@@ -427,7 +427,7 @@ func checkImportSymName(s string) {
 			fatalf("dynamic symbol %q contains unsupported character", s)
 		}
 	}
-	if strings.Index(s, "//") >= 0 || strings.Index(s, "/*") >= 0 {
+	if strings.Contains(s, "//") || strings.Contains(s, "/*") {
 		fatalf("dynamic symbol %q contains Go comment")
 	}
 }
@@ -627,9 +627,7 @@ func (p *Package) writeDefsFunc(fgo2 io.Writer, n *Name, callsMalloc *bool) {
 // writeOutput creates stubs for a specific source file to be compiled by gc
 func (p *Package) writeOutput(f *File, srcfile string) {
 	base := srcfile
-	if strings.HasSuffix(base, ".go") {
-		base = base[0 : len(base)-3]
-	}
+	base = strings.TrimSuffix(base, ".go")
 	base = filepath.Base(base)
 	fgo1 := creat(*objDir + base + ".cgo1.go")
 	fgcc := creat(*objDir + base + ".cgo2.c")
@@ -1282,7 +1280,7 @@ func (p *Package) writeExportHeader(fgcch io.Writer) {
 	// They aren't useful for people using the header file,
 	// and they mean that the header files change based on the
 	// exact location of GOPATH.
-	re := regexp.MustCompile(`(?m)^(#line\s+[0-9]+\s+")[^"]*[/\\]([^"]*")`)
+	re := regexp.MustCompile(`(?m)^(#line\s+\d+\s+")[^"]*[/\\]([^"]*")`)
 	preamble := re.ReplaceAllString(p.Preamble, "$1$2")
 
 	fmt.Fprintf(fgcch, "/* Start of preamble from import \"C\" comments.  */\n\n")

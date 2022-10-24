@@ -329,7 +329,7 @@ func NewLoggedOpt(pos src.XPos, what, pass, funcName string, args ...interface{}
 	return &LoggedOpt{pos, pass, funcName, what, args}
 }
 
-// Logopt logs information about a (usually missed) optimization performed by the compiler.
+// LogOpt logs information about a (usually missed) optimization performed by the compiler.
 // Pos is the source position (including inlining), what is the message, pass is which pass created the message,
 // funcName is the name of the function
 func LogOpt(pos src.XPos, what, pass, funcName string, args ...interface{}) {
@@ -405,6 +405,9 @@ func uriIfy(f string) DocumentURI {
 // Return filename, replacing a first occurrence of $GOROOT with the
 // actual value of the GOROOT (because LSP does not speak "$GOROOT").
 func uprootedPath(filename string) string {
+	if filename == "" {
+		return "__unnamed__"
+	}
 	if buildcfg.GOROOT == "" || !strings.HasPrefix(filename, "$GOROOT/") {
 		return filename
 	}

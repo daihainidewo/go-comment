@@ -695,7 +695,7 @@ func adjustpointers(scanp unsafe.Pointer, bv *bitvector, adjinfo *adjustinfo, f 
 		for b != 0 {
 			// 栈帧位图有值
 			// 获取 b 的二进制有多少个后缀 0
-			j := uintptr(sys.Ctz8(b))
+			j := uintptr(sys.TrailingZeros8(b))
 			// 将 b 的二进制最后一个 1 改为 0
 			b &= b - 1
 			// 计算目标地址值

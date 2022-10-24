@@ -7,8 +7,8 @@
 package types2
 
 import (
-	"fmt"
 	"go/constant"
+	. "internal/types/errors"
 	"unicode"
 )
 
@@ -58,7 +58,7 @@ func (check *Checker) conversion(x *operand, T Type) {
 				return true
 			}
 			if !constConvertibleTo(u, nil) {
-				cause = check.sprintf("cannot convert %s to %s (in %s)", x, u, T)
+				cause = check.sprintf("cannot convert %s to type %s (in %s)", x, u, T)
 				return false
 			}
 			return true
@@ -71,22 +71,11 @@ func (check *Checker) conversion(x *operand, T Type) {
 	}
 
 	if !ok {
-		var err error_
-		if check.conf.CompilerErrorMessages {
-			if cause != "" {
-				// Add colon at end of line if we have a following cause.
-				err.errorf(x, "cannot convert %s to type %s:", x, T)
-				err.errorf(nopos, cause)
-			} else {
-				err.errorf(x, "cannot convert %s to type %s", x, T)
-			}
+		if cause != "" {
+			check.errorf(x, InvalidConversion, "cannot convert %s to type %s: %s", x, T, cause)
 		} else {
-			err.errorf(x, "cannot convert %s to %s", x, T)
-			if cause != "" {
-				err.errorf(nopos, cause)
-			}
+			check.errorf(x, InvalidConversion, "cannot convert %s to type %s", x, T)
 		}
-		check.report(&err)
 		x.mode = invalid
 		return
 	}
@@ -201,9 +190,6 @@ func (x *operand) convertibleTo(check *Checker, T Type, cause *string) bool {
 				if cause != nil {
 					// TODO(gri) consider restructuring versionErrorf so we can use it here and below
 					*cause = "conversion of slices to arrays requires go1.20 or later"
-					if check.conf.CompilerErrorMessages {
-						*cause += fmt.Sprintf(" (-lang was set to %s; check go.mod)", check.conf.GoVersion)
-					}
 				}
 				return false
 			}
@@ -216,9 +202,6 @@ func (x *operand) convertibleTo(check *Checker, T Type, cause *string) bool {
 					// check != nil
 					if cause != nil {
 						*cause = "conversion of slices to array pointers requires go1.17 or later"
-						if check.conf.CompilerErrorMessages {
-							*cause += fmt.Sprintf(" (-lang was set to %s; check go.mod)", check.conf.GoVersion)
-						}
 					}
 					return false
 				}
@@ -256,7 +239,7 @@ func (x *operand) convertibleTo(check *Checker, T Type, cause *string) bool {
 					return false // no specific types
 				}
 				if !x.convertibleTo(check, T.typ, cause) {
-					errorf("cannot convert %s (in %s) to %s (in %s)", V.typ, Vp, T.typ, Tp)
+					errorf("cannot convert %s (in %s) to type %s (in %s)", V.typ, Vp, T.typ, Tp)
 					return false
 				}
 				return true
@@ -270,7 +253,7 @@ func (x *operand) convertibleTo(check *Checker, T Type, cause *string) bool {
 			}
 			x.typ = V.typ
 			if !x.convertibleTo(check, T, cause) {
-				errorf("cannot convert %s (in %s) to %s", V.typ, Vp, T)
+				errorf("cannot convert %s (in %s) to type %s", V.typ, Vp, T)
 				return false
 			}
 			return true
@@ -281,7 +264,7 @@ func (x *operand) convertibleTo(check *Checker, T Type, cause *string) bool {
 				return false // no specific types
 			}
 			if !x.convertibleTo(check, T.typ, cause) {
-				errorf("cannot convert %s to %s (in %s)", x.typ, T.typ, Tp)
+				errorf("cannot convert %s to type %s (in %s)", x.typ, T.typ, Tp)
 				return false
 			}
 			return true

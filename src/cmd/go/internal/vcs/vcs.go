@@ -561,7 +561,7 @@ func fossilStatus(vcsFossil *Cmd, rootDir string) (Status, error) {
 	}
 	rev := checkout[:i]
 
-	commitTime, err := time.ParseInLocation("2006-01-02 15:04:05", checkout[i+1:], time.UTC)
+	commitTime, err := time.ParseInLocation(time.DateTime, checkout[i+1:], time.UTC)
 	if err != nil {
 		return Status{}, fmt.Errorf("%v: %v", errFossilInfo, err)
 	}
@@ -880,11 +880,11 @@ func parseGOVCS(s string) (govcsConfig, error) {
 		if item == "" {
 			return nil, fmt.Errorf("empty entry in GOVCS")
 		}
-		i := strings.Index(item, ":")
-		if i < 0 {
+		pattern, list, found := strings.Cut(item, ":")
+		if !found {
 			return nil, fmt.Errorf("malformed entry in GOVCS (missing colon): %q", item)
 		}
-		pattern, list := strings.TrimSpace(item[:i]), strings.TrimSpace(item[i+1:])
+		pattern, list = strings.TrimSpace(pattern), strings.TrimSpace(list)
 		if pattern == "" {
 			return nil, fmt.Errorf("empty pattern in GOVCS: %q", item)
 		}

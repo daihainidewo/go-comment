@@ -539,12 +539,12 @@ func bzrParseStat(rev, out string) (*RevInfo, error) {
 		if line[0] == '-' {
 			continue
 		}
-		i := strings.Index(line, ":")
-		if i < 0 {
+		before, after, found := strings.Cut(line, ":")
+		if !found {
 			// End of header, start of commit message.
 			break
 		}
-		key, val := line[:i], strings.TrimSpace(line[i+1:])
+		key, val := before, strings.TrimSpace(after)
 		switch key {
 		case "revno":
 			if j := strings.Index(val, " "); j >= 0 {
@@ -587,7 +587,7 @@ func fossilParseStat(rev, out string) (*RevInfo, error) {
 			if len(f) != 5 || len(f[1]) != 40 || f[4] != "UTC" {
 				return nil, vcsErrorf("unexpected response from fossil info: %q", line)
 			}
-			t, err := time.Parse("2006-01-02 15:04:05", f[2]+" "+f[3])
+			t, err := time.Parse(time.DateTime, f[2]+" "+f[3])
 			if err != nil {
 				return nil, vcsErrorf("unexpected response from fossil info: %q", line)
 			}

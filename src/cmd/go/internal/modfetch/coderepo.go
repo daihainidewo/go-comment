@@ -962,7 +962,7 @@ func (r *codeRepo) GoMod(version string) (data []byte, err error) {
 // for dependencies in the middle of a build, impossible to
 // correct. So we stopped.
 func LegacyGoMod(modPath string) []byte {
-	return []byte(fmt.Sprintf("module %s\n", modfile.AutoQuote(modPath)))
+	return fmt.Appendf(nil, "module %s\n", modfile.AutoQuote(modPath))
 }
 
 func (r *codeRepo) modPrefix(rev string) string {
@@ -1095,14 +1095,16 @@ func (r *codeRepo) Zip(dst io.Writer, version string) error {
 			}
 			topPrefix = zf.Name[:i+1]
 		}
-		if !strings.HasPrefix(zf.Name, topPrefix) {
+		var name string
+		var found bool
+		if name, found = strings.CutPrefix(zf.Name, topPrefix); !found {
 			return fmt.Errorf("zip file contains more than one top-level directory")
 		}
-		name := strings.TrimPrefix(zf.Name, topPrefix)
-		if !strings.HasPrefix(name, subdir) {
+
+		if name, found = strings.CutPrefix(name, subdir); !found {
 			continue
 		}
-		name = strings.TrimPrefix(name, subdir)
+
 		if name == "" || strings.HasSuffix(name, "/") {
 			continue
 		}

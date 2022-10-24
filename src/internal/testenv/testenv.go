@@ -16,6 +16,8 @@ import (
 	"flag"
 	"fmt"
 	"internal/cfg"
+	"internal/goroot"
+	"internal/platform"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -295,19 +297,8 @@ func MustHaveCGO(t testing.TB) {
 
 // CanInternalLink reports whether the current system can link programs with
 // internal linking.
-// (This is the opposite of cmd/internal/sys.MustLinkExternal. Keep them in sync.)
 func CanInternalLink() bool {
-	switch runtime.GOOS {
-	case "android":
-		if runtime.GOARCH != "arm64" {
-			return false
-		}
-	case "ios":
-		if runtime.GOARCH == "arm64" {
-			return false
-		}
-	}
-	return true
+	return !platform.MustLinkExternal(runtime.GOOS, runtime.GOARCH)
 }
 
 // MustInternalLink checks that the current system can link programs with internal
@@ -470,4 +461,21 @@ func RunWithTimeout(t testing.TB, cmd *exec.Cmd) ([]byte, error) {
 	close(done)
 
 	return b.Bytes(), err
+}
+
+// WriteImportcfg writes an importcfg file used by the compiler or linker to
+// dstPath containing entries for the packages in std and cmd in addition
+// to the package to package file mappings in additionalPackageFiles.
+func WriteImportcfg(t testing.TB, dstPath string, additionalPackageFiles map[string]string) {
+	importcfg, err := goroot.Importcfg()
+	for k, v := range additionalPackageFiles {
+		importcfg += fmt.Sprintf("\npackagefile %s=%s", k, v)
+	}
+	if err != nil {
+		t.Fatalf("preparing the importcfg failed: %s", err)
+	}
+	os.WriteFile(dstPath, []byte(importcfg), 0655)
+	if err != nil {
+		t.Fatalf("writing the importcfg failed: %s", err)
+	}
 }

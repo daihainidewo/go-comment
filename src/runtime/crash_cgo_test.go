@@ -8,6 +8,7 @@ package runtime_test
 
 import (
 	"fmt"
+	"internal/goos"
 	"internal/testenv"
 	"os"
 	"os/exec"
@@ -719,5 +720,49 @@ func TestCgoTracebackGoroutineProfile(t *testing.T) {
 	want := "OK\n"
 	if output != want {
 		t.Fatalf("want %s, got %s\n", want, output)
+	}
+}
+
+func TestCgoTraceParser(t *testing.T) {
+	// Test issue 29707.
+	switch runtime.GOOS {
+	case "plan9", "windows":
+		t.Skipf("no pthreads on %s", runtime.GOOS)
+	}
+	output := runTestProg(t, "testprogcgo", "CgoTraceParser")
+	want := "OK\n"
+	ErrTimeOrder := "ErrTimeOrder\n"
+	if output == ErrTimeOrder {
+		t.Skipf("skipping due to golang.org/issue/16755: %v", output)
+	} else if output != want {
+		t.Fatalf("want %s, got %s\n", want, output)
+	}
+}
+
+func TestCgoTraceParserWithOneProc(t *testing.T) {
+	// Test issue 29707.
+	switch runtime.GOOS {
+	case "plan9", "windows":
+		t.Skipf("no pthreads on %s", runtime.GOOS)
+	}
+	output := runTestProg(t, "testprogcgo", "CgoTraceParser", "GOMAXPROCS=1")
+	want := "OK\n"
+	ErrTimeOrder := "ErrTimeOrder\n"
+	if output == ErrTimeOrder {
+		t.Skipf("skipping due to golang.org/issue/16755: %v", output)
+	} else if output != want {
+		t.Fatalf("GOMAXPROCS=1, want %s, got %s\n", want, output)
+	}
+}
+
+func TestCgoSigfwd(t *testing.T) {
+	t.Parallel()
+	if !goos.IsUnix {
+		t.Skipf("no signals on %s", runtime.GOOS)
+	}
+
+	got := runTestProg(t, "testprogcgo", "CgoSigfwd", "GO_TEST_CGOSIGFWD=1")
+	if want := "OK\n"; got != want {
+		t.Fatalf("expected %q, but got:\n%s", want, got)
 	}
 }

@@ -60,12 +60,16 @@ var bootstrapDirs = []string{
 	"debug/macho",
 	"debug/pe",
 	"go/constant",
+	"internal/coverage",
 	"internal/buildcfg",
 	"internal/goexperiment",
+	"internal/goroot",
 	"internal/goversion",
 	"internal/pkgbits",
 	"internal/race",
 	"internal/saferio",
+	"internal/platform",
+	"internal/types/errors",
 	"internal/unsafeheader",
 	"internal/xcoff",
 	"math/big",
@@ -264,6 +268,7 @@ func isUnneededSSARewriteFile(srcFile, goArch string) (archCaps string, unneeded
 	archCaps = fileArch
 	fileArch = strings.ToLower(fileArch)
 	fileArch = strings.TrimSuffix(fileArch, "splitload")
+	fileArch = strings.TrimSuffix(fileArch, "latelower")
 	if fileArch == goArch {
 		return "", false
 	}

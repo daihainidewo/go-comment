@@ -34,6 +34,7 @@ import (
 	"internal/testenv"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -44,13 +45,12 @@ import (
 var (
 	haltOnError  = flag.Bool("halt", false, "halt on error")
 	verifyErrors = flag.Bool("verify", false, "verify errors (rather than list them) in TestManual")
-	goVersion    = flag.String("lang", "", "Go language version (e.g. \"go1.12\") for TestManual")
 )
 
 var fset = token.NewFileSet()
 
 // Positioned errors are of the form filename:line:column: message .
-var posMsgRx = regexp.MustCompile(`^(.*:[0-9]+:[0-9]+): *(?s)(.*)`)
+var posMsgRx = regexp.MustCompile(`^(.*:\d+:\d+): *(?s)(.*)`)
 
 // splitError splits an error's error message into a position string
 // and the actual error message. If there's no position information,
@@ -221,17 +221,6 @@ func testFiles(t *testing.T, sizes Sizes, filenames []string, srcs [][]byte, man
 		t.Fatal(err)
 	}
 
-	if manual && *goVersion != "" {
-		// goVersion overrides -lang for manual tests.
-		conf.GoVersion = *goVersion
-	}
-
-	// TODO(gri) remove this or use flag mechanism to set mode if still needed
-	if strings.HasSuffix(filenames[0], ".go1") {
-		// TODO(rfindley): re-enable this test by using GoVersion.
-		t.Skip("type params are enabled")
-	}
-
 	files, errlist := parseFiles(t, filenames, srcs, parser.AllErrors)
 
 	pkgName := "<no package>"
@@ -297,6 +286,11 @@ func testFiles(t *testing.T, sizes Sizes, filenames []string, srcs [][]byte, man
 			}
 		}
 	}
+}
+
+func readCode(err Error) int {
+	v := reflect.ValueOf(err)
+	return int(v.FieldByName("go116code").Int())
 }
 
 // TestManual is for manual testing of a package - either provided

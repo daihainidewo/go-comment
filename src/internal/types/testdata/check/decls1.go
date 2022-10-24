@@ -64,7 +64,7 @@ var (
 	t13 int = a /* ERROR "shifted operand" */ << d
 	t14 int = i << j
 	t15 math /* ERROR "not in selector" */
-	t16 math.xxx /* ERROR "not declared" */
+	t16 math.xxx /* ERROR "undefined" */
 	t17 math /* ERROR "not a type" */ .Pi
 	t18 float64 = math.Pi * 10.0
 	t19 int = t1 /* ERROR "cannot call" */ ()
@@ -78,7 +78,7 @@ var (
 	u2 = iface.([]int)
 	u3 = iface.(a /* ERROR "not a type" */ )
 	u4, ok = iface.(int)
-	u5, ok2, ok3 = iface /* ERROR "cannot initialize" */ .(int)
+	u5, ok2, ok3 = iface /* ERROR "assignment mismatch" */ .(int)
 )
 
 // Constant expression initializations

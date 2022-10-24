@@ -412,7 +412,7 @@ func writeElementSec(ctxt *ld.Link, numImports, numFns uint64) {
 	writeSecSize(ctxt, sizeOffset)
 }
 
-// writeElementSec writes the section that provides the function bodies for the functions
+// writeCodeSec writes the section that provides the function bodies for the functions
 // declared by the "func" section.
 func writeCodeSec(ctxt *ld.Link, fns []*wasmFunc) {
 	sizeOffset := writeSecHeader(ctxt, sectionCode)
@@ -520,7 +520,7 @@ func writeProducerSec(ctxt *ld.Link) {
 	writeSecSize(ctxt, sizeOffset)
 }
 
-var nameRegexp = regexp.MustCompile(`[^\w\.]`)
+var nameRegexp = regexp.MustCompile(`[^\w.]`)
 
 // writeNameSec writes an optional section that assigns names to the functions declared by the "func" section.
 // The names are only used by WebAssembly stack traces, debuggers and decompilers.

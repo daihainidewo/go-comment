@@ -226,6 +226,25 @@ type mheap struct {
 	speciallock           mutex    // lock for special record allocators.
 	arenaHintAlloc        fixalloc // allocator for arenaHints
 
+	// User arena state.
+	//
+	// Protected by mheap_.lock.
+	userArena struct {
+		// arenaHints is a list of addresses at which to attempt to
+		// add more heap arenas for user arena chunks. This is initially
+		// populated with a set of general hint addresses, and grown with
+		// the bounds of actual heap arena ranges.
+		arenaHints *arenaHint
+
+		// quarantineList is a list of user arena spans that have been set to fault, but
+		// are waiting for all pointers into them to go away. Sweeping handles
+		// identifying when this is true, and moves the span to the ready list.
+		quarantineList mSpanList
+
+		// readyList is a list of empty user arena spans that are ready for reuse.
+		readyList mSpanList
+	}
+
 	unused *specialfinalizer // never set, just here to force the specialfinalizer type into DWARF
 }
 
@@ -408,7 +427,6 @@ var mSpanStateNames = []string{
 	"mSpanDead",
 	"mSpanInUse",
 	"mSpanManual",
-	"mSpanFree",
 }
 
 // mSpanStateBox 提供原子操作 mSpanState 的结构盒子
@@ -566,11 +584,13 @@ type mspan struct {
 	spanclass             spanClass     // size class and noscan (uint8)
 	state                 mSpanStateBox // mSpanInUse etc; accessed atomically (get/set methods)
 	needzero              uint8         // needs to be zeroed before allocation
+	isUserArenaChunk      bool          // whether or not this span represents a user arena
 	allocCountBeforeCache uint16        // a copy of allocCount that is stored just before this span is cached
 	elemsize              uintptr       // computed from sizeclass or from npages
 	limit                 uintptr       // end of data in span
 	speciallock           mutex         // guards specials list
 	specials              *special      // linked list of special records sorted by offset.
+	userArenaChunkFree    addrRange     // interval for managing chunk allocation
 }
 
 // base 返回 s 的基址
@@ -696,6 +716,12 @@ func arenaBase(i arenaIdx) uintptr {
 type arenaIdx uint
 
 // 返回地址区域的一级索引
+// l1 returns the "l1" portion of an arenaIdx.
+//
+// Marked nosplit because it's called by spanOf and other nosplit
+// functions.
+//
+//go:nosplit
 func (i arenaIdx) l1() uint {
 	if arenaL1Bits == 0 {
 		// Let the compiler optimize this away if there's no
@@ -707,6 +733,12 @@ func (i arenaIdx) l1() uint {
 }
 
 // 返回地址区域的二级索引
+// l2 returns the "l2" portion of an arenaIdx.
+//
+// Marked nosplit because it's called by spanOf and other nosplit funcs.
+// functions.
+//
+//go:nosplit
 func (i arenaIdx) l2() uint {
 	if arenaL1Bits == 0 {
 		return uint(i)
@@ -1346,6 +1378,7 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 		base = alignUp(base, physPageSize)
 		scav = h.pages.allocRange(base, npages)
 	}
+
 	// 如果 alloc 没有获取页
 	if base == 0 {
 		// Try to acquire a base address.
@@ -1371,56 +1404,6 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 	unlock(&h.lock)
 
 HaveSpan:
-	// At this point, both s != nil and base != 0, and the heap
-	// lock is no longer held. Initialize the span.
-	s.init(base, npages)
-	if h.allocNeedsZero(base, npages) {
-		s.needzero = 1
-	}
-	nbytes := npages * pageSize
-	if typ.manual() {
-		s.manualFreeList = 0
-		s.nelems = 0
-		s.limit = s.base() + s.npages*pageSize
-		s.state.set(mSpanManual)
-	} else {
-		// We must set span properties before the span is published anywhere
-		// since we're not holding the heap lock.
-		s.spanclass = spanclass
-		if sizeclass := spanclass.sizeclass(); sizeclass == 0 {
-			s.elemsize = nbytes
-			s.nelems = 1
-			s.divMul = 0
-		} else {
-			s.elemsize = uintptr(class_to_size[sizeclass])
-			s.nelems = nbytes / s.elemsize
-			s.divMul = class_to_divmagic[sizeclass]
-		}
-
-		// Initialize mark and allocation structures.
-		s.freeindex = 0
-		s.allocCache = ^uint64(0) // all 1s indicating all free.
-		s.gcmarkBits = newMarkBits(s.nelems)
-		s.allocBits = newAllocBits(s.nelems)
-
-		// It's safe to access h.sweepgen without the heap lock because it's
-		// only ever updated with the world stopped and we run on the
-		// systemstack which blocks a STW transition.
-		atomic.Store(&s.sweepgen, h.sweepgen)
-
-		// Now that the span is filled in, set its state. This
-		// is a publication barrier for the other fields in
-		// the span. While valid pointers into this span
-		// should never be visible until the span is returned,
-		// if the garbage collector finds an invalid pointer,
-		// access to the span may race with initialization of
-		// the span. We resolve this race by atomically
-		// setting the state after the span is fully
-		// initialized, and atomically checking the state in
-		// any situation where a pointer is suspect.
-		s.state.set(mSpanInUse)
-	}
-
 	// Decide if we need to scavenge in response to what we just allocated.
 	// Specifically, we track the maximum amount of memory to scavenge of all
 	// the alternatives below, assuming that the maximum satisfies *all*
@@ -1490,7 +1473,11 @@ HaveSpan:
 		scavenge.assistTime.Add(now - start)
 	}
 
+	// Initialize the span.
+	h.initSpan(s, typ, spanclass, base, npages)
+
 	// Commit and account for any scavenged memory that the span now owns.
+	nbytes := npages * pageSize
 	if scav != 0 {
 		// sysUsed all the pages that are actually available
 		// in the span since some of them might be scavenged.
@@ -1518,6 +1505,62 @@ HaveSpan:
 	}
 	memstats.heapStats.release()
 
+	return s
+}
+
+// initSpan initializes a blank span s which will represent the range
+// [base, base+npages*pageSize). typ is the type of span being allocated.
+func (h *mheap) initSpan(s *mspan, typ spanAllocType, spanclass spanClass, base, npages uintptr) {
+	// At this point, both s != nil and base != 0, and the heap
+	// lock is no longer held. Initialize the span.
+	s.init(base, npages)
+	if h.allocNeedsZero(base, npages) {
+		s.needzero = 1
+	}
+	nbytes := npages * pageSize
+	if typ.manual() {
+		s.manualFreeList = 0
+		s.nelems = 0
+		s.limit = s.base() + s.npages*pageSize
+		s.state.set(mSpanManual)
+	} else {
+		// We must set span properties before the span is published anywhere
+		// since we're not holding the heap lock.
+		s.spanclass = spanclass
+		if sizeclass := spanclass.sizeclass(); sizeclass == 0 {
+			s.elemsize = nbytes
+			s.nelems = 1
+			s.divMul = 0
+		} else {
+			s.elemsize = uintptr(class_to_size[sizeclass])
+			s.nelems = nbytes / s.elemsize
+			s.divMul = class_to_divmagic[sizeclass]
+		}
+
+		// Initialize mark and allocation structures.
+		s.freeindex = 0
+		s.allocCache = ^uint64(0) // all 1s indicating all free.
+		s.gcmarkBits = newMarkBits(s.nelems)
+		s.allocBits = newAllocBits(s.nelems)
+
+		// It's safe to access h.sweepgen without the heap lock because it's
+		// only ever updated with the world stopped and we run on the
+		// systemstack which blocks a STW transition.
+		atomic.Store(&s.sweepgen, h.sweepgen)
+
+		// Now that the span is filled in, set its state. This
+		// is a publication barrier for the other fields in
+		// the span. While valid pointers into this span
+		// should never be visible until the span is returned,
+		// if the garbage collector finds an invalid pointer,
+		// access to the span may race with initialization of
+		// the span. We resolve this race by atomically
+		// setting the state after the span is fully
+		// initialized, and atomically checking the state in
+		// any situation where a pointer is suspect.
+		s.state.set(mSpanInUse)
+	}
+
 	// Publish the span in various locations.
 
 	// This is safe to call without the lock held because the slots
@@ -1543,8 +1586,6 @@ HaveSpan:
 	// Make sure the newly allocated span will be observed
 	// by the GC before pointers into the span are published.
 	publicationBarrier()
-
-	return s
 }
 
 // grow 尝试向操作系统索要npage页内存，返回是否成功
@@ -1575,7 +1616,7 @@ func (h *mheap) grow(npage uintptr) (uintptr, bool) {
 		// Not enough room in the current arena. Allocate more
 		// arena space. This may not be contiguous with the
 		// current arena, so we have to request the full ask.
-		av, asize := h.sysAlloc(ask)
+		av, asize := h.sysAlloc(ask, &h.arenaHints, true)
 		if av == nil {
 			inUse := gcController.heapFree.load() + gcController.heapReleased.load() + gcController.heapInUse.load()
 			print("runtime: out of memory: cannot allocate ", ask, "-byte block (", inUse, " in use)\n")
@@ -1689,6 +1730,9 @@ func (h *mheap) freeSpanLocked(s *mspan, typ spanAllocType) {
 			throw("mheap.freeSpanLocked - invalid stack free")
 		}
 	case mSpanInUse:
+		if s.isUserArenaChunk {
+			throw("mheap.freeSpanLocked - invalid free of user arena chunk")
+		}
 		if s.allocCount != 0 || s.sweepgen != h.sweepgen {
 			print("mheap.freeSpanLocked - span ", s, " ptr ", hex(s.base()), " allocCount ", s.allocCount, " sweepgen ", s.sweepgen, "/", h.sweepgen, "\n")
 			throw("mheap.freeSpanLocked - invalid free")

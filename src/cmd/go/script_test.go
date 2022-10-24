@@ -14,6 +14,8 @@ import (
 	"flag"
 	"fmt"
 	"go/build"
+	"internal/buildcfg"
+	"internal/platform"
 	"internal/testenv"
 	"internal/txtar"
 	"io/fs"
@@ -34,7 +36,6 @@ import (
 	"cmd/go/internal/par"
 	"cmd/go/internal/robustio"
 	"cmd/go/internal/work"
-	"cmd/internal/sys"
 )
 
 var testSum = flag.String("testsum", "", `may be tidy, listm, or listall. If set, TestScript generates a go.sum file at the beginning of each test and updates test files if they pass.`)
@@ -173,6 +174,7 @@ func (ts *testScript) setup() {
 		"GOARCH=" + runtime.GOARCH,
 		"TESTGO_GOHOSTARCH=" + goHostArch,
 		"GOCACHE=" + testGOCACHE,
+		"GOCOVERDIR=" + os.Getenv("GOCOVERDIR"),
 		"GODEBUG=" + os.Getenv("GODEBUG"),
 		"GOEXE=" + cfg.ExeSuffix,
 		"GOEXPERIMENT=" + os.Getenv("GOEXPERIMENT"),
@@ -238,13 +240,31 @@ func (ts *testScript) setup() {
 func goVersion() (string, error) {
 	tags := build.Default.ReleaseTags
 	version := tags[len(tags)-1]
-	if !regexp.MustCompile(`^go([1-9][0-9]*)\.(0|[1-9][0-9]*)$`).MatchString(version) {
+	if !regexp.MustCompile(`^go([1-9]\d*)\.(0|[1-9]\d*)$`).MatchString(version) {
 		return "", fmt.Errorf("invalid go version %q", version)
 	}
 	return version[2:], nil
 }
 
 var execCache par.Cache
+
+func goExperimentIsValid(expname string) bool {
+	for _, exp := range buildcfg.Experiment.All() {
+		if expname == exp || expname == "no"+exp || "no"+expname == exp {
+			return true
+		}
+	}
+	return false
+}
+
+func goExperimentIsEnabled(expname string) bool {
+	for _, exp := range buildcfg.Experiment.Enabled() {
+		if exp == expname {
+			return true
+		}
+	}
+	return false
+}
 
 // run runs the test script.
 func (ts *testScript) run() {
@@ -428,8 +448,7 @@ Script:
 					}).(bool)
 					break
 				}
-				if strings.HasPrefix(cond.tag, "GODEBUG:") {
-					value := strings.TrimPrefix(cond.tag, "GODEBUG:")
+				if value, found := strings.CutPrefix(cond.tag, "GODEBUG:"); found {
 					parts := strings.Split(os.Getenv("GODEBUG"), ",")
 					for _, p := range parts {
 						if strings.TrimSpace(p) == value {
@@ -439,9 +458,17 @@ Script:
 					}
 					break
 				}
-				if strings.HasPrefix(cond.tag, "buildmode:") {
-					value := strings.TrimPrefix(cond.tag, "buildmode:")
-					ok = sys.BuildModeSupported(runtime.Compiler, value, runtime.GOOS, runtime.GOARCH)
+				if value, found := strings.CutPrefix(cond.tag, "buildmode:"); found {
+					ok = platform.BuildModeSupported(runtime.Compiler, value, runtime.GOOS, runtime.GOARCH)
+					break
+				}
+				if strings.HasPrefix(cond.tag, "GOEXPERIMENT:") {
+					rawval := strings.TrimPrefix(cond.tag, "GOEXPERIMENT:")
+					value := strings.TrimSpace(rawval)
+					if !goExperimentIsValid(value) {
+						ts.fatalf("unknown/unrecognized GOEXPERIMENT %q", value)
+					}
+					ok = goExperimentIsEnabled(value)
 					break
 				}
 				if !imports.KnownArch[cond.tag] && !imports.KnownOS[cond.tag] && cond.tag != "gc" && cond.tag != "gccgo" {

@@ -1562,13 +1562,12 @@ func (l *Loader) SetSymPkg(i Sym, pkg string) {
 	l.symPkg[i] = pkg
 }
 
-// SymLocalentry returns the "local entry" value for the specified
-// symbol.
+// SymLocalentry returns an offset in bytes of the "local entry" of a symbol.
 func (l *Loader) SymLocalentry(i Sym) uint8 {
 	return l.localentry[i]
 }
 
-// SetSymLocalentry sets the "local entry" attribute for a symbol.
+// SetSymLocalentry sets the "local entry" offset attribute for a symbol.
 func (l *Loader) SetSymLocalentry(i Sym, value uint8) {
 	// reject bad symbols
 	if i >= Sym(len(l.objSyms)) || i == 0 {
@@ -1957,6 +1956,10 @@ func (fi *FuncInfo) FuncID() objabi.FuncID {
 
 func (fi *FuncInfo) FuncFlag() objabi.FuncFlag {
 	return (*goobj.FuncInfo)(nil).ReadFuncFlag(fi.data)
+}
+
+func (fi *FuncInfo) StartLine() int32 {
+	return (*goobj.FuncInfo)(nil).ReadStartLine(fi.data)
 }
 
 // Preload has to be called prior to invoking the various methods

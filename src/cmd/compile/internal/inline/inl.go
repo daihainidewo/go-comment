@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
-// The inlining facility makes 2 passes: first caninl determines which
+// The inlining facility makes 2 passes: first CanInline determines which
 // functions are suitable for inlining, and for those that are it
 // saves a copy of the body. Then InlineCalls walks each function body to
 // expand calls to inlinable functions.
@@ -283,6 +283,19 @@ func (v *hairyVisitor) doNode(n ir.Node) bool {
 					break
 				}
 			}
+			// Special case for coverage counter updates; although
+			// these correspond to real operations, we treat them as
+			// zero cost for the moment. This is due to the existence
+			// of tests that are sensitive to inlining-- if the
+			// insertion of coverage instrumentation happens to tip a
+			// given function over the threshold and move it from
+			// "inlinable" to "not-inlinable", this can cause changes
+			// in allocation behavior, which can then result in test
+			// failures (a good example is the TestAllocations in
+			// crypto/ed25519).
+			if isAtomicCoverageCounterUpdate(n) {
+				break
+			}
 		}
 		if n.X.Op() == ir.OMETHEXPR {
 			if meth := ir.MethodExprName(n.X); meth != nil {
@@ -470,6 +483,22 @@ func (v *hairyVisitor) doNode(n ir.Node) bool {
 					v.budget += 4*int32(len(n.Lhs)) + 1
 				}
 			}
+		}
+
+	case ir.OAS:
+		// Special case for coverage counter updates and coverage
+		// function registrations. Although these correspond to real
+		// operations, we treat them as zero cost for the moment. This
+		// is primarily due to the existence of tests that are
+		// sensitive to inlining-- if the insertion of coverage
+		// instrumentation happens to tip a given function over the
+		// threshold and move it from "inlinable" to "not-inlinable",
+		// this can cause changes in allocation behavior, which can
+		// then result in test failures (a good example is the
+		// TestAllocations in crypto/ed25519).
+		n := n.(*ir.AssignStmt)
+		if n.X.Op() == ir.OINDEX && isIndexingCoverageCounter(n) {
+			return false
 		}
 	}
 
@@ -813,6 +842,48 @@ func mkinlcall(n *ir.CallExpr, fn *ir.Func, maxCost int32, inlCalls *[]*ir.Inlin
 	typecheck.FixVariadicCall(n)
 
 	inlIndex := base.Ctxt.InlTree.Add(parent, n.Pos(), sym)
+
+	closureInitLSym := func(n *ir.CallExpr, fn *ir.Func) {
+		// The linker needs FuncInfo metadata for all inlined
+		// functions. This is typically handled by gc.enqueueFunc
+		// calling ir.InitLSym for all function declarations in
+		// typecheck.Target.Decls (ir.UseClosure adds all closures to
+		// Decls).
+		//
+		// However, non-trivial closures in Decls are ignored, and are
+		// insteaded enqueued when walk of the calling function
+		// discovers them.
+		//
+		// This presents a problem for direct calls to closures.
+		// Inlining will replace the entire closure definition with its
+		// body, which hides the closure from walk and thus suppresses
+		// symbol creation.
+		//
+		// Explicitly create a symbol early in this edge case to ensure
+		// we keep this metadata.
+		//
+		// TODO: Refactor to keep a reference so this can all be done
+		// by enqueueFunc.
+
+		if n.Op() != ir.OCALLFUNC {
+			// Not a standard call.
+			return
+		}
+		if n.X.Op() != ir.OCLOSURE {
+			// Not a direct closure call.
+			return
+		}
+
+		clo := n.X.(*ir.ClosureExpr)
+		if ir.IsTrivialClosure(clo) {
+			// enqueueFunc will handle trivial closures anyways.
+			return
+		}
+
+		ir.InitLSym(fn, true)
+	}
+
+	closureInitLSym(n, fn)
 
 	if base.Flag.GenDwarfInl > 0 {
 		if !sym.WasInlined() {
@@ -1473,4 +1544,41 @@ func doList(list []ir.Node, do func(ir.Node) bool) bool {
 		}
 	}
 	return false
+}
+
+// isIndexingCoverageCounter returns true if the specified node 'n' is indexing
+// into a coverage counter array.
+func isIndexingCoverageCounter(n ir.Node) bool {
+	if n.Op() != ir.OINDEX {
+		return false
+	}
+	ixn := n.(*ir.IndexExpr)
+	if ixn.X.Op() != ir.ONAME || !ixn.X.Type().IsArray() {
+		return false
+	}
+	nn := ixn.X.(*ir.Name)
+	return nn.CoverageCounter()
+}
+
+// isAtomicCoverageCounterUpdate examines the specified node to
+// determine whether it represents a call to sync/atomic.AddUint32 to
+// increment a coverage counter.
+func isAtomicCoverageCounterUpdate(cn *ir.CallExpr) bool {
+	if cn.X.Op() != ir.ONAME {
+		return false
+	}
+	name := cn.X.(*ir.Name)
+	if name.Class != ir.PFUNC {
+		return false
+	}
+	fn := name.Sym().Name
+	if name.Sym().Pkg.Path != "sync/atomic" || fn != "AddUint32" {
+		return false
+	}
+	if len(cn.Args) != 2 || cn.Args[0].Op() != ir.OADDR {
+		return false
+	}
+	adn := cn.Args[0].(*ir.AddrExpr)
+	v := isIndexingCoverageCounter(adn.X)
+	return v
 }

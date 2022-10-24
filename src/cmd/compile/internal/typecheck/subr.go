@@ -50,7 +50,7 @@ func NewFuncParams(tl *types.Type, mustname bool) []*ir.Field {
 	return args
 }
 
-// newname returns a new ONAME Node associated with symbol s.
+// NewName returns a new ONAME Node associated with symbol s.
 func NewName(s *types.Sym) *ir.Name {
 	n := ir.NewNameAt(base.Pos, s)
 	n.Curfn = ir.CurFunc
@@ -62,7 +62,7 @@ func NodAddr(n ir.Node) *ir.AddrExpr {
 	return NodAddrAt(base.Pos, n)
 }
 
-// nodAddrPos returns a node representing &n at position pos.
+// NodAddrAt returns a node representing &n at position pos.
 func NodAddrAt(pos src.XPos, n ir.Node) *ir.AddrExpr {
 	n = markAddrOf(n)
 	return ir.NewAddrExpr(pos, n)
@@ -1358,7 +1358,8 @@ func (ts *Tsubster) tstruct(t *types.Type, force bool) *types.Type {
 				newfields[i].SetNointerface(true)
 			}
 			if f.Nname != nil && ts.Vars != nil {
-				v := ts.Vars[f.Nname.(*ir.Name)]
+				n := f.Nname.(*ir.Name)
+				v := ts.Vars[n]
 				if v != nil {
 					// This is the case where we are
 					// translating the type of the function we
@@ -1366,6 +1367,13 @@ func (ts *Tsubster) tstruct(t *types.Type, force bool) *types.Type {
 					// the subst.ts.vars table, and we want to
 					// change to reference the new dcl.
 					newfields[i].Nname = v
+				} else if ir.IsBlank(n) {
+					// Blank variable is not dcl list. Make a
+					// new one to not share.
+					m := ir.NewNameAt(n.Pos(), ir.BlankNode.Sym())
+					m.SetType(n.Type())
+					m.SetTypecheck(1)
+					newfields[i].Nname = m
 				} else {
 					// This is the case where we are
 					// translating the type of a function
@@ -1419,7 +1427,7 @@ func (ts *Tsubster) tinter(t *types.Type, force bool) *types.Type {
 	return t
 }
 
-// genericSym returns the name of the base generic type for the type named by
+// genericTypeName returns the name of the base generic type for the type named by
 // sym. It simply returns the name obtained by removing everything after the
 // first bracket ("[").
 func genericTypeName(sym *types.Sym) string {

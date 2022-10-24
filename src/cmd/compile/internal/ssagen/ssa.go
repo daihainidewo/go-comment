@@ -1588,18 +1588,16 @@ func (s *state) stmt(n ir.Node) {
 		}
 
 		// mayOverlap keeps track of whether the LHS and RHS might
-		// refer to overlapping memory.
-		mayOverlap := true
-		if n.Y == nil {
-			// Not a move at all, mayOverlap is not relevant.
-		} else if n.Def {
-			// A variable being defined cannot overlap anything else.
-			mayOverlap = false
-		} else if n.X.Op() == ir.ONAME && n.Y.Op() == ir.ONAME {
-			// Two named things never overlap.
-			// (Or they are identical, which we treat as nonoverlapping.)
-			mayOverlap = false
-		} else if n.Y.Op() == ir.ODEREF {
+		// refer to partially overlapping memory. Partial overlapping can
+		// only happen for arrays, see the comment in moveWhichMayOverlap.
+		//
+		// If both sides of the assignment are not dereferences, then partial
+		// overlap can't happen. Partial overlap can only occur only when the
+		// arrays referenced are strictly smaller parts of the same base array.
+		// If one side of the assignment is a full array, then partial overlap
+		// can't happen. (The arrays are either disjoint or identical.)
+		mayOverlap := n.X.Op() == ir.ODEREF && (n.Y != nil && n.Y.Op() == ir.ODEREF)
+		if n.Y != nil && n.Y.Op() == ir.ODEREF {
 			p := n.Y.(*ir.StarExpr).X
 			for p.Op() == ir.OCONVNOP {
 				p = p.(*ir.ConvExpr).X
@@ -1609,12 +1607,6 @@ func (s *state) stmt(n ir.Node) {
 				// That memory can't overlap with the memory being written.
 				mayOverlap = false
 			}
-		} else if n.Y.Op() == ir.ORESULT || n.Y.Op() == ir.OCALLFUNC || n.Y.Op() == ir.OCALLINTER {
-			// When copying values out of the return area of a call, we know
-			// the source and destination don't overlap. Importantly, we must
-			// set mayOverlap so we don't introduce a call to memmove while
-			// we still have live data in the argument area.
-			mayOverlap = false
 		}
 
 		// Evaluate RHS.
@@ -1700,12 +1692,12 @@ func (s *state) stmt(n ir.Node) {
 			// Currently doesn't really work because (*p)[:len(*p)] appears here as:
 			//    tmp = len(*p)
 			//    (*p)[:tmp]
-			//if j != nil && (j.Op == OLEN && SameSafeExpr(j.Left, n.Left)) {
+			// if j != nil && (j.Op == OLEN && SameSafeExpr(j.Left, n.Left)) {
 			//      j = nil
-			//}
-			//if k != nil && (k.Op == OCAP && SameSafeExpr(k.Left, n.Left)) {
+			// }
+			// if k != nil && (k.Op == OCAP && SameSafeExpr(k.Left, n.Left)) {
 			//      k = nil
-			//}
+			// }
 			if i == nil {
 				skip |= skipPtr
 				if j == nil {
@@ -4011,16 +4003,6 @@ func InitTables() {
 		sys.ARM64, sys.PPC64)
 
 	/******** runtime/internal/sys ********/
-	addF("runtime/internal/sys", "Ctz32",
-		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-			return s.newValue1(ssa.OpCtz32, types.Types[types.TINT], args[0])
-		},
-		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64)
-	addF("runtime/internal/sys", "Ctz64",
-		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-			return s.newValue1(ssa.OpCtz64, types.Types[types.TINT], args[0])
-		},
-		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64)
 	addF("runtime/internal/sys", "Bswap32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBswap32, types.Types[types.TUINT32], args[0])
@@ -4738,14 +4720,14 @@ func InitTables() {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue3(ssa.OpAdd64carry, types.NewTuple(types.Types[types.TUINT64], types.Types[types.TUINT64]), args[0], args[1], args[2])
 		},
-		sys.AMD64, sys.ARM64, sys.PPC64, sys.S390X, sys.RISCV64)
-	alias("math/bits", "Add", "math/bits", "Add64", sys.ArchAMD64, sys.ArchARM64, sys.ArchPPC64, sys.ArchPPC64LE, sys.ArchS390X, sys.ArchRISCV64)
+		sys.AMD64, sys.ARM64, sys.PPC64, sys.S390X, sys.RISCV64, sys.Loong64)
+	alias("math/bits", "Add", "math/bits", "Add64", p8...)
 	addF("math/bits", "Sub64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue3(ssa.OpSub64borrow, types.NewTuple(types.Types[types.TUINT64], types.Types[types.TUINT64]), args[0], args[1], args[2])
 		},
-		sys.AMD64, sys.ARM64, sys.PPC64, sys.S390X, sys.RISCV64)
-	alias("math/bits", "Sub", "math/bits", "Sub64", sys.ArchAMD64, sys.ArchARM64, sys.ArchS390X, sys.ArchRISCV64)
+		sys.AMD64, sys.ARM64, sys.PPC64, sys.S390X, sys.RISCV64, sys.Loong64)
+	alias("math/bits", "Sub", "math/bits", "Sub64", p8...)
 	addF("math/bits", "Div64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			// check for divide-by-zero/overflow and panic with appropriate message
@@ -4758,8 +4740,8 @@ func InitTables() {
 		sys.AMD64)
 	alias("math/bits", "Div", "math/bits", "Div64", sys.ArchAMD64)
 
-	alias("runtime/internal/sys", "Ctz8", "math/bits", "TrailingZeros8", all...)
 	alias("runtime/internal/sys", "TrailingZeros8", "math/bits", "TrailingZeros8", all...)
+	alias("runtime/internal/sys", "TrailingZeros32", "math/bits", "TrailingZeros32", all...)
 	alias("runtime/internal/sys", "TrailingZeros64", "math/bits", "TrailingZeros64", all...)
 	alias("runtime/internal/sys", "Len8", "math/bits", "Len8", all...)
 	alias("runtime/internal/sys", "Len64", "math/bits", "Len64", all...)

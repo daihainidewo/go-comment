@@ -718,7 +718,11 @@ func LoadModFile(ctx context.Context) *Requirements {
 		var fixed bool
 		data, f, err := ReadModFile(gomod, fixVersion(ctx, &fixed))
 		if err != nil {
-			base.Fatalf("go: %v", err)
+			if inWorkspaceMode() {
+				base.Fatalf("go: cannot load module listed in go.work file: %v", err)
+			} else {
+				base.Fatalf("go: %v", err)
+			}
 		}
 
 		modFiles = append(modFiles, f)
@@ -1150,7 +1154,7 @@ func setDefaultBuildMod() {
 		return
 	}
 
-	if len(modRoots) == 1 {
+	if len(modRoots) == 1 && !inWorkspaceMode() {
 		index := MainModules.GetSingleIndexOrNil()
 		if fi, err := fsys.Stat(filepath.Join(modRoots[0], "vendor")); err == nil && fi.IsDir() {
 			modGo := "unspecified"
@@ -1665,7 +1669,7 @@ const (
 	addBuildListZipSums
 )
 
-// modKey returns the module.Version under which the checksum for m's go.mod
+// modkey returns the module.Version under which the checksum for m's go.mod
 // file is stored in the go.sum file.
 func modkey(m module.Version) module.Version {
 	return module.Version{Path: m.Path, Version: m.Version + "/go.mod"}

@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"cmd/compile/internal/base"
+	"cmd/compile/internal/coverage"
 	"cmd/compile/internal/deadcode"
 	"cmd/compile/internal/devirtualize"
 	"cmd/compile/internal/dwarfgen"
@@ -96,6 +97,10 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 
 	// pseudo-package used for methods with anonymous receivers
 	ir.Pkgs.Go = types.NewPkg("go", "")
+
+	// pseudo-package for use with code coverage instrumentation.
+	ir.Pkgs.Coverage = types.NewPkg("go.coverage", "runtime/coverage")
+	ir.Pkgs.Coverage.Prefix = "runtime/coverage"
 
 	// Record flags that affect the build result. (And don't
 	// record flags that don't, since that would cause spurious
@@ -198,6 +203,12 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 	// because it generates itabs for initializing global variables.
 	ssagen.InitConfig()
 
+	// First part of coverage fixup (if applicable).
+	var cnames coverage.Names
+	if base.Flag.Cfg.CoverageInfo != nil {
+		cnames = coverage.FixupVars()
+	}
+
 	// Create "init" function for package-scope variable initialization
 	// statements, if any.
 	//
@@ -206,6 +217,12 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 	// carried out in, and even mundane optimizations like dead code
 	// removal can skew the results (e.g., #43444).
 	pkginit.MakeInit()
+
+	// Second part of code coverage fixup (init func modification),
+	// if applicable.
+	if base.Flag.Cfg.CoverageInfo != nil {
+		coverage.FixupInit(cnames)
+	}
 
 	// Eliminate some obviously dead code.
 	// Must happen after typechecking.

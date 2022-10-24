@@ -565,6 +565,13 @@ const (
 	tlsSize  = tlsSlots * goarch.PtrSize
 )
 
+// Values for m.freeWait.
+const (
+	freeMStack = 0 // M done, free stack and reference.
+	freeMRef   = 1 // M done, free reference.
+	freeMWait  = 2 // M still in use.
+)
+
 type m struct {
 	g0      *g     // goroutine with scheduling stack
 	morebuf gobuf  // 保存着morestack的调用者相关信息// gobuf arg to morestack
@@ -594,9 +601,10 @@ type m struct {
 	blocked       bool  // 是否被note阻塞 m is blocked on a note
 	newSigstack   bool  // minit on C thread called sigaltstack
 	printlock     int8
-	incgo         bool   // 是否执行cgo调用 m is executing a cgo call
-	freeWait      uint32 // 为0表示可以释放当前m if == 0, safe to free g0 and delete m (atomic)
-	fastrand      uint64 // 随机数种子
+	incgo         bool          // 是否执行cgo调用 m is executing a cgo call
+	isextra       bool          // 为0表示可以释放当前 m is an extra m
+	freeWait      atomic.Uint32 // 随机数种子 Whether it is safe to free g0 and delete m (one of freeMRef, freeMStack, freeMWait)
+	fastrand      uint64
 	needextram    bool
 	traceback     uint8
 	ncgocall      uint64        // number of cgo calls in total
@@ -947,6 +955,7 @@ type _func struct {
 	pcln      uint32
 	npcdata   uint32
 	cuOffset  uint32 // runtime.cutab offset of this function's CU
+	startLine int32  // line number of start of function (func keyword/TEXT directive)
 	funcID    funcID // set for certain special runtime functions
 	flag      funcFlag
 	_         [1]byte // pad
@@ -987,11 +996,13 @@ type funcinl struct {
 	// name 函数名字
 	// file 函数文件名
 	// line 函数所在文件行
-	ones  uint32  // set to ^0 to distinguish from _func
-	entry uintptr // entry of the real (the "outermost") frame
-	name  string
-	file  string
-	line  int
+	// startLine 开始行
+	ones      uint32  // set to ^0 to distinguish from _func
+	entry     uintptr // entry of the real (the "outermost") frame
+	name      string
+	file      string
+	line      int32
+	startLine int32
 }
 
 // layout of Itab known to compilers

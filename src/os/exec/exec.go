@@ -94,6 +94,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"internal/godebug"
 	"internal/syscall/execenv"
 	"io"
 	"os"
@@ -101,7 +102,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 )
 
@@ -213,18 +213,40 @@ type Cmd struct {
 	// Process is the underlying process, once started.
 	Process *os.Process
 
-	// ProcessState contains information about an exited process,
-	// available after a call to Wait or Run.
+	// ProcessState contains information about an exited process.
+	// If the process was started successfully, Wait or Run will
+	// populate its ProcessState when the command completes.
 	ProcessState *os.ProcessState
 
-	ctx             context.Context // nil means none
-	Err             error           // LookPath error, if any.
-	childFiles      []*os.File
-	closeAfterStart []io.Closer
-	closeAfterWait  []io.Closer
-	goroutine       []func() error
-	goroutineErrs   <-chan error // one receive per goroutine
-	ctxErr          <-chan error // if non nil, receives the error from watchCtx exactly once
+	ctx context.Context // nil means none
+	Err error           // LookPath error, if any.
+
+	// childIOFiles holds closers for any of the child process's
+	// stdin, stdout, and/or stderr files that were opened by the Cmd itself
+	// (not supplied by the caller). These should be closed as soon as they
+	// are inherited by the child process.
+	childIOFiles []io.Closer
+
+	// parentIOPipes holds closers for the parent's end of any pipes
+	// connected to the child's stdin, stdout, and/or stderr streams
+	// that were opened by the Cmd itself (not supplied by the caller).
+	// These should be closed after Wait sees the command exit.
+	parentIOPipes []io.Closer
+
+	// goroutine holds a set of closures to execute to copy data
+	// to and/or from the command's I/O pipes.
+	goroutine []func() error
+
+	// If goroutineErr is non-nil, it receives the first error from a copying
+	// goroutine once all such goroutines have completed.
+	// goroutineErr is set to nil once its error has been received.
+	goroutineErr <-chan error
+
+	ctxErr <-chan error // if non nil, receives the error from watchCtx exactly once
+
+	// The stack saved when the Command was created, if GODEBUG contains
+	// execwait=2. Used for debugging leaks.
+	createdByStack []byte
 
 	// For a security release long ago, we created x/sys/execabs,
 	// which manipulated the unexported lookPathErr error field
@@ -273,6 +295,43 @@ func Command(name string, arg ...string) *Cmd {
 		Path: name,
 		Args: append([]string{name}, arg...),
 	}
+
+	if execwait := godebug.Get("execwait"); execwait != "" {
+		if execwait == "2" {
+			// Obtain the caller stack. (This is equivalent to runtime/debug.Stack,
+			// copied to avoid importing the whole package.)
+			stack := make([]byte, 1024)
+			for {
+				n := runtime.Stack(stack, false)
+				if n < len(stack) {
+					stack = stack[:n]
+					break
+				}
+				stack = make([]byte, 2*len(stack))
+			}
+
+			if i := bytes.Index(stack, []byte("\nos/exec.Command(")); i >= 0 {
+				stack = stack[i+1:]
+			}
+			cmd.createdByStack = stack
+		}
+
+		runtime.SetFinalizer(cmd, func(c *Cmd) {
+			if c.Process != nil && c.ProcessState == nil {
+				debugHint := ""
+				if c.createdByStack == nil {
+					debugHint = " (set GODEBUG=execwait=2 to capture stacks for debugging)"
+				} else {
+					os.Stderr.WriteString("GODEBUG=execwait=2 detected a leaked exec.Cmd created by:\n")
+					os.Stderr.Write(c.createdByStack)
+					os.Stderr.WriteString("\n")
+					debugHint = ""
+				}
+				panic("exec: Cmd started a Process but leaked without a call to Wait" + debugHint)
+			}
+		})
+	}
+
 	if filepath.Base(name) == name {
 		lp, err := LookPath(name)
 		if lp != "" {
@@ -337,14 +396,14 @@ func (c *Cmd) argv() []string {
 	return []string{c.Path}
 }
 
-func (c *Cmd) stdin() (f *os.File, err error) {
+func (c *Cmd) childStdin() (*os.File, error) {
 	if c.Stdin == nil {
-		f, err = os.Open(os.DevNull)
+		f, err := os.Open(os.DevNull)
 		if err != nil {
-			return
+			return nil, err
 		}
-		c.closeAfterStart = append(c.closeAfterStart, f)
-		return
+		c.childIOFiles = append(c.childIOFiles, f)
+		return f, nil
 	}
 
 	if f, ok := c.Stdin.(*os.File); ok {
@@ -353,11 +412,11 @@ func (c *Cmd) stdin() (f *os.File, err error) {
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
-		return
+		return nil, err
 	}
 
-	c.closeAfterStart = append(c.closeAfterStart, pr)
-	c.closeAfterWait = append(c.closeAfterWait, pw)
+	c.childIOFiles = append(c.childIOFiles, pr)
+	c.parentIOPipes = append(c.parentIOPipes, pw)
 	c.goroutine = append(c.goroutine, func() error {
 		_, err := io.Copy(pw, c.Stdin)
 		if skipStdinCopyError(err) {
@@ -371,25 +430,29 @@ func (c *Cmd) stdin() (f *os.File, err error) {
 	return pr, nil
 }
 
-func (c *Cmd) stdout() (f *os.File, err error) {
+func (c *Cmd) childStdout() (*os.File, error) {
 	return c.writerDescriptor(c.Stdout)
 }
 
-func (c *Cmd) stderr() (f *os.File, err error) {
+func (c *Cmd) childStderr(childStdout *os.File) (*os.File, error) {
 	if c.Stderr != nil && interfaceEqual(c.Stderr, c.Stdout) {
-		return c.childFiles[1], nil
+		return childStdout, nil
 	}
 	return c.writerDescriptor(c.Stderr)
 }
 
-func (c *Cmd) writerDescriptor(w io.Writer) (f *os.File, err error) {
+// writerDescriptor returns an os.File to which the child process
+// can write to send data to w.
+//
+// If w is nil, writerDescriptor returns a File that writes to os.DevNull.
+func (c *Cmd) writerDescriptor(w io.Writer) (*os.File, error) {
 	if w == nil {
-		f, err = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 		if err != nil {
-			return
+			return nil, err
 		}
-		c.closeAfterStart = append(c.closeAfterStart, f)
-		return
+		c.childIOFiles = append(c.childIOFiles, f)
+		return f, nil
 	}
 
 	if f, ok := w.(*os.File); ok {
@@ -398,11 +461,11 @@ func (c *Cmd) writerDescriptor(w io.Writer) (f *os.File, err error) {
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
-		return
+		return nil, err
 	}
 
-	c.closeAfterStart = append(c.closeAfterStart, pw)
-	c.closeAfterWait = append(c.closeAfterWait, pr)
+	c.childIOFiles = append(c.childIOFiles, pw)
+	c.parentIOPipes = append(c.parentIOPipes, pr)
 	c.goroutine = append(c.goroutine, func() error {
 		_, err := io.Copy(w, pr)
 		pr.Close() // in case io.Copy stopped due to write error
@@ -411,7 +474,7 @@ func (c *Cmd) writerDescriptor(w io.Writer) (f *os.File, err error) {
 	return pw, nil
 }
 
-func (c *Cmd) closeDescriptors(closers []io.Closer) {
+func closeDescriptors(closers []io.Closer) {
 	for _, fd := range closers {
 		fd.Close()
 	}
@@ -470,12 +533,27 @@ func lookExtensions(path, dir string) (string, error) {
 // After a successful call to Start the Wait method must be called in
 // order to release associated system resources.
 func (c *Cmd) Start() error {
+	// Check for doubled Start calls before we defer failure cleanup. If the prior
+	// call to Start succeeded, we don't want to spuriously close its pipes.
+	if c.Process != nil {
+		return errors.New("exec: already started")
+	}
+
+	started := false
+	defer func() {
+		closeDescriptors(c.childIOFiles)
+		c.childIOFiles = nil
+
+		if !started {
+			closeDescriptors(c.parentIOPipes)
+			c.parentIOPipes = nil
+		}
+	}()
+
 	if c.Path == "" && c.Err == nil && c.lookPathErr == nil {
 		c.Err = errors.New("exec: no command")
 	}
 	if c.Err != nil || c.lookPathErr != nil {
-		c.closeDescriptors(c.closeAfterStart)
-		c.closeDescriptors(c.closeAfterWait)
 		if c.lookPathErr != nil {
 			return c.lookPathErr
 		}
@@ -484,37 +562,35 @@ func (c *Cmd) Start() error {
 	if runtime.GOOS == "windows" {
 		lp, err := lookExtensions(c.Path, c.Dir)
 		if err != nil {
-			c.closeDescriptors(c.closeAfterStart)
-			c.closeDescriptors(c.closeAfterWait)
 			return err
 		}
 		c.Path = lp
 	}
-	if c.Process != nil {
-		return errors.New("exec: already started")
-	}
 	if c.ctx != nil {
 		select {
 		case <-c.ctx.Done():
-			c.closeDescriptors(c.closeAfterStart)
-			c.closeDescriptors(c.closeAfterWait)
 			return c.ctx.Err()
 		default:
 		}
 	}
 
-	c.childFiles = make([]*os.File, 0, 3+len(c.ExtraFiles))
-	type F func(*Cmd) (*os.File, error)
-	for _, setupFd := range []F{(*Cmd).stdin, (*Cmd).stdout, (*Cmd).stderr} {
-		fd, err := setupFd(c)
-		if err != nil {
-			c.closeDescriptors(c.closeAfterStart)
-			c.closeDescriptors(c.closeAfterWait)
-			return err
-		}
-		c.childFiles = append(c.childFiles, fd)
+	childFiles := make([]*os.File, 0, 3+len(c.ExtraFiles))
+	stdin, err := c.childStdin()
+	if err != nil {
+		return err
 	}
-	c.childFiles = append(c.childFiles, c.ExtraFiles...)
+	childFiles = append(childFiles, stdin)
+	stdout, err := c.childStdout()
+	if err != nil {
+		return err
+	}
+	childFiles = append(childFiles, stdout)
+	stderr, err := c.childStderr(stdout)
+	if err != nil {
+		return err
+	}
+	childFiles = append(childFiles, stderr)
+	childFiles = append(childFiles, c.ExtraFiles...)
 
 	env, err := c.environ()
 	if err != nil {
@@ -523,32 +599,77 @@ func (c *Cmd) Start() error {
 
 	c.Process, err = os.StartProcess(c.Path, c.argv(), &os.ProcAttr{
 		Dir:   c.Dir,
-		Files: c.childFiles,
+		Files: childFiles,
 		Env:   env,
 		Sys:   c.SysProcAttr,
 	})
 	if err != nil {
-		c.closeDescriptors(c.closeAfterStart)
-		c.closeDescriptors(c.closeAfterWait)
 		return err
 	}
+	started = true
 
-	c.closeDescriptors(c.closeAfterStart)
-
-	// Don't allocate the goroutineErrs channel unless there are goroutines to fire.
+	// Don't allocate the goroutineErr channel unless there are goroutines to start.
 	if len(c.goroutine) > 0 {
-		errc := make(chan error, len(c.goroutine))
-		c.goroutineErrs = errc
+		goroutineErr := make(chan error, 1)
+		c.goroutineErr = goroutineErr
+
+		type goroutineStatus struct {
+			running  int
+			firstErr error
+		}
+		statusc := make(chan goroutineStatus, 1)
+		statusc <- goroutineStatus{running: len(c.goroutine)}
 		for _, fn := range c.goroutine {
 			go func(fn func() error) {
-				errc <- fn()
+				err := fn()
+
+				status := <-statusc
+				if status.firstErr == nil {
+					status.firstErr = err
+				}
+				status.running--
+				if status.running == 0 {
+					goroutineErr <- status.firstErr
+				} else {
+					statusc <- status
+				}
 			}(fn)
 		}
+		c.goroutine = nil // Allow the goroutines' closures to be GC'd when they complete.
 	}
 
-	c.ctxErr = c.watchCtx()
+	if c.ctx != nil && c.ctx.Done() != nil {
+		errc := make(chan error)
+		c.ctxErr = errc
+		go c.watchCtx(errc)
+	}
 
 	return nil
+}
+
+// watchCtx watches c.ctx until it is able to send a result to errc.
+//
+// If c.ctx is done before a result can be sent, watchCtx terminates c.Process.
+func (c *Cmd) watchCtx(errc chan<- error) {
+	select {
+	case errc <- nil:
+		return
+	case <-c.ctx.Done():
+	}
+
+	var err error
+	if killErr := c.Process.Kill(); killErr == nil {
+		// We appear to have killed the process. c.Process.Wait should return a
+		// non-nil error to c.Wait unless the Kill signal races with a successful
+		// exit, and if that does happen we shouldn't report a spurious error,
+		// so don't set err to anything here.
+	} else if !errors.Is(killErr, os.ErrProcessDone) {
+		err = wrappedError{
+			prefix: "exec: error sending signal to Cmd",
+			err:    killErr,
+		}
+	}
+	errc <- err
 }
 
 // An ExitError reports an unsuccessful exit by a command.
@@ -596,76 +717,36 @@ func (c *Cmd) Wait() error {
 	if c.ProcessState != nil {
 		return errors.New("exec: Wait was already called")
 	}
+
 	state, err := c.Process.Wait()
 	if err == nil && !state.Success() {
 		err = &ExitError{ProcessState: state}
 	}
 	c.ProcessState = state
 
-	// Wait for the pipe-copying goroutines to complete.
-	var copyError error
-	for range c.goroutine {
-		if err := <-c.goroutineErrs; err != nil && copyError == nil {
-			copyError = err
-		}
-	}
-	c.goroutine = nil // Allow the goroutines' closures to be GC'd.
-
 	if c.ctxErr != nil {
 		interruptErr := <-c.ctxErr
 		// If c.Process.Wait returned an error, prefer that.
 		// Otherwise, report any error from the interrupt goroutine.
-		if interruptErr != nil && err == nil {
+		if err == nil {
 			err = interruptErr
 		}
 	}
-	// Report errors from the copying goroutines only if the program otherwise
-	// exited normally on its own. Otherwise, the copying error may be due to the
-	// abnormal termination.
-	if err == nil {
-		err = copyError
-	}
 
-	c.closeDescriptors(c.closeAfterWait)
-	c.closeAfterWait = nil
+	// Wait for the pipe-copying goroutines to complete.
+	if c.goroutineErr != nil {
+		// Report an error from the copying goroutines only if the program otherwise
+		// exited normally on its own. Otherwise, the copying error may be due to the
+		// abnormal termination.
+		copyErr := <-c.goroutineErr
+		if err == nil {
+			err = copyErr
+		}
+	}
+	closeDescriptors(c.parentIOPipes)
+	c.parentIOPipes = nil
 
 	return err
-}
-
-// watchCtx conditionally starts a goroutine that waits until either c.ctx is
-// done or c.Process.Wait has completed (called from Wait).
-// If c.ctx is done first, the goroutine terminates c.Process.
-//
-// If a goroutine was started, watchCtx returns a channel on which its result
-// must be received.
-func (c *Cmd) watchCtx() <-chan error {
-	if c.ctx == nil {
-		return nil
-	}
-
-	errc := make(chan error)
-	go func() {
-		select {
-		case errc <- nil:
-			return
-		case <-c.ctx.Done():
-		}
-
-		var err error
-		if killErr := c.Process.Kill(); killErr == nil {
-			// We appear to have successfully delivered a kill signal, so any
-			// program behavior from this point may be due to ctx.
-			err = c.ctx.Err()
-		} else if !errors.Is(killErr, os.ErrProcessDone) {
-			err = wrappedError{
-				prefix: "exec: error sending signal to Cmd",
-				err:    killErr,
-			}
-		}
-		errc <- err
-	}()
-
-	return errc
 }
 
 // Output runs the command and returns its standard output.
@@ -726,26 +807,9 @@ func (c *Cmd) StdinPipe() (io.WriteCloser, error) {
 		return nil, err
 	}
 	c.Stdin = pr
-	c.closeAfterStart = append(c.closeAfterStart, pr)
-	wc := &closeOnce{File: pw}
-	c.closeAfterWait = append(c.closeAfterWait, wc)
-	return wc, nil
-}
-
-type closeOnce struct {
-	*os.File
-
-	once sync.Once
-	err  error
-}
-
-func (c *closeOnce) Close() error {
-	c.once.Do(c.close)
-	return c.err
-}
-
-func (c *closeOnce) close() {
-	c.err = c.File.Close()
+	c.childIOFiles = append(c.childIOFiles, pr)
+	c.parentIOPipes = append(c.parentIOPipes, pw)
+	return pw, nil
 }
 
 // StdoutPipe returns a pipe that will be connected to the command's
@@ -768,8 +832,8 @@ func (c *Cmd) StdoutPipe() (io.ReadCloser, error) {
 		return nil, err
 	}
 	c.Stdout = pw
-	c.closeAfterStart = append(c.closeAfterStart, pw)
-	c.closeAfterWait = append(c.closeAfterWait, pr)
+	c.childIOFiles = append(c.childIOFiles, pw)
+	c.parentIOPipes = append(c.parentIOPipes, pr)
 	return pr, nil
 }
 
@@ -793,8 +857,8 @@ func (c *Cmd) StderrPipe() (io.ReadCloser, error) {
 		return nil, err
 	}
 	c.Stderr = pw
-	c.closeAfterStart = append(c.closeAfterStart, pw)
-	c.closeAfterWait = append(c.closeAfterWait, pr)
+	c.childIOFiles = append(c.childIOFiles, pw)
+	c.parentIOPipes = append(c.parentIOPipes, pr)
 	return pr, nil
 }
 

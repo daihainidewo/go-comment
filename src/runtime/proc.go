@@ -260,6 +260,7 @@ func main() {
 	// 执行main包的main函数
 	fn()
 	if raceenabled {
+		runExitHooks(0) // run hooks now, since racefini does not return
 		racefini()
 	}
 
@@ -279,6 +280,7 @@ func main() {
 	if panicking.Load() != 0 {
 		gopark(nil, nil, waitReasonPanicWait, traceEvGoStop, 1)
 	}
+	runExitHooks(0)
 
 	exit(0)
 	for {
@@ -290,8 +292,9 @@ func main() {
 // os_beforeExit is called from os.Exit(0).
 //
 //go:linkname os_beforeExit os.runtime_beforeExit
-func os_beforeExit() {
-	if raceenabled {
+func os_beforeExit(exitCode int) {
+	runExitHooks(exitCode)
+	if exitCode == 0 && raceenabled {
 		racefini()
 	}
 }
@@ -776,6 +779,14 @@ func schedinit() {
 	goenvs()
 	parsedebugvars()
 	gcinit()
+
+	// if disableMemoryProfiling is set, update MemProfileRate to 0 to turn off memprofile.
+	// Note: parsedebugvars may update MemProfileRate, but when disableMemoryProfiling is
+	// set to true by the linker, it means that nothing is consuming the profile, it is
+	// safe to set MemProfileRate to 0.
+	if disableMemoryProfiling {
+		MemProfileRate = 0
+	}
 
 	lock(&sched.lock)
 	sched.lastpoll.Store(nanotime())
@@ -1704,19 +1715,18 @@ func mexit(osStack bool) {
 	}
 	throw("m not found in allm")
 found:
-	if !osStack {
-		// Delay reaping m until it's done with the stack.
-		//
-		// If this is using an OS stack, the OS will free it
-		// so there's no need for reaping.
-		atomic.Store(&mp.freeWait, 1)
-		// Put m on the free list, though it will not be reaped until
-		// freeWait is 0. Note that the free list must not be linked
-		// through alllink because some functions walk allm without
-		// locking, so may be using alllink.
-		mp.freelink = sched.freem
-		sched.freem = mp
-	}
+	// Delay reaping m until it's done with the stack.
+	//
+	// Put mp on the free list, though it will not be reaped while freeWait
+	// is freeMWait. mp is no longer reachable via allm, so even if it is
+	// on an OS stack, we must keep a reference to mp alive so that the GC
+	// doesn't free mp while we are still using it.
+	//
+	// Note that the free list must not be linked through alllink because
+	// some functions walk allm without locking, so may be using alllink.
+	mp.freeWait.Store(freeMWait)
+	mp.freelink = sched.freem
+	sched.freem = mp
 	unlock(&sched.lock)
 
 	atomic.Xadd64(&ncgocall, int64(mp.ncgocall))
@@ -1747,6 +1757,9 @@ found:
 	mdestroy(mp)
 
 	if osStack {
+		// No more uses of mp, so it is safe to drop the reference.
+		mp.freeWait.Store(freeMRef)
+
 		// Return from mstart and let the system thread
 		// library free the g0 stack and terminate the thread.
 		return
@@ -1925,20 +1938,25 @@ func allocm(pp *p, fn func(), id int64) *m {
 		lock(&sched.lock)
 		var newList *m
 		for freem := sched.freem; freem != nil; {
-			if freem.freeWait != 0 {
+			wait := freem.freeWait.Load()
+			if wait == freeMWait {
 				next := freem.freelink
 				freem.freelink = newList
 				newList = freem
 				freem = next
 				continue
 			}
-			// 清空freem.g0的栈信息
-			// stackfree must be on the system stack, but allocm is
-			// reachable off the system stack transitively from
-			// startm.
-			systemstack(func() {
-				stackfree(freem.g0.stack)
-			})
+			// Free the stack if needed. For freeMRef, there is
+			// nothing to do except drop freem from the sched.freem
+			// list.
+			if wait == freeMStack {
+				// stackfree must be on the system stack, but allocm is
+				// reachable off the system stack transitively from
+				// startm.
+				systemstack(func() {
+					stackfree(freem.g0.stack)
+				})
+			}
 			freem = freem.freelink
 		}
 		// 更新已被释放的m列表
@@ -2121,14 +2139,23 @@ func oneNewExtraM() {
 	casgstatus(gp, _Gidle, _Gdead)
 	gp.m = mp
 	mp.curg = gp
+	mp.isextra = true
 	mp.lockedInt++
 	mp.lockedg.set(gp)
 	gp.lockedm.set(mp)
 	gp.goid = sched.goidgen.Add(1)
+	gp.sysblocktraced = true
 	if raceenabled {
 		gp.racectx = racegostart(abi.FuncPCABIInternal(newextram) + sys.PCQuantum)
 	}
-	// 将gp添加进全部g列表
+	if trace.enabled {
+		// Trigger two trace events for the locked g in the extra m,
+		// since the next event of the g will be traceEvGoSysExit in exitsyscall,
+		// while calling from C thread to Go.
+		traceGoCreate(gp, 0) // no start pc
+		gp.traceseq++
+		traceEvent(traceEvGoInSyscall, -1, gp.goid)
+	}
 	// put on allg for garbage collector
 	allgadd(gp)
 

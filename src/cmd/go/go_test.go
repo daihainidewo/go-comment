@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"go/format"
 	"internal/godebug"
+	"internal/platform"
 	"internal/testenv"
 	"io"
 	"io/fs"
@@ -159,6 +160,8 @@ func TestMain(m *testing.M) {
 	}
 	if !*testWork {
 		defer removeAll(topTmpdir)
+	} else {
+		fmt.Fprintf(os.Stderr, "TESTWORK: preserving top level tempdir %s\n", topTmpdir)
 	}
 	os.Setenv(tempEnvName(), topTmpdir)
 
@@ -258,17 +261,17 @@ func TestMain(m *testing.M) {
 		}
 		testGOCACHE = strings.TrimSpace(string(out))
 
-		canMSan = canCgo && sys.MSanSupported(runtime.GOOS, runtime.GOARCH)
-		canASan = canCgo && sys.ASanSupported(runtime.GOOS, runtime.GOARCH)
-		canRace = canCgo && sys.RaceDetectorSupported(runtime.GOOS, runtime.GOARCH)
+		canMSan = canCgo && platform.MSanSupported(runtime.GOOS, runtime.GOARCH)
+		canASan = canCgo && platform.ASanSupported(runtime.GOOS, runtime.GOARCH)
+		canRace = canCgo && platform.RaceDetectorSupported(runtime.GOOS, runtime.GOARCH)
 		// The race detector doesn't work on Alpine Linux:
 		// golang.org/issue/14481
 		// gccgo does not support the race detector.
 		if isAlpineLinux() || runtime.Compiler == "gccgo" {
 			canRace = false
 		}
-		canFuzz = sys.FuzzSupported(runtime.GOOS, runtime.GOARCH)
-		fuzzInstrumented = sys.FuzzInstrumented(runtime.GOOS, runtime.GOARCH)
+		canFuzz = platform.FuzzSupported(runtime.GOOS, runtime.GOARCH)
+		fuzzInstrumented = platform.FuzzInstrumented(runtime.GOOS, runtime.GOARCH)
 	}
 
 	// Don't let these environment variables confuse the test.
@@ -826,7 +829,9 @@ var testWork = flag.Bool("testwork", false, "")
 func (tg *testgoData) cleanup() {
 	tg.t.Helper()
 	if *testWork {
-		tg.t.Logf("TESTWORK=%s\n", tg.path("."))
+		if tg.tempdir != "" {
+			tg.t.Logf("TESTWORK=%s\n", tg.path("."))
+		}
 		return
 	}
 	for _, path := range tg.temps {
@@ -878,10 +883,12 @@ func TestNewReleaseRebuildsStalePackagesInGOPATH(t *testing.T) {
 		"src/runtime",
 		"src/internal/abi",
 		"src/internal/bytealg",
+		"src/internal/coverage/rtcov",
 		"src/internal/cpu",
 		"src/internal/goarch",
 		"src/internal/goexperiment",
 		"src/internal/goos",
+		"src/internal/coverage/rtcov",
 		"src/math/bits",
 		"src/unsafe",
 		filepath.Join("pkg", runtime.GOOS+"_"+runtime.GOARCH),
@@ -941,7 +948,7 @@ func TestNewReleaseRebuildsStalePackagesInGOPATH(t *testing.T) {
 	tg.tempFile("d1/src/p1/p1.go", `package main; func main(){}`)
 	tg.setenv("GOPATH", tg.path("d1"))
 	// Pass -i flag to rebuild everything outdated.
-	tg.run("install", "-i", "p1")
+	tg.run("install", "p1")
 	tg.wantNotStale("p1", "", "./testgo list claims p1 is stale, incorrectly, before any changes")
 
 	// Changing mtime of runtime/internal/sys/sys.go
@@ -958,18 +965,18 @@ func TestNewReleaseRebuildsStalePackagesInGOPATH(t *testing.T) {
 	// now they all matter, so keep using sys.go.
 	restore = addVar(sys, 1)
 	defer restore()
-	tg.wantStale("p1", "stale dependency: runtime/internal/sys", "./testgo list claims p1 is NOT stale, incorrectly, after changing sys.go")
+	tg.wantStale("p1", "stale dependency: runtime/internal", "./testgo list claims p1 is NOT stale, incorrectly, after changing sys.go")
 	restore()
 	tg.wantNotStale("p1", "", "./testgo list claims p1 is stale, incorrectly, after changing back to old release")
 	addVar(sys, 2)
 	tg.wantStale("p1", "stale dependency: runtime", "./testgo list claims p1 is NOT stale, incorrectly, after changing sys.go again")
-	tg.run("install", "-i", "p1")
+	tg.run("install", "p1")
 	tg.wantNotStale("p1", "", "./testgo list claims p1 is stale after building with new release")
 
 	// Restore to "old" release.
 	restore()
-	tg.wantStale("p1", "stale dependency: runtime/internal/sys", "./testgo list claims p1 is NOT stale, incorrectly, after restoring sys.go")
-	tg.run("install", "-i", "p1")
+	tg.wantStale("p1", "stale dependency: runtime/internal", "./testgo list claims p1 is NOT stale, incorrectly, after restoring sys.go")
+	tg.run("install", "p1")
 	tg.wantNotStale("p1", "", "./testgo list claims p1 is stale after building with old release")
 }
 
@@ -1453,22 +1460,6 @@ func TestGoTestDashOWritesBinary(t *testing.T) {
 	tg.wantExecutable(tg.path("myerrors.test"+exeSuffix), "go test -o myerrors.test did not create myerrors.test")
 }
 
-func TestGoTestDashIDashOWritesBinary(t *testing.T) {
-	skipIfGccgo(t, "gccgo has no standard packages")
-	tooSlow(t)
-	tg := testgo(t)
-	defer tg.cleanup()
-	tg.parallel()
-	tg.makeTempdir()
-
-	// don't let test -i overwrite runtime
-	tg.wantNotStale("runtime", "", "must be non-stale before test -i")
-
-	tg.run("test", "-v", "-i", "-o", tg.path("myerrors.test"+exeSuffix), "errors")
-	tg.grepBothNot("PASS|FAIL", "test should not have run")
-	tg.wantExecutable(tg.path("myerrors.test"+exeSuffix), "go test -o myerrors.test did not create myerrors.test")
-}
-
 // Issue 4515.
 func TestInstallWithTags(t *testing.T) {
 	tooSlow(t)
@@ -1805,9 +1796,6 @@ func TestGoInstallPkgdir(t *testing.T) {
 	tg.run("install", "-pkgdir", pkg, "sync")
 	tg.mustExist(filepath.Join(pkg, "sync.a"))
 	tg.mustNotExist(filepath.Join(pkg, "sync/atomic.a"))
-	tg.run("install", "-i", "-pkgdir", pkg, "sync")
-	tg.mustExist(filepath.Join(pkg, "sync.a"))
-	tg.mustExist(filepath.Join(pkg, "sync/atomic.a"))
 }
 
 // For issue 14337.
@@ -2620,16 +2608,6 @@ func TestInstallDeps(t *testing.T) {
 	tg.run("install", "p2")
 	tg.mustExist(p2)
 	tg.mustNotExist(p1)
-
-	// don't let install -i overwrite runtime
-	tg.wantNotStale("runtime", "", "must be non-stale before install -i")
-
-	tg.run("install", "-i", "main1")
-	tg.mustExist(p1)
-	tg.must(os.Remove(p1))
-
-	tg.run("install", "-i", "p2")
-	tg.mustExist(p1)
 }
 
 // Issue 22986.

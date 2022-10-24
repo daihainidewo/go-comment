@@ -261,10 +261,18 @@ func lookupType(m map[Type]int, typ Type) (int, bool) {
 }
 
 type instanceLookup struct {
-	m map[*Named][]*Named
+	// buf is used to avoid allocating the map m in the common case of a small
+	// number of instances.
+	buf [3]*Named
+	m   map[*Named][]*Named
 }
 
 func (l *instanceLookup) lookup(inst *Named) *Named {
+	for _, t := range l.buf {
+		if t != nil && Identical(inst, t) {
+			return t
+		}
+	}
 	for _, t := range l.m[inst.Origin()] {
 		if Identical(inst, t) {
 			return t
@@ -274,6 +282,12 @@ func (l *instanceLookup) lookup(inst *Named) *Named {
 }
 
 func (l *instanceLookup) add(inst *Named) {
+	for i, t := range l.buf {
+		if t == nil {
+			l.buf[i] = inst
+			return
+		}
+	}
 	if l.m == nil {
 		l.m = make(map[*Named][]*Named)
 	}
@@ -364,19 +378,14 @@ func (check *Checker) missingMethod(V Type, T *Interface, static bool) (method, 
 	return
 }
 
-// missingMethodReason returns a string giving the detailed reason for a missing method m,
-// where m is missing from V, but required by T. It puts the reason in parentheses,
+// missingMethodCause returns a string giving the detailed cause for a missing method m,
+// where m is missing from V, but required by T. It puts the cause in parentheses,
 // and may include more have/want info after that. If non-nil, alt is a relevant
 // method that matches in some way. It may have the correct name, but wrong type, or
 // it may have a pointer receiver, or it may have the correct name except wrong case.
 // check may be nil.
-func (check *Checker) missingMethodReason(V, T Type, m, alt *Func) string {
-	var mname string
-	if check != nil && check.conf.CompilerErrorMessages {
-		mname = m.Name() + " method"
-	} else {
-		mname = "method " + m.Name()
-	}
+func (check *Checker) missingMethodCause(V, T Type, m, alt *Func) string {
+	mname := "method " + m.Name()
 
 	if alt != nil {
 		if m.Name() != alt.Name() {
@@ -398,6 +407,11 @@ func (check *Checker) missingMethodReason(V, T Type, m, alt *Func) string {
 
 	if isInterfacePtr(T) {
 		return "(" + check.interfacePtrError(T) + ")"
+	}
+
+	obj, _, _ := lookupFieldOrMethod(V, true /* auto-deref */, m.pkg, m.name, false)
+	if fld, _ := obj.(*Var); fld != nil {
+		return check.sprintf("(%s.%s is a field, not a method)", V, fld.Name())
 	}
 
 	return check.sprintf("(missing %s)", mname)

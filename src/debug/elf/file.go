@@ -2,7 +2,17 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package elf implements access to ELF object files.
+/*
+Package elf implements access to ELF object files.
+
+# Security
+
+This package is not designed to be hardened against adversarial inputs, and is
+outside the scope of https://go.dev/security/policy. In particular, only basic
+validation is done when parsing object files. As such, care should be taken when
+parsing untrusted inputs, as parsing malformed files may consume significant
+resources, or cause panics.
+*/
 package elf
 
 import (
@@ -102,6 +112,8 @@ type Section struct {
 // Data reads and returns the contents of the ELF section.
 // Even if the section is stored compressed in the ELF file,
 // Data returns uncompressed data.
+//
+// For an SHT_NOBITS section, Data always returns a non-nil error.
 func (s *Section) Data() ([]byte, error) {
 	return saferio.ReadData(s.Open(), s.Size)
 }
@@ -118,9 +130,12 @@ func (f *File) stringTable(link uint32) ([]byte, error) {
 // Open returns a new ReadSeeker reading the ELF section.
 // Even if the section is stored compressed in the ELF file,
 // the ReadSeeker reads uncompressed data.
+//
+// For an SHT_NOBITS section, all calls to the opened reader
+// will return a non-nil error.
 func (s *Section) Open() io.ReadSeeker {
 	if s.Type == SHT_NOBITS {
-		return io.NewSectionReader(&zeroReader{}, 0, int64(s.Size))
+		return io.NewSectionReader(&nobitsSectionReader{}, 0, int64(s.Size))
 	}
 	if s.Flags&SHF_COMPRESSED == 0 {
 		return io.NewSectionReader(s.sr, 0, 1<<63-1)
@@ -339,6 +354,19 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		return nil, &FormatError{0, "invalid ELF shstrndx", shstrndx}
 	}
 
+	var wantPhentsize, wantShentsize int
+	switch f.Class {
+	case ELFCLASS32:
+		wantPhentsize = 8 * 4
+		wantShentsize = 10 * 4
+	case ELFCLASS64:
+		wantPhentsize = 2*4 + 6*8
+		wantShentsize = 4*4 + 6*8
+	}
+	if phnum > 0 && phentsize < wantPhentsize {
+		return nil, &FormatError{0, "invalid ELF phentsize", phentsize}
+	}
+
 	// Read program headers
 	f.Progs = make([]*Prog, phnum)
 	for i := 0; i < phnum; i++ {
@@ -386,6 +414,56 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		p.sr = io.NewSectionReader(r, int64(p.Off), int64(p.Filesz))
 		p.ReaderAt = p.sr
 		f.Progs[i] = p
+	}
+
+	// If the number of sections is greater than or equal to SHN_LORESERVE
+	// (0xff00), shnum has the value zero and the actual number of section
+	// header table entries is contained in the sh_size field of the section
+	// header at index 0.
+	if shoff > 0 && shnum == 0 {
+		var typ, link uint32
+		sr.Seek(shoff, seekStart)
+		switch f.Class {
+		case ELFCLASS32:
+			sh := new(Section32)
+			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
+				return nil, err
+			}
+			shnum = int(sh.Size)
+			typ = sh.Type
+			link = sh.Link
+		case ELFCLASS64:
+			sh := new(Section64)
+			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
+				return nil, err
+			}
+			shnum = int(sh.Size)
+			typ = sh.Type
+			link = sh.Link
+		}
+		if SectionType(typ) != SHT_NULL {
+			return nil, &FormatError{shoff, "invalid type of the initial section", SectionType(typ)}
+		}
+
+		if shnum < int(SHN_LORESERVE) {
+			return nil, &FormatError{shoff, "invalid ELF shnum contained in sh_size", shnum}
+		}
+
+		// If the section name string table section index is greater than or
+		// equal to SHN_LORESERVE (0xff00), this member has the value
+		// SHN_XINDEX (0xffff) and the actual index of the section name
+		// string table section is contained in the sh_link field of the
+		// section header at index 0.
+		if shstrndx == int(SHN_XINDEX) {
+			shstrndx = int(link)
+			if shstrndx < int(SHN_LORESERVE) {
+				return nil, &FormatError{shoff, "invalid ELF shstrndx contained in sh_link", shstrndx}
+			}
+		}
+	}
+
+	if shnum > 0 && shentsize < wantShentsize {
+		return nil, &FormatError{0, "invalid ELF shentsize", shentsize}
 	}
 
 	// Read section headers
@@ -1556,11 +1634,8 @@ func (f *File) DynString(tag DynTag) ([]string, error) {
 	return all, nil
 }
 
-type zeroReader struct{}
+type nobitsSectionReader struct{}
 
-func (*zeroReader) ReadAt(p []byte, off int64) (n int, err error) {
-	for i := range p {
-		p[i] = 0
-	}
-	return len(p), nil
+func (*nobitsSectionReader) ReadAt(p []byte, off int64) (n int, err error) {
+	return 0, errors.New("unexpected read from SHT_NOBITS section")
 }
