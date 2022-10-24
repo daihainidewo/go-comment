@@ -16,8 +16,11 @@ import (
 // stopped.
 var worldIsStopped atomic.Uint32
 
+// lockRankStruct 排名锁
+// 嵌入在 mutex 中
 // lockRankStruct is embedded in mutex
 type lockRankStruct struct {
+	// 锁排名
 	// static lock ranking of the lock
 	rank lockRank
 	// pad field to make sure lockRankStruct is a multiple of 8 bytes, even on
@@ -25,6 +28,7 @@ type lockRankStruct struct {
 	pad int
 }
 
+// 初始化排名锁
 // lockInit(l *mutex, rank int) sets the rank of lock before it is used.
 // If there is no clear place to initialize a lock, then the rank of a lock can be
 // specified during the lock call itself via lockWithRank(l *mutex, rank int).
@@ -32,10 +36,13 @@ func lockInit(l *mutex, rank lockRank) {
 	l.rank = rank
 }
 
+// 获取锁排名
 func getLockRank(l *mutex) lockRank {
 	return l.rank
 }
 
+// lockWithRank 类似 lock
+// 允许调用者指定锁排名
 // lockWithRank is like lock(l), but allows the caller to specify a lock rank
 // when acquiring a non-static lock.
 //
@@ -133,13 +140,16 @@ func acquireLockRank(rank lockRank) {
 func checkRanks(gp *g, prevRank, rank lockRank) {
 	rankOK := false
 	if rank < prevRank {
+		// 后锁小于前锁 排名有误
 		// If rank < prevRank, then we definitely have a rank error
 		rankOK = false
 	} else if rank == lockRankLeafRank {
+		// 后锁是叶子锁 前者必须是非叶子锁
 		// If new lock is a leaf lock, then the preceding lock can
 		// be anything except another leaf lock.
 		rankOK = prevRank < lockRankLeafRank
 	} else {
+		// 指定排名顺序的情况
 		// We've now verified the total lock ranking, but we
 		// also enforce the partial ordering specified by
 		// lockPartialOrder as well. Two locks with the same rank
@@ -217,6 +227,7 @@ func releaseLockRank(rank lockRank) {
 func lockWithRankMayAcquire(l *mutex, rank lockRank) {
 	gp := getg()
 	if gp.m.locksHeldLen == 0 {
+		// 没有其他锁 不会出现锁排序问题
 		// No possibility of lock ordering problem if no other locks held
 		return
 	}
@@ -232,7 +243,9 @@ func lockWithRankMayAcquire(l *mutex, rank lockRank) {
 		gp.m.locksHeld[i].rank = rank
 		gp.m.locksHeld[i].lockAddr = uintptr(unsafe.Pointer(l))
 		gp.m.locksHeldLen++
+		// 验证排序锁是否正常
 		checkRanks(gp, gp.m.locksHeld[i-1].rank, rank)
+		// 恢复
 		gp.m.locksHeldLen--
 	})
 }
@@ -275,6 +288,7 @@ func assertLockHeld(l *mutex) {
 	})
 }
 
+// 断言是否持有指定排名 r 的锁
 // assertRankHeld throws if a mutex with rank r is not held by the caller.
 //
 // This is less precise than assertLockHeld, but can be used in places where a
@@ -302,6 +316,8 @@ func assertRankHeld(r lockRank) {
 	})
 }
 
+// 尝试关闭世界
+// 失败抛异常
 // worldStopped notes that the world is stopped.
 //
 // Caller must hold worldsema.
@@ -318,6 +334,8 @@ func worldStopped() {
 	}
 }
 
+// 尝试启动世界
+// 失败抛异常
 // worldStarted that the world is starting.
 //
 // Caller must hold worldsema.
@@ -334,6 +352,7 @@ func worldStarted() {
 	}
 }
 
+// 检测是否在 STW 中
 // nosplit to ensure it can be called in as many contexts as possible.
 //
 //go:nosplit
@@ -364,6 +383,7 @@ func assertWorldStopped() {
 	throw("world not stopped")
 }
 
+// 断言 STW 或持有锁 l
 // assertWorldStoppedOrLockHeld throws if the world is not stopped and the
 // passed lock is not held.
 //

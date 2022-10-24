@@ -216,8 +216,8 @@ func stackpoolalloc(order uint8) gclinkptr {
 	list := &stackpool[order].item.span
 	s := list.first
 	lockWithRankMayAcquire(&mheap_.lock, lockRankMheap)
-	// 列表为空
 	if s == nil {
+		// 没有 span 则从 mheap 中获取
 		// no free stacks. Allocate another span worth.
 		// 申请 _StackCacheSize>>_PageShift = 4 个 page 的 span
 		s = mheap_.allocManual(_StackCacheSize>>_PageShift, spanAllocStack)
@@ -397,6 +397,7 @@ func stackalloc(n uint32) stack {
 	}
 
 	if debug.efence != 0 || stackFromSystem != 0 {
+		// 直接向系统申请内存
 		// 向物理页大小对齐
 		n = uint32(alignUp(uintptr(n), physPageSize))
 		// 申请内存
@@ -422,7 +423,7 @@ func stackalloc(n uint32) stack {
 		}
 		var x gclinkptr
 		if stackNoCache != 0 || thisg.m.p == 0 || thisg.m.preemptoff != "" {
-			// 不拥有 p 或有 g 在 m 上运行
+			// 不拥有 p 或有 g 不能抢占
 			// thisg.m.p == 0 can happen in the guts of exitsyscall
 			// or procresize. Just get a stack from the global pool.
 			// Also don't touch stackcache during gc
@@ -447,10 +448,10 @@ func stackalloc(n uint32) stack {
 		npage := uintptr(n) >> _PageShift
 		log2npage := stacklog2(npage)
 
+		// 尝试从大栈缓存中获取
 		// Try to get a stack from the large stack cache.
 		lock(&stackLarge.lock)
 		if !stackLarge.free[log2npage].isEmpty() {
-			// 缓存不为空直接弹出第一个栈
 			s = stackLarge.free[log2npage].first
 			stackLarge.free[log2npage].remove(s)
 		}

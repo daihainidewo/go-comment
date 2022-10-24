@@ -6287,6 +6287,7 @@ func pidlegetSpinning(now int64) (*p, int64) {
 	return pp, now
 }
 
+// runqempty 返回 p.runq 是否为空
 // runqempty reports whether pp has no Gs on its local run queue.
 // It never returns true spuriously.
 func runqempty(pp *p) bool {
@@ -6715,7 +6716,7 @@ func procPin() int {
 	return int(mp.p.ptr().id)
 }
 
-// procUnpin 标记当前g可以抢占
+// procUnpin 解除 g 对 m 的锁定
 //go:nosplit
 func procUnpin() {
 	gp := getg()
@@ -6736,18 +6737,21 @@ func sync_runtime_procUnpin() {
 	procUnpin()
 }
 
+// sync_atomic_runtime_procPin 锁定 g 和 m 返回 p 的 id
 //go:linkname sync_atomic_runtime_procPin sync/atomic.runtime_procPin
 //go:nosplit
 func sync_atomic_runtime_procPin() int {
 	return procPin()
 }
 
+// sync_atomic_runtime_procUnpin 解除锁定
 //go:linkname sync_atomic_runtime_procUnpin sync/atomic.runtime_procUnpin
 //go:nosplit
 func sync_atomic_runtime_procUnpin() {
 	procUnpin()
 }
 
+// sync_runtime_canSpin 是否需要自旋
 // Active spinning for sync.Mutex.
 //
 //go:linkname sync_runtime_canSpin sync.runtime_canSpin
@@ -6759,14 +6763,20 @@ func sync_runtime_canSpin(i int) bool {
 	// As opposed to runtime mutex we don't do passive spinning here,
 	// because there can be work on global runq or on other Ps.
 	if i >= active_spin || ncpu <= 1 || gomaxprocs <= sched.npidle.Load()+sched.nmspinning.Load()+1 {
+		// 已经达到最大次数
+		// 只有一个核
+		// 最大处理器个数小于空闲 p 个数加自旋 m 个数加1
 		return false
 	}
 	if p := getg().m.p.ptr(); !runqempty(p) {
+		// 有等执行的 g
 		return false
 	}
 	return true
 }
 
+// sync_runtime_doSpin 执行自旋
+// 空跑 CPU 执行 不切换协程
 //go:linkname sync_runtime_doSpin sync.runtime_doSpin
 //go:nosplit
 func sync_runtime_doSpin() {

@@ -114,7 +114,7 @@ func (mu *fdMutex) decref() bool {
 	}
 }
 
-// rwlock 锁
+// rwlock 读写锁
 // lock adds a reference to mu and locks mu.
 // It reports whether mu is available for reading or writing.
 func (mu *fdMutex) rwlock(read bool) bool {

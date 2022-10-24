@@ -9,7 +9,7 @@ import (
 	"unsafe"
 )
 
-const pageCachePages = 8 * unsafe.Sizeof(pageCache{}.cache)
+const pageCachePages = 8 * unsafe.Sizeof(pageCache{}.cache) // 64
 
 // pageCache 每个p的页缓存
 // pageCache represents a per-p cache of pages the allocator can

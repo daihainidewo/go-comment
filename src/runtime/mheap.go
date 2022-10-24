@@ -1249,6 +1249,7 @@ func (h *mheap) freeMSpanLocked(s *mspan) {
 	h.spanalloc.free(unsafe.Pointer(s))
 }
 
+// allocSpan 申请 npages 页内存
 // allocSpan allocates an mspan which owns npages worth of memory.
 //
 // If typ.manual() == false, allocSpan allocates a heap span of class spanclass
@@ -1272,6 +1273,7 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 	base, scav := uintptr(0), uintptr(0)
 	growth := uintptr(0)
 
+	// false on linux
 	// On some platforms we need to provide physical page aligned stack
 	// allocations. Where the page size is less than the physical page
 	// size, we already manage to do this by default.
@@ -1284,6 +1286,9 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 	pp := gp.m.p.ptr()
 	// 获取少量page，npages < 16
 	if !needPhysPageAlign && pp != nil && npages < pageCachePages/4 {
+		// 不需要物理页对齐
+		// 没有 p
+		// npages 小于 16
 		c := &pp.pcache
 
 		// If the cache is empty, refill it.

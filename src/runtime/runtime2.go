@@ -411,6 +411,7 @@ type sudog struct {
 	parent   *sudog // semaRoot binary tree
 	waitlink *sudog // g.waiting list or semaRoot
 	waittail *sudog // semaRoot
+	// chan 处理
 	c        *hchan // channel
 }
 

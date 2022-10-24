@@ -293,6 +293,7 @@ func breakpoint()
 //go:noescape
 func reflectcall(stackArgsType *_type, fn, stackArgs unsafe.Pointer, stackArgsSize, stackRetOffset, frameSize uint32, regArgs *abi.RegArgs)
 
+// procyield 执行 cycles 次 PAUSE
 func procyield(cycles uint32)
 
 type neverCallThisFunction struct{}

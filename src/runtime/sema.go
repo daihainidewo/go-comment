@@ -39,7 +39,7 @@ import (
 // BenchmarkSemTable/OneAddrCollision/* for a benchmark that exercises this.
 type semaRoot struct {
 	// lock 锁
-	// treap 平衡树 存等待的g tree-heap
+	// treap 树堆 存等待的g tree-heap 小根堆
 	// nwait 等待者的个数
 	lock  mutex
 	treap *sudog        // root of balanced tree of unique waiters.
@@ -108,6 +108,7 @@ func readyWithTime(s *sudog, traceskip int) {
 	goready(s.g, traceskip)
 }
 
+// 信号阻塞标志
 type semaProfileFlags int
 
 const (
@@ -129,7 +130,7 @@ func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes i
 
 	// Easy case.
 	if cansemacquire(addr) {
-		// 原子检测是否可持有
+		// 如果有正在执行 semrelease1 直接获取信号量 返回
 		return
 	}
 
@@ -167,7 +168,7 @@ func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes i
 		root.nwait.Add(1)
 		// Check cansemacquire to avoid missed wakeup.
 		if cansemacquire(addr) {
-			// addr的值为1 直接解锁返回
+			// 再次检测是否有正在释放的信号量
 			root.nwait.Add(-1)
 			unlock(&root.lock)
 			break
@@ -179,7 +180,7 @@ func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes i
 		// 等待被唤醒
 		goparkunlock(&root.lock, reason, traceEvGoBlockSync, 4+skipframes)
 		if s.ticket != 0 || cansemacquire(addr) {
-			// s 入队后被唤醒 或 addr 还可以获取 sema
+			// 已经获取过 或 addr 还可以获取 sema
 			break
 		}
 	}
@@ -199,14 +200,17 @@ func semrelease(addr *uint32) {
 func semrelease1(addr *uint32, handoff bool, skipframes int) {
 	// 取根结点
 	root := semtable.rootFor(addr)
+	// 增加信号量
 	atomic.Xadd(addr, 1)
 
 	// 检测操作必须在 xadd 后面
+	// 避免错过唤醒
+	// 这边加上 那边获取
 	// Easy case: no waiters?
 	// This check must happen after the xadd, to avoid a missed wakeup
 	// (see loop in semacquire).
 	if root.nwait.Load() == 0 {
-		// 没有等待的g直接返回去
+		// 没有等待的 g 直接返回
 		return
 	}
 
@@ -236,6 +240,7 @@ func semrelease1(addr *uint32, handoff bool, skipframes int) {
 			throw("corrupted semaphore ticket")
 		}
 		if handoff && cansemacquire(addr) {
+			// 只有外部需要让出调度时才会获取信号量
 			// 标记下次执行 并且 addr还可以被获取
 			s.ticket = 1
 		}
@@ -281,13 +286,14 @@ func cansemacquire(addr *uint32) bool {
 			return false
 		}
 		if atomic.Cas(addr, v, v-1) {
-			// 成功获取 1 个信号量
+			// 表示正在释放信号量
 			return true
 		}
 	}
 }
 
-// 将当期的 s 入队
+// 将当前的 s 入队
+// 只有新插入的 addr 才会生成 ticket
 // queue adds s to the blocked goroutines in semaRoot.
 func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 	s.g = getg()
@@ -375,7 +381,8 @@ func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {
 	// 将 s 置入 pt 插入新节点
 	*pt = s
 
-	// 插入新节点 需要保持树的平衡性
+	// 插入新节点 需要保持优先级的平衡性
+	// 利用 ticket 确定优先级
 	// Rotate up into tree according to ticket (priority).
 	for s.parent != nil && s.parent.ticket > s.ticket {
 		if s.parent.prev == s {
@@ -423,7 +430,6 @@ Found:
 	if t := s.waitlink; t != nil {
 		// 有链表元素 直接移除队首元素 不用删树节点
 		// Substitute t, also waiting on addr, for s in root tree of unique addrs.
-		// ps 没有用为啥赋值
 		*ps = t
 		t.ticket = s.ticket
 		t.parent = s.parent
@@ -446,17 +452,19 @@ Found:
 		s.waittail = nil
 	} else {
 		// 没有后续链表元素 需要删除树节点 进行树的再平衡
+		// 向下旋转为叶子节点 然后删除
 		// Rotate s down to be leaf of tree for removal, respecting priorities.
 		for s.next != nil || s.prev != nil {
 			// 有非空子树 就进行旋转 将 s 旋转为叶子节点
 			if s.next == nil || s.prev != nil && s.prev.ticket < s.next.ticket {
-				// 有左子树
+				// 左右子树皆不为空时 需要判断 左右节点的 ticket 保证优先级高度
 				root.rotateRight(s)
 			} else {
 				// 否则 左旋
 				root.rotateLeft(s)
 			}
 		}
+		// 左右子树皆为空 即叶子节点 可以安全删除
 		// Remove s, now a leaf.
 		if s.parent != nil {
 			// 有父节点 移除父节点指向
@@ -475,6 +483,7 @@ Found:
 	s.elem = nil
 	s.next = nil
 	s.prev = nil
+	// 出队清空 ticket
 	s.ticket = 0
 	return s, now
 }

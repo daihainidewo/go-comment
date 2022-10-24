@@ -33,8 +33,8 @@ func fatal(string)
 // relation at all.
 type Mutex struct {
 	// 锁状态
-	// 前三位 分别表示 是否锁住 是否唤醒 是否饥饿
-	// 后几位表示 等待锁个数
+	// 最低三位 分别表示 是否锁住 是否唤醒 是否饥饿
+	// 剩余高位表示 等待锁个数
 	state int32
 	// 锁信号量
 	sema uint32
@@ -131,7 +131,7 @@ func (m *Mutex) lockSlow() {
 		// Don't spin in starvation mode, ownership is handed off to waiters
 		// so we won't be able to acquire the mutex anyway.
 		if old&(mutexLocked|mutexStarving) == mutexLocked && runtime_canSpin(iter) {
-			// 旧状态 锁住 并且 不是饥饿模式 并且可以自旋
+			// 不是饥饿状态下的锁住状态 并且 可以自旋等待
 			// 则进入自旋状态
 			// Active spinning makes sense.
 			// Try to set mutexWoken flag to inform Unlock
