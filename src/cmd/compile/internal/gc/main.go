@@ -17,6 +17,7 @@ import (
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/logopt"
 	"cmd/compile/internal/noder"
+	"cmd/compile/internal/pgo"
 	"cmd/compile/internal/pkginit"
 	"cmd/compile/internal/reflectdata"
 	"cmd/compile/internal/ssa"
@@ -249,10 +250,17 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 		typecheck.AllImportedBodies()
 	}
 
+	// Read profile file and build profile-graph and weighted-call-graph.
+	base.Timer.Start("fe", "pgoprofile")
+	var profile *pgo.Profile
+	if base.Flag.PgoProfile != "" {
+		profile = pgo.New(base.Flag.PgoProfile)
+	}
+
 	// Inlining
 	base.Timer.Start("fe", "inlining")
 	if base.Flag.LowerL != 0 {
-		inline.InlinePackage()
+		inline.InlinePackage(profile)
 	}
 	noder.MakeWrappers(typecheck.Target) // must happen after inlining
 

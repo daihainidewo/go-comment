@@ -6,7 +6,6 @@ package sync
 
 import (
 	"sync/atomic"
-	"unsafe"
 )
 
 // Map 并发安全的 map[interface{}]interface{}
@@ -82,7 +81,7 @@ type readOnly struct {
 // expunged 空接口指针 标记 已经从 dirty 中删除
 // expunged is an arbitrary pointer that marks entries which have been deleted
 // from the dirty map.
-var expunged = unsafe.Pointer(new(any))
+var expunged = new(any)
 
 // An entry is a slot in the map corresponding to a particular key.
 type entry struct {
@@ -109,11 +108,13 @@ type entry struct {
 	// p != expunged. If p == expunged, an entry's associated value can be updated
 	// only after first setting m.dirty[key] = e so that lookups using the dirty
 	// map find the entry.
-	p unsafe.Pointer // *interface{}
+	p atomic.Pointer[any]
 }
 
 func newEntry(i any) *entry {
-	return &entry{p: unsafe.Pointer(&i)}
+	e := &entry{}
+	e.p.Store(&i)
+	return e
 }
 
 func (m *Map) loadReadOnly() readOnly {
@@ -159,12 +160,12 @@ func (m *Map) Load(key any) (value any, ok bool) {
 
 func (e *entry) load() (value any, ok bool) {
 	// 载入数据
-	p := atomic.LoadPointer(&e.p)
+	p := e.p.Load()
 	if p == nil || p == expunged {
 		// p 标记为 已删除就返回空
 		return nil, false
 	}
-	return *(*any)(p), true
+	return *p, true
 }
 
 // Store sets the value for a key.
@@ -212,13 +213,12 @@ func (m *Map) Store(key, value any) {
 // unchanged.
 func (e *entry) tryStore(i *any) bool {
 	for {
-		p := atomic.LoadPointer(&e.p)
+		p := e.p.Load()
 		if p == expunged {
 			// p 标记为 已删除 返回 false
 			return false
 		}
-		if atomic.CompareAndSwapPointer(&e.p, p, unsafe.Pointer(i)) {
-			// cas 切换值指针
+		if e.p.CompareAndSwap(p, i) {
 			return true
 		}
 	}
@@ -231,7 +231,7 @@ func (e *entry) tryStore(i *any) bool {
 // If the entry was previously expunged, it must be added to the dirty map
 // before m.mu is unlocked.
 func (e *entry) unexpungeLocked() (wasExpunged bool) {
-	return atomic.CompareAndSwapPointer(&e.p, expunged, nil)
+	return e.p.CompareAndSwap(expunged, nil)
 }
 
 // 原子替换 e 中的值指针
@@ -239,7 +239,7 @@ func (e *entry) unexpungeLocked() (wasExpunged bool) {
 //
 // The entry must be known not to be expunged.
 func (e *entry) storeLocked(i *any) {
-	atomic.StorePointer(&e.p, unsafe.Pointer(i))
+	e.p.Store(i)
 }
 
 // LoadOrStore 如果存在返回当前值
@@ -301,14 +301,14 @@ func (m *Map) LoadOrStore(key, value any) (actual any, loaded bool) {
 // If the entry is expunged, tryLoadOrStore leaves the entry unchanged and
 // returns with ok==false.
 func (e *entry) tryLoadOrStore(i any) (actual any, loaded, ok bool) {
-	p := atomic.LoadPointer(&e.p)
+	p := e.p.Load()
 	if p == expunged {
 		// 被标记 已删除 直接返回
 		return nil, false, false
 	}
 	if p != nil {
 		// 找到 且不为空 直接返回
-		return *(*any)(p), true, true
+		return *p, true, true
 	}
 
 	// Copy the interface after the first load to make this method more amenable
@@ -316,19 +316,18 @@ func (e *entry) tryLoadOrStore(i any) (actual any, loaded, ok bool) {
 	// shouldn't bother heap-allocating.
 	ic := i
 	for {
-		if atomic.CompareAndSwapPointer(&e.p, nil, unsafe.Pointer(&ic)) {
+		if e.p.CompareAndSwap(nil, &ic) {
 			// cas 切换 需要存入的值 成功 直接返回
 			return i, false, true
 		}
-		// 再次验证
-		p = atomic.LoadPointer(&e.p)
+		p = e.p.Load()
 		if p == expunged {
 			// p 被标记 已删除 直接返回
 			return nil, false, false
 		}
 		if p != nil {
 			// 如果已经有值 返回
-			return *(*any)(p), true, true
+			return *p, true, true
 		}
 	}
 }
@@ -373,14 +372,14 @@ func (m *Map) Delete(key any) {
 
 func (e *entry) delete() (value any, ok bool) {
 	for {
-		p := atomic.LoadPointer(&e.p)
+		p := e.p.Load()
 		if p == nil || p == expunged {
 			// 如果已被删除 直接返回
 			return nil, false
 		}
-		if atomic.CompareAndSwapPointer(&e.p, p, nil) {
+		if e.p.CompareAndSwap(p, nil) {
 			// cas 置空 并返回原值
-			return *(*any)(p), true
+			return *p, true
 		}
 	}
 }
@@ -472,14 +471,13 @@ func (m *Map) dirtyLocked() {
 
 // e.p 标记为删除
 func (e *entry) tryExpungeLocked() (isExpunged bool) {
-	p := atomic.LoadPointer(&e.p)
+	p := e.p.Load()
 	for p == nil {
 		// 将 nil 置为 已删除
-		if atomic.CompareAndSwapPointer(&e.p, nil, expunged) {
-			// cas 置为 删除
+		if e.p.CompareAndSwap(nil, expunged) {
 			return true
 		}
-		p = atomic.LoadPointer(&e.p)
+		p = e.p.Load()
 	}
 	// 返回 p 是否被置为删除
 	return p == expunged

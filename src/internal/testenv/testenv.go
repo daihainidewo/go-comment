@@ -11,7 +11,7 @@
 package testenv
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -379,6 +379,103 @@ func CleanCmdEnv(cmd *exec.Cmd) *exec.Cmd {
 	return cmd
 }
 
+// CommandContext is like exec.CommandContext, but:
+//   - skips t if the platform does not support os/exec,
+//   - sends SIGQUIT (if supported by the platform) instead of SIGKILL
+//     in its Cancel function
+//   - adds a timeout (with an arbitrary grace period) before the test's deadline expires,
+//   - sets a WaitDelay for an arbitrary grace period,
+//   - fails the test if the command does not complete before the test's deadline, and
+//   - sets a Cleanup function that verifies that the test did not leak a subprocess.
+func CommandContext(t testing.TB, ctx context.Context, name string, args ...string) *exec.Cmd {
+	t.Helper()
+	MustHaveExec(t)
+
+	var (
+		gracePeriod = 100 * time.Millisecond
+		cancel      context.CancelFunc
+	)
+	if s := os.Getenv("GO_TEST_TIMEOUT_SCALE"); s != "" {
+		scale, err := strconv.Atoi(s)
+		if err != nil {
+			t.Fatalf("invalid GO_TEST_TIMEOUT_SCALE: %v", err)
+		}
+		gracePeriod *= time.Duration(scale)
+	}
+
+	if t, ok := t.(interface {
+		testing.TB
+		Deadline() (time.Time, bool)
+	}); ok {
+		if td, ok := t.Deadline(); ok {
+			if cd, ok := ctx.Deadline(); !ok || cd.Sub(td) > gracePeriod {
+				// Either ctx doesn't have a deadline, or its deadline would expire
+				// after (or too close before) the test has already timed out.
+				// Compute a new timeout that will expire before the test does so that
+				// we can terminate the subprocess with a more useful signal.
+
+				timeout := time.Until(td)
+
+				// If time allows, increase the termination grace period to 5% of the
+				// remaining time.
+				if gp := timeout / 20; gp > gracePeriod {
+					gracePeriod = gp
+				}
+
+				// When we run commands that execute subprocesses, we want to reserve two
+				// grace periods to clean up. We will send the first termination signal when
+				// the context expires, then wait one grace period for the process to
+				// produce whatever useful output it can (such as a stack trace). After the
+				// first grace period expires, we'll escalate to os.Kill, leaving the second
+				// grace period for the test function to record its output before the test
+				// process itself terminates.
+				timeout -= 2 * gracePeriod
+
+				ctx, cancel = context.WithTimeout(ctx, timeout)
+				t.Cleanup(cancel)
+			}
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Cancel = func() error {
+		if cancel != nil && ctx.Err() == context.DeadlineExceeded {
+			// The command timed out due to running too close to the test's deadline.
+			// There is no way the test did that intentionally — it's too close to the
+			// wire! — so mark it as a test failure. That way, if the test expects the
+			// command to fail for some other reason, it doesn't have to distinguish
+			// between that reason and a timeout.
+			t.Errorf("test timed out while running command: %v", cmd)
+		} else {
+			// The command is being terminated due to ctx being canceled, but
+			// apparently not due to an explicit test deadline that we added.
+			// Log that information in case it is useful for diagnosing a failure,
+			// but don't actually fail the test because of it.
+			t.Logf("%v: terminating command: %v", ctx.Err(), cmd)
+		}
+		return cmd.Process.Signal(Sigquit)
+	}
+	cmd.WaitDelay = gracePeriod
+
+	t.Cleanup(func() {
+		if cancel != nil {
+			cancel()
+		}
+		if cmd.Process != nil && cmd.ProcessState == nil {
+			t.Errorf("command was started, but test did not wait for it to complete: %v", cmd)
+		}
+	})
+
+	return cmd
+}
+
+// Command is like exec.Command, but applies the same changes as
+// testenv.CommandContext (with a default Context).
+func Command(t testing.TB, name string, args ...string) *exec.Cmd {
+	t.Helper()
+	return CommandContext(t, context.Background(), name, args...)
+}
+
 // CPUIsSlow reports whether the CPU running the test is suspected to be slow.
 func CPUIsSlow() bool {
 	switch runtime.GOARCH {
@@ -405,62 +502,6 @@ func SkipIfOptimizationOff(t testing.TB) {
 		t.Helper()
 		t.Skip("skipping test with optimization disabled")
 	}
-}
-
-// RunWithTimeout runs cmd and returns its combined output. If the
-// subprocess exits with a non-zero status, it will log that status
-// and return a non-nil error, but this is not considered fatal.
-func RunWithTimeout(t testing.TB, cmd *exec.Cmd) ([]byte, error) {
-	args := cmd.Args
-	if args == nil {
-		args = []string{cmd.Path}
-	}
-
-	var b bytes.Buffer
-	cmd.Stdout = &b
-	cmd.Stderr = &b
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("starting %s: %v", args, err)
-	}
-
-	// If the process doesn't complete within 1 minute,
-	// assume it is hanging and kill it to get a stack trace.
-	p := cmd.Process
-	done := make(chan bool)
-	go func() {
-		scale := 1
-		// This GOARCH/GOOS test is copied from cmd/dist/test.go.
-		// TODO(iant): Have cmd/dist update the environment variable.
-		if runtime.GOARCH == "arm" || runtime.GOOS == "windows" {
-			scale = 2
-		}
-		if s := os.Getenv("GO_TEST_TIMEOUT_SCALE"); s != "" {
-			if sc, err := strconv.Atoi(s); err == nil {
-				scale = sc
-			}
-		}
-
-		select {
-		case <-done:
-		case <-time.After(time.Duration(scale) * time.Minute):
-			p.Signal(Sigquit)
-			// If SIGQUIT doesn't do it after a little
-			// while, kill the process.
-			select {
-			case <-done:
-			case <-time.After(time.Duration(scale) * 30 * time.Second):
-				p.Signal(os.Kill)
-			}
-		}
-	}()
-
-	err := cmd.Wait()
-	if err != nil {
-		t.Logf("%s exit status: %v", args, err)
-	}
-	close(done)
-
-	return b.Bytes(), err
 }
 
 // WriteImportcfg writes an importcfg file used by the compiler or linker to
