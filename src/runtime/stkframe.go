@@ -11,12 +11,29 @@ import (
 	"unsafe"
 )
 
+// stkframe 描述一个物理栈帧
 // A stkframe holds information about a single physical stack frame.
 type stkframe struct {
+	// fn 运行在当前栈帧的函数信息
+	// 如果有内联 表示是外层函数
 	// fn is the function being run in this frame. If there is
 	// inlining, this is the outermost function.
 	fn funcInfo
 
+	// pc 记录 fn 的 pc
+	// 通常表示正常函数调用的 pc 表示 CALL 之后执行的指令
+	//
+	// 如果此帧调用了 sigpanic 则 pc 为 panic 的指令
+	// 用于符号信息的正确地址
+	//
+	// 如果是内部帧 则可能不是 CALL 之后的指令
+	// 这可能来自合作抢占
+	// 在这种情况下 这是调用 morestack 之后的指令
+	// 或者这可能来自信号或未启动的 goroutine
+	// 在这种情况下 PC 可以是任何指令 包括函数中的第一条指令
+	// 通常我们使用 pc-1 作为符号信息
+	// 除非 pc == fn.entry()
+	// 在这种情况下我们使用 pc
 	// pc is the program counter within fn.
 	//
 	// The meaning of this is subtle:
@@ -43,6 +60,13 @@ type stkframe struct {
 	//   which case we use pc.
 	pc uintptr
 
+	// continpc 是将在 fn 中继续执行的 PC
+	// 如果在此帧中不继续执行 则为 0
+	// 这通常与 pc 相同
+	// 除非此帧为 sigpanic
+	// 在这种情况下 它是 deferreturn 的地址
+	// 如果此帧将永远不会再次执行 则为 0
+	// 用于查找当前帧的 GC 活性的 pc
 	// continpc is the PC where execution will continue in fn, or
 	// 0 if execution will not continue in this frame.
 	//
@@ -53,6 +77,11 @@ type stkframe struct {
 	// This is the PC to use to look up GC liveness for this frame.
 	continpc uintptr
 
+	// lr 调用者的 pc 又称 链接寄存器
+	// sp pc 的栈指针
+	// fp 调用者的栈指针 又称 帧寄存器
+	// varp 指向局部变量的顶部
+	// argp 指向函数参数
 	lr   uintptr // program counter at caller aka link register
 	sp   uintptr // stack pointer at pc
 	fp   uintptr // stack pointer at caller aka frame pointer

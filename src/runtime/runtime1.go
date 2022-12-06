@@ -11,20 +11,28 @@ import (
 	"unsafe"
 )
 
+// 保持缓存值 让 gotraceback 更快
 // Keep a cached value to make gotraceback fast,
 // since we call it on every call to gentraceback.
 // The cached value is a uint32 in which the low bits
 // are the "crash" and "all" settings and the remaining
 // bits are the traceback value (0 off, 1 on, 2 include system).
 const (
-	tracebackCrash = 1 << iota
-	tracebackAll
+	tracebackCrash = 1 << iota // 是否 crash
+	tracebackAll// 是否 all
 	tracebackShift = iota
 )
 
+// traceback 缓存值
 var traceback_cache uint32 = 2 << tracebackShift
 var traceback_env uint32
 
+// gotraceback 返回当前的 traceback 的设置
+// 0 抑制所有 traceback
+// 1 显示 traceback 但隐藏运行时的帧
+// 2 显示所有 traceback 包括运行时的帧
+// all 为 true 表示打印所有协程的堆栈 否则打印当前协程的堆栈
+// crash 为 true 表示在 traceback 之后 输出 dump 文件
 // gotraceback returns the current traceback settings.
 //
 // If level is 0, suppress all tracebacks.
@@ -37,15 +45,19 @@ var traceback_env uint32
 func gotraceback() (level int32, all, crash bool) {
 	gp := getg()
 	t := atomic.Load(&traceback_cache)
+	// 根据当前设置 重新计算 是否 crash 和 all
 	crash = t&tracebackCrash != 0
 	all = gp.m.throwing >= throwTypeUser || t&tracebackAll != 0
 	if gp.m.traceback != 0 {
+		// 优先使用 m 设置的等级
 		level = int32(gp.m.traceback)
 	} else if gp.m.throwing >= throwTypeRuntime {
+		// 根据 m 设置的抛出等级计算 level
 		// Always include runtime frames in runtime throws unless
 		// otherwise overridden by m.traceback.
 		level = 2
 	} else {
+		// 使用默认的设置
 		level = int32(t >> tracebackShift)
 	}
 	return
@@ -56,7 +68,7 @@ var (
 	argv **byte
 )
 
-// nosplit for use in linux startup sysargs
+// nosplit for use in linux startup sysargs.
 //
 //go:nosplit
 func argv_index(argv **byte, i int32) *byte {
@@ -375,7 +387,7 @@ func parsedebugvars() {
 	}
 
 	globalGODEBUG = gogetenv("GODEBUG")
-	godebugenv.StoreNoWB(&globalGODEBUG)
+	godebugEnv.StoreNoWB(&globalGODEBUG)
 	for p := globalGODEBUG; p != ""; {
 		field := ""
 		i := bytealg.IndexByteString(p, ',')

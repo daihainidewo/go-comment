@@ -21,7 +21,11 @@ import (
 
 const usesLR = sys.MinFrameSize > 0
 
-// gentraceback 生成整个调用链的traceback
+// gentraceback 遍历 gp 的 traceback
+// 根据配置显示栈帧
+// 对每个函数栈帧执行 callback
+// 由 callback 决定是否继续扫描堆栈
+// 返回遍历的函数栈帧数
 // Generic traceback. Handles runtime stack prints (pcbuf == nil),
 // the runtime.Callers function (pcbuf != nil), as well as the garbage
 // collector (callback != nil).  A little clunky to merge these, but avoids
@@ -37,6 +41,7 @@ func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max in
 
 	// Don't call this "g"; it's too easy get "g" and "gp" confused.
 	if ourg := getg(); ourg == gp && ourg == ourg.m.curg {
+		// 如果当前执行的 g 是需要生成的 g 则抛出异常
 		// The starting sp has been passed in as a uintptr, and the caller may
 		// have other uintptr-typed stack references as well.
 		// If during one of the calls that got us here or during one of the
@@ -55,13 +60,16 @@ func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max in
 	level, _, _ := gotraceback()
 
 	if pc0 == ^uintptr(0) && sp0 == ^uintptr(0) { // Signal to fetch saved values from gp.
+		// 从 gp 中获取保存值的信号
 		if gp.syscallsp != 0 {
+			// 设置为系统调用信息
 			pc0 = gp.syscallpc
 			sp0 = gp.syscallsp
 			if usesLR {
 				lr0 = 0
 			}
 		} else {
+			// 设置为调度信息
 			pc0 = gp.sched.pc
 			sp0 = gp.sched.sp
 			if usesLR {
@@ -71,24 +79,31 @@ func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max in
 	}
 
 	nprint := 0
+	// 填充栈帧信息
 	var frame stkframe
 	frame.pc = pc0
 	frame.sp = sp0
 	if usesLR {
 		frame.lr = lr0
 	}
+	// 是否是 panic 触发该函数
 	waspanic := false
 	cgoCtxt := gp.cgoCtxt
 	stack := gp.stack
+	// 是否打印
 	printing := pcbuf == nil && callback == nil
 
 	// If the PC is zero, it's likely a nil function call.
 	// Start in the caller's frame.
 	if frame.pc == 0 {
+		// 如果 pc 为 0 有可能是 nil 函数调用
+		// 使用调用者的栈帧
 		if usesLR {
 			frame.pc = *(*uintptr)(unsafe.Pointer(frame.sp))
 			frame.lr = 0
 		} else {
+			// pc 暂存 sp
+			// sp 偏移指针大小
 			frame.pc = uintptr(*(*uintptr)(unsafe.Pointer(frame.sp)))
 			frame.sp += goarch.PtrSize
 		}
@@ -108,6 +123,7 @@ func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max in
 		frame.lr = 0
 	}
 
+	// 通过函数地址地址获取函数信息
 	f := findfunc(frame.pc)
 	if !f.valid() {
 		if callback != nil || printing {
@@ -126,6 +142,12 @@ func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max in
 	lastFuncID := funcID_normal
 	n := 0
 	for n < max {
+		// 遍历所有函数栈帧
+		// pc 指正在执行的函数
+		// sp 基于程序计数器的栈指针
+		// fp 基于程序计数器的帧指针（调用者的堆栈指针） 如果未知则为 nil
+		// stk 包含 sp 的栈帧
+		// 调用者的程序计数器通常是 lr 除非 lr 为 0 这种情况是 *(uintptr*)sp
 		// Typically:
 		//	pc is the PC of the running function.
 		//	sp is the stack pointer at that program counter.
@@ -329,8 +351,10 @@ func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max in
 			}
 		}
 
+		// 调用回调函数
 		if callback != nil {
 			if !callback((*stkframe)(noescape(unsafe.Pointer(&frame))), v) {
+				// 由 callback 决定是都继续扫描堆栈
 				return n
 			}
 		}
@@ -473,6 +497,7 @@ func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max in
 			}
 		}
 
+		// 标记是由 panic 触发的
 		waspanic = f.funcID == funcID_sigpanic
 		injectedCall := waspanic || f.funcID == funcID_asyncPreempt || f.funcID == funcID_debugCallV2
 
@@ -488,6 +513,7 @@ func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max in
 			throw("traceback stuck")
 		}
 
+		// 跳转到下一个函数栈帧
 		// Unwind to next frame.
 		frame.fn = flr
 		frame.pc = frame.lr
@@ -811,7 +837,7 @@ func printAncestorTraceback(ancestor ancestorInfo) {
 	}
 }
 
-// printAncestorTraceback prints the given function info at a given pc
+// printAncestorTracebackFuncInfo prints the given function info at a given pc
 // within an ancestor traceback. The precision of this info is reduced
 // due to only have access to the pcs at the time of the caller
 // goroutine being created.
@@ -1287,7 +1313,7 @@ type cgoSymbolizerArg struct {
 	data     uintptr
 }
 
-// cgoTraceback prints a traceback of callers.
+// printCgoTraceback prints a traceback of callers.
 func printCgoTraceback(callers *cgoCallers) {
 	if cgoSymbolizer == nil {
 		for _, c := range callers {
