@@ -592,7 +592,7 @@ type m struct {
 	oldp          puintptr // the p that was attached before executing a syscall
 	id            int64
 	mallocing     int32 // 标记申请内存中
-	throwing      throwType
+	throwing      throwType // 抛出异常等级
 	preemptoff    string // if != "", keep curg running on this m
 	locks         int32  // 引用计数，非零表示禁止抢占当前g
 	dying         int32
@@ -606,7 +606,7 @@ type m struct {
 	freeWait      atomic.Uint32 // 随机数种子 Whether it is safe to free g0 and delete m (one of freeMRef, freeMStack, freeMWait)
 	fastrand      uint64
 	needextram    bool
-	traceback     uint8
+	traceback     uint8 // traceback 等级 在 gotraceback 中使用
 	ncgocall      uint64        // number of cgo calls in total
 	ncgo          int32         // number of cgo calls currently in progress
 	cgoCallersUse atomic.Uint32 // if non-zero, cgoCallers in use temporarily
@@ -813,6 +813,11 @@ type p struct {
 	// scheduler ASAP (regardless of what G is running on it).
 	preempt bool
 
+	// pageTraceBuf is a buffer for writing out page allocation/free/scavenge traces.
+	//
+	// Used only if GOEXPERIMENT=pagetrace.
+	pageTraceBuf pageTraceBuf
+
 	// Padding is no longer needed. False sharing is now not a worry because p is large enough
 	// that its size class is an integer multiple of the cache line size (for any of our architectures).
 }
@@ -948,6 +953,7 @@ type _func struct {
 	args        int32  // in/out args size
 	deferreturn uint32 // offset of start of a deferreturn call instruction from entry, if any.
 
+	// pcsp funcInfo.datap 的 pctab 表中偏移量
 	// npcdata pcdata 个数
 	// nfuncdata funcdata 个数 必须在最后且必须按照 uint32 字节对齐
 	pcsp      uint32
@@ -1054,6 +1060,8 @@ func extendRandom(r []byte, n int) {
 	}
 }
 
+// _defer 结构用于存储 defer func 的函数信息
+// defer 的参数列表在这个结构体之后
 // A _defer holds an entry on the list of deferred calls.
 // If you add a field here, add code to clear it in deferProcStack.
 // This struct must match the code in cmd/compile/internal/ssagen/ssa.go:deferstruct
@@ -1063,7 +1071,9 @@ func extendRandom(r []byte, n int) {
 // initialize them are not required. All defers must be manually scanned,
 // and for heap defers, marked.
 type _defer struct {
-	started bool
+	// started 是否开始执行
+    // heap 是否是堆分配
+    started bool
 	heap    bool
 	// 标识当前defer是open-coded的defer
 	// openDefer indicates that this _defer is for a frame with open-coded
@@ -1076,6 +1086,12 @@ type _defer struct {
 	_panic    *_panic // panic that is running defer 正在运行的panic
 	link      *_defer // next defer on G; can point to either heap or stack!
 
+    // 如果使用开放代码的方法则需要下面的参数
+	// 上面的 sp 将是框架的 sp
+	// 而 pc 将是函数中 deferreturn 调用的地址
+	// fd 指向 funcdata
+	// varp 栈帧的变量指针值
+	// framepc 当前pc关联的函数栈帧 与上面的 sp 一起可以通过 gentraceback 继续追踪栈帧
 	// If openDefer is true, the fields below record values about the stack
 	// frame and associated function that has the open-coded defer(s). sp
 	// above will be the sp for the frame, and pc will be address of the
@@ -1089,6 +1105,12 @@ type _defer struct {
 	framepc uintptr
 }
 
+// _panic 描述 panic 相关信息的结构
+// 只能存在于堆栈中
+// argp 和 link 字段是堆栈指针
+// 但在堆栈增长期间不需要特殊处理：
+// 因为它们是指针类型的并且 _panic 值仅存在于堆栈中
+// 所以定期堆栈指针调整会处理它们
 // A _panic holds information about an active panic.
 //
 // A _panic value must only ever live on the stack.
@@ -1098,6 +1120,14 @@ type _defer struct {
 // _panic values only live on the stack, regular stack pointer
 // adjustment takes care of them.
 type _panic struct {
+	// argp 指向在 panic 期间运行的 defer 调用参数的指针
+	// arg panic 信息
+	// link 链接后面的 panic 信息
+	// pc panic 返回的 pc
+	// sp panic 返回的 sp
+	// recovered 当前 panic 是否被恢复
+	// aborted 当前 panic 是否终止
+	// goexit 是否是 Goexit 触发的 panic
 	argp      unsafe.Pointer // pointer to arguments of deferred call run during panic; cannot move - known to liblink
 	arg       any            // argument to panic
 	link      *_panic        // link to earlier panic

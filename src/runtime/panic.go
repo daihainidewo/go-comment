@@ -11,20 +11,27 @@ import (
 	"unsafe"
 )
 
+// throwType 抛出异常的等级 越高越详细
 // throwType indicates the current type of ongoing throw, which affects the
 // amount of detail printed to stderr. Higher values include more detail.
 type throwType uint32
 
 const (
+	// throwTypeNone 不抛出异常
 	// throwTypeNone means that we are not throwing.
 	throwTypeNone throwType = iota
 
+	// throwTypeUser 抛出用户异常
+	// 不包括运行时帧 系统协程 帧原始数据
 	// throwTypeUser is a throw due to a problem with the application.
 	//
 	// These throws do not include runtime frames, system goroutines, or
 	// frame metadata.
 	throwTypeUser
 
+	// throwTypeRuntime 抛出运行时异常
+	// 包含详细信息用于调试运行时
+	// 包括运行时帧 系统协程 帧原始数据
 	// throwTypeRuntime is a throw due to a problem with Go itself.
 	//
 	// These throws include as much information as possible to aid in
@@ -303,6 +310,8 @@ func deferproc(fn func()) {
 }
 
 // 将d标志为栈上的对象
+// 直接在栈申请defer对象
+// 减少堆上的defer对象
 // deferprocStack queues a new deferred function with a defer record on the stack.
 // The defer record must have its fn field initialized.
 // All other fields can contain junk.
@@ -522,28 +531,38 @@ func Goexit() {
 	p.link = gp._panic
 	gp._panic = (*_panic)(noescape(unsafe.Pointer(&p)))
 
-	// 执行所有的defer函数
+	// 注册调用者为的开放代码 defer 函数
 	addOneOpenDeferFrame(gp, getcallerpc(), unsafe.Pointer(getcallersp()))
+	// 执行 defer 列表
 	for {
 		d := gp._defer
 		if d == nil {
 			break
 		}
 		if d.started {
+			// defer 已经执行过
 			if d._panic != nil {
+				// 执行完当前 defer 后又 panic
+				// 当前 defer 是 panic 触发
+				// 把当前的 panic 终止
+				// 并解绑 panic
 				d._panic.aborted = true
 				d._panic = nil
 			}
 			if !d.openDefer {
+				// 不是开放代码的 defer 就忽略
 				d.fn = nil
+				// 向后偏移
 				gp._defer = d.link
 				freedefer(d)
 				continue
 			}
 		}
 		d.started = true
+		// 绑定 panic
 		d._panic = (*_panic)(noescape(unsafe.Pointer(&p)))
 		if d.openDefer {
+			// 是开放代码的 defer
 			done := runOpenDeferFrame(d)
 			if !done {
 				// We should always run all defers in the frame,
@@ -552,11 +571,16 @@ func Goexit() {
 				throw("unfinished open-coded defers in Goexit")
 			}
 			if p.aborted {
+				// 由于我们当前的延迟引起了恐慌并且可能已经被释放
+				// 因此只需再次从该帧重新开始扫描开放编码的延迟
+				// 如果被终止 则重新塞入
 				// Since our current defer caused a panic and may
 				// have been already freed, just restart scanning
 				// for open-coded defers from this frame again.
 				addOneOpenDeferFrame(gp, getcallerpc(), unsafe.Pointer(getcallersp()))
 			} else {
+				// 正常执行完
+				// 则将注册上一个函数栈帧开放代码的 defer
 				addOneOpenDeferFrame(gp, 0, nil)
 			}
 		} else {
@@ -566,6 +590,13 @@ func Goexit() {
 			deferCallSave(&p, d.fn)
 		}
 		if p.aborted {
+			// 我们在我们开始的延迟 d 中遇到了 panic
+			// 然后在延迟链中比 d 更靠后的延迟中进行了恢复
+			// 在未完成的 Goexit 的情况下
+			// 我们强制 recover 返回到此循环
+			// 如果完成 d 将已经被释放
+			// 所以只需立即继续链上的下一个延迟
+			// 保持 goexit 这个 panic 始终可以被 defer 处理
 			// We had a recursive panic in the defer d we started, and
 			// then did a recover in a defer that was further down the
 			// defer chain than d. In the case of an outstanding Goexit,
@@ -576,6 +607,7 @@ func Goexit() {
 			continue
 		}
 		if gp._defer != d {
+			// defer 链表发生改变
 			throw("bad defer entry in Goexit")
 		}
 		// 归还defer结构
@@ -588,6 +620,8 @@ func Goexit() {
 	goexit1()
 }
 
+// preprintpanics 拼接 panic 链表的信息
+// 最后抛整合信息
 // Call all Error and String methods before freezing the world.
 // Used when crashing with panicking.
 func preprintpanics(p *_panic) {
@@ -634,6 +668,7 @@ func printpanics(p *_panic) {
 	print("\n")
 }
 
+// addOneOpenDeferFrame 插入一个开放代码的 defer
 // addOneOpenDeferFrame scans the stack (in gentraceback order, from inner frames to
 // outer frames) for the first frame (if any) with open-coded defers. If it finds
 // one, it adds a single entry to the defer chain for that frame. The entry added
@@ -666,14 +701,18 @@ func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 	var prevDefer *_defer
 	if sp == nil {
 		// 如果sp为空，则将当前gp的第一个defer结构的pc和sp赋值过来
+		// 继承前一个 defer 的 pc 和 sp
 		prevDefer = gp._defer
 		pc = prevDefer.framepc
 		sp = unsafe.Pointer(prevDefer.sp)
 	}
 	systemstack(func() {
+		// 向 gentraceback 注册 callback
 		gentraceback(pc, uintptr(sp), 0, gp, 0, nil, 0x7fffffff,
 			func(frame *stkframe, unused unsafe.Pointer) bool {
 				if prevDefer != nil && prevDefer.sp == frame.sp {
+					// 前一个 defer 的栈帧
+					// 跳过
 					// Skip the frame for the previous defer that
 					// we just finished (and was used to set
 					// where we restarted the stack scan)
@@ -682,8 +721,11 @@ func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 				f := frame.fn
 				fd := funcdata(f, _FUNCDATA_OpenCodedDeferInfo)
 				if fd == nil {
+					// 当前函数没有开放代码的 defer
+					// 跳过
 					return true
 				}
+				// 查找需要插入的位置
 				// Insert the open defer record in the
 				// chain, in order sorted by sp.
 				d := gp._defer
@@ -691,9 +733,12 @@ func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 				for d != nil {
 					dsp := d.sp
 					if frame.sp < dsp {
+						// 当前帧在 defer 栈帧之下
+						// 链表后面一定没有
 						break
 					}
 					if frame.sp == dsp {
+						// 已经插入过了
 						if !d.openDefer {
 							throw("duplicated defer entry")
 						}
@@ -705,18 +750,23 @@ func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 						// passed an in-progress entry (see
 						// header comment).
 						if d.started {
+							// 已经执行过了就停止扫描堆栈
 							return false
 						}
+						// 继续扫描堆栈
 						return true
 					}
+					// 没找到就向后遍历
 					prev = d
 					d = d.link
 				}
 				if frame.fn.deferreturn == 0 {
+					// fn 没有 defer 函数
 					throw("missing deferreturn")
 				}
 
-				// 填充新的defer，并标记为开放代码的defer
+				// 填充新的defer
+				// 并标记为开放代码的defer
 				d1 := newdefer()
 				d1.openDefer = true
 				d1._panic = nil
@@ -739,6 +789,7 @@ func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 				} else {
 					prev.link = d1
 				}
+				// 添加新的开放代码 defer 后停止堆栈扫描
 				// Stop stack scanning after adding one open defer record
 				return false
 			},
@@ -747,6 +798,8 @@ func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 }
 
 // readvarintUnsafe 对一个不安全的指针解析一个varint数值和该值后面的指针
+// 读取 fd 指向的 varint 数值
+// 返回 varint 值和读后新的 fd
 // readvarintUnsafe reads the uint32 in varint format starting at fd, and returns the
 // uint32 and a pointer to the byte following the varint.
 //
@@ -763,6 +816,7 @@ func readvarintUnsafe(fd unsafe.Pointer) (uint32, unsafe.Pointer) {
 		if b < 128 {
 			return r + uint32(b)<<shift, fd
 		}
+		// 小端
 		r += ((uint32(b) &^ 128) << shift)
 		shift += 7
 		if shift > 28 {
@@ -771,7 +825,7 @@ func readvarintUnsafe(fd unsafe.Pointer) (uint32, unsafe.Pointer) {
 	}
 }
 
-// 运行开放代码的延迟处理
+// runOpenDeferFrame 运行开放代码的延迟处理
 // runOpenDeferFrame runs the active open-coded defers in the frame specified by
 // d. It normally processes all active defers in the frame, but stops immediately
 // if a defer does a successful recover. It returns true if there are no
@@ -780,31 +834,42 @@ func runOpenDeferFrame(d *_defer) bool {
 	done := true
 	fd := d.fd
 
+	// 通过 fd 获取 defer 位图偏移量和 defer 个数
 	deferBitsOffset, fd := readvarintUnsafe(fd)
 	nDefers, fd := readvarintUnsafe(fd)
-	// 获取延迟记录
+	// 获取延迟记录位图
 	deferBits := *(*uint8)(unsafe.Pointer(d.varp - uintptr(deferBitsOffset)))
 
+	// 从后往前遍历 defer
 	for i := int(nDefers) - 1; i >= 0; i-- {
 		// read the funcdata info for this defer
+		// 获取闭包偏移量
 		var closureOffset uint32
 		closureOffset, fd = readvarintUnsafe(fd)
 		if deferBits&(1<<i) == 0 {
+			// 1 表示需要执行 0 表示不需要执行
 			continue
 		}
+		// 获取闭包函数
 		closure := *(*func())(unsafe.Pointer(d.varp - uintptr(closureOffset)))
 		d.fn = closure
+		// 当前 defer 位置零
 		deferBits = deferBits &^ (1 << i)
 		*(*uint8)(unsafe.Pointer(d.varp - uintptr(deferBitsOffset))) = deferBits
+		// 执行 defer 函数
 		p := d._panic
 		// Call the defer. Note that this can change d.varp if
 		// the stack moves.
 		deferCallSave(p, d.fn)
 		if p != nil && p.aborted {
+			// 如果 panic 被终止 就不执行后续的 defer
 			break
 		}
+		// 清理闭包函数
 		d.fn = nil
 		if d._panic != nil && d._panic.recovered {
+			// panic 被恢复
+			// 标记检测是否还有未执行的 defer
 			done = deferBits == 0
 			break
 		}
@@ -813,6 +878,11 @@ func runOpenDeferFrame(d *_defer) bool {
 	return done
 }
 
+// deferCallSave 在 panic 中保存调用者的 pc 和 sp 后执行 fn
+// 这允许运行时返回到 Goexit 延迟处理循环
+// 在 Goexit 可能被成功恢复绕过的异常情况下
+// 该函数会被编译器标记为包装器
+// 所以不会出现在 traceback 中
 // deferCallSave calls fn() after saving the caller's pc and sp in the
 // panic record. This allows the runtime to return to the Goexit defer
 // processing loop, in the unusual case where the Goexit may be
@@ -822,20 +892,21 @@ func runOpenDeferFrame(d *_defer) bool {
 // tracebacks.
 func deferCallSave(p *_panic, fn func()) {
 	if p != nil {
-		// 填充panic的相关参数
+		// 填充 panic 的相关参数
 		p.argp = unsafe.Pointer(getargp())
 		p.pc = getcallerpc()
 		p.sp = unsafe.Pointer(getcallersp())
 	}
-	// 执行defer函数
+	// 执行 defer 函数
 	fn()
 	if p != nil {
-		// 依旧是panic
+		// 置空 panic 的 pc 和 sp
 		p.pc = 0
 		p.sp = unsafe.Pointer(nil)
 	}
 }
 
+// gopanic 实现 panic 函数
 // The implementation of the predeclared function panic.
 func gopanic(e any) {
 	gp := getg()
@@ -868,6 +939,7 @@ func gopanic(e any) {
 		throw("panic holding locks")
 	}
 
+	// 填充 panic 结构
 	var p _panic
 	p.arg = e
 	p.link = gp._panic
@@ -875,6 +947,7 @@ func gopanic(e any) {
 
 	runningPanicDefers.Add(1)
 
+	// 添加开放代码 defer 避免栈扫描
 	// By calculating getcallerpc/getcallersp here, we avoid scanning the
 	// gopanic frame (stack scanning is slow...)
 	addOneOpenDeferFrame(gp, getcallerpc(), unsafe.Pointer(getcallersp()))
@@ -889,11 +962,14 @@ func gopanic(e any) {
 		// take defer off list. An earlier panic will not continue running, but we will make sure below that an
 		// earlier Goexit does continue running.
 		if d.started {
+			// defer 执行过
 			if d._panic != nil {
+				// defer 存在 panic 则将其终止
 				d._panic.aborted = true
 			}
 			d._panic = nil
 			if !d.openDefer {
+				// 不是开放代码的 defer 直接回收
 				// For open-coded defers, we need to process the
 				// defer again, in case there are any other defers
 				// to call in the frame (not including the defer
@@ -917,12 +993,17 @@ func gopanic(e any) {
 
 		done := true
 		if d.openDefer {
+			// 执行开放代码的 defer
 			done = runOpenDeferFrame(d)
 			if done && !d._panic.recovered {
+				// 执行完 defer 并且没有被恢复
+				// 添加调用者开放代码 defer
 				addOneOpenDeferFrame(gp, 0, nil)
 			}
 		} else {
+			// 记录参数
 			p.argp = unsafe.Pointer(getargp())
+			// 执行 defer 函数
 			d.fn()
 		}
 		p.argp = nil
@@ -939,11 +1020,14 @@ func gopanic(e any) {
 		pc := d.pc
 		sp := unsafe.Pointer(d.sp) // must be pointer so it gets adjusted during stack copy
 		if done {
+			// defer 执行完 回收 defer
 			d.fn = nil
 			gp._defer = d.link
 			freedefer(d)
 		}
 		if p.recovered {
+			// panic 被恢复
+			// 移除 gp 队首 panic
 			gp._panic = p.link
 			if gp._panic != nil && gp._panic.goexit && gp._panic.aborted {
 				// A normal recover would bypass/abort the Goexit.  Instead,
@@ -967,6 +1051,8 @@ func gopanic(e any) {
 			d := gp._defer
 			var prev *_defer
 			if !done {
+				// 没有完成 defer 则跳过当前 defer
+				// 需要在 deferreturn 中完成剩下的 defer
 				// Skip our current frame, if not done. It is
 				// needed to complete any remaining defers in
 				// deferreturn()
@@ -997,6 +1083,7 @@ func gopanic(e any) {
 				}
 			}
 
+			// panic 恢复后 执行 gp 恢复操作
 			gp._panic = p.link
 			// Aborted panics are marked but remain on the g.panic list.
 			// Remove them from the list.
@@ -1105,13 +1192,17 @@ func fatal(s string) {
 	fatalthrow(throwTypeUser)
 }
 
+// runningPanicDefers 记录全局 panic 数
 // runningPanicDefers is non-zero while running deferred functions for panic.
 // This is used to try hard to get a panic stack trace out when exiting.
 var runningPanicDefers atomic.Uint32
 
+// panicking 记录没有恢复的 panic 数
 // panicking is non-zero when crashing the program for an unrecovered panic.
 var panicking atomic.Uint32
 
+// paniclk 保护打印堆栈的 panic 信息
+// 保证并发的 panic 信息打印不会重叠
 // paniclk is held while printing the panic information and stack trace,
 // so that two concurrent panics don't overlap their output.
 var paniclk mutex
@@ -1175,6 +1266,7 @@ func fatalthrow(t throwType) {
 	*(*int)(nil) = 0 // not reached
 }
 
+// fatalpanic 触发一个不可恢复的 panic
 // fatalpanic implements an unrecoverable panic. It is like fatalthrow, except
 // that if msgs != nil, fatalpanic also prints panic messages and decrements
 // runningPanicDefers once main is blocked from exiting.

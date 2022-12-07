@@ -63,13 +63,10 @@ func mcall(fn func(*g))
 // 切换到g0执行fn，执行后会切换至原g
 func systemstack(fn func())
 
-var badsystemstackMsg = "fatal: systemstack called from unexpected goroutine"
-
 //go:nosplit
 //go:nowritebarrierrec
 func badsystemstack() {
-	sp := stringStructOf(&badsystemstackMsg)
-	write(2, sp.str, int32(sp.len))
+	writeErrStr("fatal: systemstack called from unexpected goroutine")
 }
 
 // memclrNoHeapPointers 清理从ptr开始的n个字节
@@ -139,7 +136,7 @@ func fastrand() uint32 {
 	// by the compiler should be in this list.
 	if goarch.IsAmd64|goarch.IsArm64|goarch.IsPpc64|
 		goarch.IsPpc64le|goarch.IsMips64|goarch.IsMips64le|
-		goarch.IsS390x|goarch.IsRiscv64 == 1 {
+		goarch.IsS390x|goarch.IsRiscv64|goarch.IsLoong64 == 1 {
 		mp.fastrand += 0xa0761d6478bd642f
 		hi, lo := math.Mul64(mp.fastrand, mp.fastrand^0xe7037ed1a0b428db)
 		return uint32(hi ^ lo)
@@ -222,6 +219,7 @@ func os_fastrand() uint32 { return fastrand() }
 func memequal(a, b unsafe.Pointer, size uintptr) bool
 
 // noescape 对于逃逸分析隐藏指针
+// 逃逸分析不会认为输出依赖输入
 // noescape hides a pointer from escape analysis.  noescape is
 // the identity function but escape analysis doesn't think the
 // output depends on the input.  noescape is inlined and currently
