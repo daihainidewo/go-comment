@@ -595,7 +595,7 @@ type m struct {
 	throwing      throwType // 抛出异常等级
 	preemptoff    string // if != "", keep curg running on this m
 	locks         int32  // 引用计数，非零表示禁止抢占当前g
-	dying         int32
+	dying         int32 // 标记 m 的濒死状态， 1： 2： 3：
 	profilehz     int32 // cpu 采样率
 	spinning      bool  // 是否自旋 等待 g 去执行 m is out of work and is actively looking for work
 	blocked       bool  // 是否被note阻塞 m is blocked on a note
@@ -644,6 +644,7 @@ type m struct {
 	// requested, but fails.
 	preemptGen atomic.Uint32
 
+	// 是否是等待抢占信号
 	// Whether this is a pending preemption signal on this M.
 	signalPending atomic.Uint32
 
@@ -808,7 +809,7 @@ type p struct {
 	scannedStackSize uint64 // stack size of goroutines scanned by this P
 	scannedStacks    uint64 // number of goroutines scanned by this P
 
-	// 标记 p 应该快速进入调度
+	// 抢占标记位 标记 p 应该快速进入调度
 	// preempt is set to indicate that this P should be enter the
 	// scheduler ASAP (regardless of what G is running on it).
 	preempt bool
@@ -884,8 +885,8 @@ type schedt struct {
 	// m.exited is set. Linked through m.freelink.
 	freem *m // 等待被释放的m列表
 
-	gcwaiting  atomic.Bool // gc is waiting to run
-	stopwait   int32
+	gcwaiting  atomic.Bool // gc 是否等待执行 // gc is waiting to run
+	stopwait   int32	// 等待原因
 	stopnote   note
 	sysmonwait atomic.Bool
 	sysmonnote note

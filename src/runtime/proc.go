@@ -981,12 +981,14 @@ func freezetheworld() {
 		sched.gcwaiting.Store(true)
 		// this should stop running goroutines
 		if !preemptall() {
+			// 没有能抢占的g
 			break // no running goroutines
 		}
 		usleep(1000)
 	}
 	// to be sure
 	usleep(1000)
+	// 再次尝试抢占
 	preemptall()
 	usleep(1000)
 }
@@ -2279,11 +2281,15 @@ func unlockextra(mp *m) {
 }
 
 var (
+	// 在 allocm 中创建新的 m 并将它们添加到 allm 时
+	// allocmLock 被锁定以供读取
+	// 因此获取这个写锁会阻止新 m 的创建
 	// allocmLock is locked for read when creating new Ms in allocm and their
 	// addition to allm. Thus acquiring this lock for write blocks the
 	// creation of new Ms.
 	allocmLock rwmutex
 
+	// execLock 当创建销毁线程时序列化执行和克隆避免发生问题或未知行为
 	// execLock serializes exec and clone to avoid bugs or unspecified
 	// behaviour around exec'ing while creating/destroying threads. See
 	// issue #19546.
@@ -4439,6 +4445,8 @@ func syscall_runtime_AfterForkInChild() {
 	inForkedChild = false
 }
 
+// pendingPreemptSignals 统计已发送但未收到的抢占信号数量
+// 仅用于 darwin ios
 // pendingPreemptSignals is the number of preemption signals
 // that have been sent but not received. This is only used on Darwin.
 // For #41702.
@@ -5875,6 +5883,7 @@ func preemptall() bool {
 		if pp.status != _Prunning {
 			continue
 		}
+		// 尝试抢占 _Prunning 的 p
 		if preemptone(pp) {
 			res = true
 		}
@@ -5919,9 +5928,12 @@ func preemptone(pp *p) bool {
 	// preemption into the normal stack overflow check.
 	gp.stackguard0 = stackPreempt
 
+	// 支持抢占 m 并且支持异步抢占开关
 	// Request an async preemption of this P.
 	if preemptMSupported && debug.asyncpreemptoff == 0 {
+		// p 标记为可抢占
 		pp.preempt = true
+		// 向 m 发送抢占信号
 		preemptM(mp)
 	}
 

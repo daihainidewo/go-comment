@@ -68,7 +68,8 @@ func (wg *WaitGroup) Add(delta int) {
 		panic("sync: WaitGroup misuse: Add called concurrently with Wait")
 	}
 	if v > 0 || w == 0 {
-		// 没有等待者 不需要通知 直接返回
+		// 计数器不为0或没有等待者
+		// 不需要通知 直接返回
 		return
 	}
 	// This goroutine has set counter to 0 when waiters > 0.
@@ -77,11 +78,13 @@ func (wg *WaitGroup) Add(delta int) {
 	// - Wait does not increment waiters if it sees counter == 0.
 	// Still do a cheap sanity check to detect WaitGroup misuse.
 	if wg.state.Load() != state {
+		// 如果有变更说明有并发操作
 		panic("sync: WaitGroup misuse: Add called concurrently with Wait")
 	}
 	// Reset waiters count to 0.
 	wg.state.Store(0)
 	for ; w != 0; w-- {
+		// 唤醒所有等待者
 		runtime_Semrelease(&wg.sema, false, 0)
 	}
 }
@@ -98,6 +101,7 @@ func (wg *WaitGroup) Wait() {
 	}
 	for {
 		state := wg.state.Load()
+		// 计数器
 		v := int32(state >> 32)
 		// 等待者个数
 		w := uint32(state)
@@ -119,6 +123,7 @@ func (wg *WaitGroup) Wait() {
 				// otherwise concurrent Waits will race with each other.
 				race.Write(unsafe.Pointer(&wg.sema))
 			}
+			// 休眠等待被唤醒
 			runtime_Semacquire(&wg.sema)
 			if wg.state.Load() != 0 {
 				panic("sync: WaitGroup is reused before previous Wait has returned")

@@ -51,10 +51,14 @@ type Pool struct {
 	noCopy noCopy
 
 	// 本地队列指针，索引为P的ID
+	// 无锁化 即获取当期 p 的资源
+	// 如果需要偷取其他 p 的资源 则仍需要加锁
 	local     unsafe.Pointer // local fixed-size per-P pool, actual type is [P]poolLocal
 	localSize uintptr        // size of the local array
 
 	// 轮回的队列指针
+	// 用于 GC 清理脏数据
+	// 对象太多 GC 频次变高 GC 时间变长
 	victim     unsafe.Pointer // local from previous cycle
 	victimSize uintptr        // size of victims array
 
@@ -66,6 +70,7 @@ type Pool struct {
 }
 
 // poolLocalInternal 当前P的池子
+// Pool local 和 victim 指向节点 单链表
 // Local per-P Pool appendix.
 type poolLocalInternal struct {
 	private any       // Can be used only by the respective P.
@@ -211,7 +216,7 @@ func (p *Pool) getSlow(pid int) any {
 		}
 	}
 
-	// 有可能被偷完了
+	// 走到这表示没有 victim 有可能被并发偷完了
 	// 如果都没有表示当前victim为空，则将victim的size置为0
 	// Mark the victim cache as empty for future gets don't bother
 	// with it.
@@ -234,7 +239,8 @@ func (p *Pool) pin() (*poolLocal, int) {
 	s := runtime_LoadAcquintptr(&p.localSize) // load-acquire
 	l := p.local                              // load-consume
 	if uintptr(pid) < s {
-		// 当前队列长度 s 大于 当前执行的 pid
+		// 队列拥有缓存的数据
+		// 当前队列长度 s 大于当前执行的 pid
 		// 直接返回当前 pid 指向的 poolLocal 的地址
 		return indexLocal(l, pid), pid
 	}
@@ -246,7 +252,8 @@ func (p *Pool) pin() (*poolLocal, int) {
 func (p *Pool) pinSlow() (*poolLocal, int) {
 	// Retry under the mutex.
 	// Can not lock the mutex while pinned.
-	// 获取锁可能占用长时间，所以先解除禁止抢占
+	// 获取锁可能占用长时间
+	// 所以先解除禁止抢占
 	runtime_procUnpin()
 	// 获取全局锁
 	allPoolsMu.Lock()
@@ -267,6 +274,7 @@ func (p *Pool) pinSlow() (*poolLocal, int) {
 	}
 	// If GOMAXPROCS changes between GCs, we re-allocate the array and lose the old one.
 	// 创建当前P个大小的队列初始化本地缓存
+	// 重置 p 的 local
 	size := runtime.GOMAXPROCS(0)
 	local := make([]poolLocal, size)
 	atomic.StorePointer(&p.local, unsafe.Pointer(&local[0])) // store-release
@@ -321,6 +329,7 @@ var (
 )
 
 func init() {
+	// 注册清理缓冲池中的对象 由 GC 开始时触发
 	runtime_registerPoolCleanup(poolCleanup)
 }
 
@@ -340,8 +349,10 @@ func runtime_procUnpin()                         // 解除禁止抢占
 // compiler also knows to intrinsify the symbol we linkname into this
 // package.
 
+// 获取ptr的值
 //go:linkname runtime_LoadAcquintptr runtime/internal/atomic.LoadAcquintptr
 func runtime_LoadAcquintptr(ptr *uintptr) uintptr
 
+// 向ptr存储值val
 //go:linkname runtime_StoreReluintptr runtime/internal/atomic.StoreReluintptr
 func runtime_StoreReluintptr(ptr *uintptr, val uintptr) uintptr

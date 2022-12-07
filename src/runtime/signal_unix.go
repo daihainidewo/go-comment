@@ -28,6 +28,7 @@ func os_sigpipe() {
 	systemstack(sigpipe)
 }
 
+// signame 信号描述
 func signame(sig uint32) string {
 	if sig >= uint32(len(sigtable)) {
 		return ""
@@ -40,6 +41,8 @@ const (
 	_SIG_IGN uintptr = 1
 )
 
+// sigPreempt 用于非合作的抢占
+// 使用SIGURG代替
 // sigPreempt is the signal used for non-cooperative preemption.
 //
 // There's no good way to choose this signal, but there are some
@@ -360,6 +363,13 @@ func doSigPreempt(gp *g, ctxt *sigctxt) {
 
 const preemptMSupported = true
 
+// preemptM 向 m 发送抢占请求
+// 这个请求可能异步处理 也有可能和其他请求合并发给 m
+// 当接收到请求时
+// G 或 P 被标记为抢占
+// 并且 g 是在异步安全点
+// 它可以抢占 g
+// m.preemptGen 总是在处理完抢占请求时自增
 // preemptM sends a preemption request to mp. This request may be
 // handled asynchronously and may be coalesced with other requests to
 // the M. When the request is received, if the running G or P are
@@ -367,6 +377,8 @@ const preemptMSupported = true
 // safe-point, it will preempt the goroutine. It always atomically
 // increments mp.preemptGen after handling a preemption request.
 func preemptM(mp *m) {
+	// 在 darwin 和 ios 系统中需要保证序列化执行
+	// 不应在执行时抢占线程
 	// On Darwin, don't try to preempt threads during exec.
 	// Issue #41702.
 	if GOOS == "darwin" || GOOS == "ios" {
@@ -378,6 +390,9 @@ func preemptM(mp *m) {
 			pendingPreemptSignals.Add(1)
 		}
 
+		// 多线程抢占同一个 m 会发送多个信号
+		// 导致很难正常执行 导致活锁问题
+		// 也有可能出现在 darwin 上
 		// If multiple threads are preempting the same M, it may send many
 		// signals to the same M such that it hardly make progress, causing
 		// live-lock problem. Apparently this could happen on darwin. See

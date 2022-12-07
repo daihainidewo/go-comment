@@ -40,6 +40,9 @@ const (
 	throwTypeRuntime
 )
 
+// 两种方案执行 defer
+// 创建 defer 执行列表
+// 使用开放代码 在栈帧插入 defer 代码片段
 // We have two different ways of doing defers. The older way involves creating a
 // defer record at the time that a defer statement is executing and adding it to a
 // defer chain. This chain is inspected by the deferreturn call at all function
@@ -53,6 +56,8 @@ const (
 // made using extra funcdata info that indicates the exact stack slots that
 // contain the bitmask and defer fn/args.
 
+// 检测是否可以生成 panic 信息
+// 如果是由运行时或内部内存申请产生的 panic 则抛出 msg 信息
 // Check to make sure we can really generate a panic. If the panic
 // was generated from the runtime, or from inside malloc, then convert
 // to a throw of msg.
@@ -60,6 +65,8 @@ const (
 // triggered this panic.
 func panicCheck1(pc uintptr, msg string) {
 	if goarch.IsWasm == 0 && hasPrefix(funcname(findfunc(pc)), "runtime.") {
+		// 如果是运行时函数
+		// 抛出异常
 		// Note: wasm can't tail call, so we can't get the original caller's pc.
 		throw(msg)
 	}
@@ -67,10 +74,15 @@ func panicCheck1(pc uintptr, msg string) {
 	// but not in the runtime? runtime/internal/*, maybe?
 	gp := getg()
 	if gp != nil && gp.m != nil && gp.m.mallocing != 0 {
+		// m 在拥有 g 并且在申请内存时
+		// 抛出异常
 		throw(msg)
 	}
 }
 
+// 和 panicCheck1 类似
+// 只是不处理运行时异常
+// 可能由运行时调用 runtime.sigpanic 产生
 // Same as above, but calling from the runtime is allowed.
 //
 // Using this function is necessary for any panic that may be
@@ -1015,7 +1027,7 @@ func gopanic(e any) {
 		d._panic = nil
 
 		// trigger shrinkage to test stack copy. See stack_test.go:TestStackPanic
-		//GC()
+		// GC()
 
 		pc := d.pc
 		sp := unsafe.Pointer(d.sp) // must be pointer so it gets adjusted during stack copy
@@ -1157,6 +1169,10 @@ func sync_fatal(s string) {
 	fatal(s)
 }
 
+// throw 会触发一个致命错误
+// 该错误会转储堆栈跟踪并退出
+// throw 用于 GO 自身运行时内部的致命错误
+// 而不是用户代码
 // throw triggers a fatal error that dumps a stack trace and exits.
 //
 // throw should be used for runtime-internal fatal errors where Go itself,
@@ -1164,6 +1180,8 @@ func sync_fatal(s string) {
 //
 //go:nosplit
 func throw(s string) {
+	// 任何抛出应该是递归的 nosplit
+	// 因此它可以被不安全的栈增长调用
 	// Everything throw does should be recursively nosplit so it
 	// can be called even when it's unsafe to grow the stack.
 	systemstack(func() {
@@ -1220,10 +1238,16 @@ func recovery(gp *g) {
 
 	// d's arguments need to be in the stack.
 	if sp != 0 && (sp < gp.stack.lo || gp.stack.hi < sp) {
+		// 有栈帧
+		// 并且 sp 小于 g 的栈低地址或大于 g 的栈高地址
+		// 栈帧信息错乱
 		print("recover: ", hex(sp), " not in [", hex(gp.stack.lo), ", ", hex(gp.stack.hi), "]\n")
 		throw("bad recovery")
 	}
 
+	// 让这个 d 的 deferproc 再次返回
+	// 这次返回 1
+	// 调用函数将跳转到标准返回结尾
 	// Make the deferproc for this d return again,
 	// this time returning 1. The calling function will
 	// jump to the standard return epilogue.
@@ -1234,6 +1258,8 @@ func recovery(gp *g) {
 	gogo(&gp.sched)
 }
 
+// fatalthrow 实现一个不可恢复的运行时异常
+// 冻结系统 从调用者开始打印栈帧轨迹 并且结束进程
 // fatalthrow implements an unrecoverable runtime throw. It freezes the
 // system, prints stack traces starting from its caller, and terminates the
 // process.
@@ -1245,6 +1271,7 @@ func fatalthrow(t throwType) {
 	gp := getg()
 
 	if gp.m.throwing == throwTypeNone {
+		// 设置 m 的异常等级
 		gp.m.throwing = t
 	}
 
@@ -1309,6 +1336,13 @@ func fatalpanic(msgs *_panic) {
 	*(*int)(nil) = 0 // not reached
 }
 
+// 为一个不可恢复的异常做准备
+// 返回 true 表示异常信息可以被打印
+// 返回 false 表示运行时处于混乱 只能打印栈帧
+// 即使写屏障在 dying > 0 时显式忽略写入 它也不能有写屏障
+// 写屏障仍然假设 g.m.p != nil
+// 但此函数在某些上下文中可能没有 P
+// （例如，信号处理程序中的恐慌 发送到没有 P 的 M）
 // startpanic_m prepares for an unrecoverable panic.
 //
 // It returns true if panic messages should be printed, or false if
@@ -1324,14 +1358,21 @@ func fatalpanic(msgs *_panic) {
 func startpanic_m() bool {
 	gp := getg()
 	if mheap_.cachealloc.size == 0 { // very early
+		// 过早panic 导致没有内存可用于 panic 信息存储
 		print("runtime: panic before malloc heap initialized\n")
 	}
+	// 在不可恢复的异常期间不能申请内存
+	// 异常可能发生在信号处理 或主动抛出 或在 malloc 内部
+	// 我们想要捕捉是否确实发生了分配（即使我们没有处于这些情况之一）
 	// Disallow malloc during an unrecoverable panic. A panic
 	// could happen in a signal handler, or in a throw, or inside
 	// malloc itself. We want to catch if an allocation ever does
 	// happen (even if we're not in one of these situations).
 	gp.m.mallocing++
 
+	// 如果是错误的锁计数导致濒死
+	// 标记其为好的锁计数
+	// 因此不需要向下递归异常
 	// If we're dying because of a bad lock count, set it to a
 	// good lock count so we don't recursively panic below.
 	if gp.m.locks < 0 {
@@ -1340,22 +1381,29 @@ func startpanic_m() bool {
 
 	switch gp.m.dying {
 	case 0:
+		// 设置 dying>0 的副作用是禁用 g 的写缓冲
 		// Setting dying >0 has the side-effect of disabling this G's writebuf.
 		gp.m.dying = 1
 		panicking.Add(1)
 		lock(&paniclk)
 		if debug.schedtrace > 0 || debug.scheddetail > 0 {
+			// 打印调度详细信息
 			schedtrace(true)
 		}
+		// 尝试冻结世界
 		freezetheworld()
 		return true
 	case 1:
+		// panic 中发生错误
+		// 仅打印栈帧信息并返回
 		// Something failed while panicking.
 		// Just print a stack trace and exit.
 		gp.m.dying = 2
 		print("panic during panic\n")
 		return false
 	case 2:
+		// 这是一个真正的运行时错误
+		// 甚至无法成功打印堆栈跟踪
 		// This is a genuine bug in the runtime, we couldn't even
 		// print the stack trace successfully.
 		gp.m.dying = 3
@@ -1372,10 +1420,14 @@ func startpanic_m() bool {
 var didothers bool
 var deadlock mutex
 
+// dopanic_m gp 是崩溃在 m 上的 g
+// 可能是用户 g
+// 该函数 getg 总是 g0
 // gp is the crashing g running on this M, but may be a user G, while getg() is
 // always g0.
 func dopanic_m(gp *g, pc, sp uintptr) bool {
 	if gp.sig != 0 {
+		// 基于信号奔溃
 		signame := signame(gp.sig)
 		if signame != "" {
 			print("[signal ", signame)

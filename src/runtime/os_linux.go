@@ -574,9 +574,12 @@ func sysSigaction(sig uint32, new, old *sigactiont) {
 //go:noescape
 func rt_sigaction(sig uintptr, new, old *sigactiont, size uintptr) int32
 
+// getpid 获取进程id
 func getpid() int
+// tgkill 向线程组 tgid 的线程 tid 发送信号 sig
 func tgkill(tgid, tid, sig int)
 
+// signalM 向 m 发送信号 sig
 // signalM sends a signal to mp.
 func signalM(mp *m, sig int) {
 	tgkill(getpid(), int(mp.procid), sig)

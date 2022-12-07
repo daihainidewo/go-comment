@@ -675,7 +675,7 @@ func gcStart(trigger gcTrigger) {
 		finishsweep_m()
 	})
 
-	// 在GC开始前 清理池中的脏数据
+	// 在GC开始前 清理缓存池中的脏数据
 	// clearpools before we start the GC. If we wait they memory will not be
 	// reclaimed until the next GC cycle.
 	clearpools()
@@ -1620,7 +1620,7 @@ func gcResetMarkState() {
 // Hooks for other packages
 
 // hook 用于注册其他包的清理函数
-var poolcleanup func()
+var poolcleanup func() // 清理 sync.Pool 脏数据
 var boringCaches []unsafe.Pointer // for crypto/internal/boring
 
 // sync.Pool 的GC时清理函数的hook
