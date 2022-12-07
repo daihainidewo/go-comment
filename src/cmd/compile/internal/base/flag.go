@@ -80,8 +80,8 @@ type CmdFlags struct {
 	LowerV *bool      "help:\"increase debug verbosity\""
 
 	// Special characters
-	Percent          int  "flag:\"%\" help:\"debug non-static initializers\""
-	CompilingRuntime bool "flag:\"+\" help:\"compiling runtime\""
+	Percent          CountFlag "flag:\"%\" help:\"debug non-static initializers\""
+	CompilingRuntime bool      "flag:\"+\" help:\"compiling runtime\""
 
 	// Longer names
 	AsmHdr             string       "help:\"write assembly header to `file`\""
@@ -122,8 +122,8 @@ type CmdFlags struct {
 	SymABIs            string       "help:\"read symbol ABIs from `file`\""
 	TraceProfile       string       "help:\"write an execution trace to `file`\""
 	TrimPath           string       "help:\"remove `prefix` from recorded source file paths\""
-	WB                 bool         "help:\"enable write barrier\""                    // TODO: remove
-	AltComparable      bool         "help:\"enable alternative comparable semantics\"" // experiment - remove eventually
+	WB                 bool         "help:\"enable write barrier\""            // TODO: remove
+	OldComparable      bool         "help:\"enable old comparable semantics\"" // TODO: remove for Go 1.21
 	PgoProfile         string       "help:\"read profile from `file`\""
 
 	// Configuration derived from flags; not a flag itself.
@@ -147,7 +147,7 @@ type CmdFlags struct {
 func ParseFlags() {
 	Flag.I = addImportDir
 
-	Flag.LowerC = 1
+	Flag.LowerC = runtime.GOMAXPROCS(0)
 	Flag.LowerD = objabi.NewDebugFlag(&Debug, DebugSSA)
 	Flag.LowerP = &Ctxt.Pkgpath
 	Flag.LowerV = &Ctxt.Debugvlog
@@ -167,6 +167,7 @@ func ParseFlags() {
 
 	Debug.ConcurrentOk = true
 	Debug.InlFuncsWithClosures = 1
+	Debug.InlStaticInit = 1
 	if buildcfg.Experiment.Unified {
 		Debug.Unified = 1
 	}
@@ -179,6 +180,20 @@ func ParseFlags() {
 	objabi.AddVersionFlag() // -V
 	registerFlags()
 	objabi.Flagparse(usage)
+
+	if gcd := os.Getenv("GOCOMPILEDEBUG"); gcd != "" {
+		// This will only override the flags set in gcd;
+		// any others set on the command line remain set.
+		Flag.LowerD.Set(gcd)
+	}
+
+	if Debug.Gossahash != "" {
+		hashDebug = NewHashDebug("gosshash", Debug.Gossahash, nil)
+	}
+
+	if Debug.Fmahash != "" {
+		FmaHash = NewHashDebug("fmahash", Debug.Fmahash, nil)
+	}
 
 	if Flag.MSan && !platform.MSanSupported(buildcfg.GOOS, buildcfg.GOARCH) {
 		log.Fatalf("%s/%s does not support -msan", buildcfg.GOOS, buildcfg.GOARCH)
@@ -253,8 +268,8 @@ func ParseFlags() {
 	if Flag.LowerC < 1 {
 		log.Fatalf("-c must be at least 1, got %d", Flag.LowerC)
 	}
-	if Flag.LowerC > 1 && !concurrentBackendAllowed() {
-		log.Fatalf("cannot use concurrent backend compilation with provided flags; invoked as %v", os.Args)
+	if !concurrentBackendAllowed() {
+		Flag.LowerC = 1
 	}
 
 	if Flag.CompilingRuntime {

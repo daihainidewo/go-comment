@@ -85,7 +85,7 @@ func run(dir string, mode int, cmd ...string) string {
 	// as it runs without fear of mixing the output with some
 	// other command's output. Not buffering lets the output
 	// appear as it is printed instead of once the command exits.
-	// This is most important for the invocation of 'go1.4 build -v bootstrap/...'.
+	// This is most important for the invocation of 'go build -v bootstrap/...'.
 	if mode&(Background|ShowOutput) == ShowOutput {
 		xcmd.Stdout = os.Stdout
 		xcmd.Stderr = os.Stderr
@@ -309,27 +309,6 @@ func xreaddir(dir string) []string {
 	return names
 }
 
-// xreaddirfiles replaces dst with a list of the names of the files in dir.
-// The names are relative to dir; they are not full paths.
-func xreaddirfiles(dir string) []string {
-	f, err := os.Open(dir)
-	if err != nil {
-		fatalf("%v", err)
-	}
-	defer f.Close()
-	infos, err := f.Readdir(-1)
-	if err != nil {
-		fatalf("reading %s: %v", dir, err)
-	}
-	var names []string
-	for _, fi := range infos {
-		if !fi.IsDir() {
-			names = append(names, fi.Name())
-		}
-	}
-	return names
-}
-
 // xworkdir creates a new temporary directory to hold object files
 // and returns the name of that directory.
 func xworkdir() string {
@@ -379,7 +358,7 @@ func errprintf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, format, args...)
 }
 
-// xsamefile reports whether f1 and f2 are the same file (or dir)
+// xsamefile reports whether f1 and f2 are the same file (or dir).
 func xsamefile(f1, f2 string) bool {
 	fi1, err1 := os.Stat(f1)
 	fi2, err2 := os.Stat(f2)

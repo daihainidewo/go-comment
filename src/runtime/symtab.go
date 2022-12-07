@@ -614,7 +614,7 @@ const pcbucketsize = 256 * minfunc // size of bucket in the pc->func lookup tabl
 // 将 idx 和 subbucket 相加获取函数的索引
 // 由该索引开始遍历 functab 找到指定的函数
 // 该表每 4096 个字节的代码使用 20 个字节 或约 0.5% 的开销
-// findfunctab is an array of these structures.
+// findfuncbucket is an array of these structures.
 // Each bucket represents 4096 bytes of the text segment.
 // Each subbucket represents 256 bytes of the text segment.
 // To find a function given a pc, locate the bucket and subbucket for

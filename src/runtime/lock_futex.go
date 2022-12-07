@@ -257,7 +257,7 @@ func notetsleep(n *note, ns int64) bool {
 
 // notetsleepg 休眠用户 g
 // same as runtime·notetsleep, but called on user g (not g0)
-// calls only nosplit functions between entersyscallblock/exitsyscall
+// calls only nosplit functions between entersyscallblock/exitsyscall.
 func notetsleepg(n *note, ns int64) bool {
 	gp := getg()
 	if gp == gp.m.g0 {

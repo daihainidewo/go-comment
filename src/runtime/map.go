@@ -631,7 +631,7 @@ bucketloop:
 
 // 类似 mapaccess1
 // 加上了返回 key value
-// returns both key and elem. Used by map iterator
+// returns both key and elem. Used by map iterator.
 func mapaccessK(t *maptype, h *hmap, key unsafe.Pointer) (unsafe.Pointer, unsafe.Pointer) {
 	if h == nil || h.count == 0 {
 		// h 为空 直接返回

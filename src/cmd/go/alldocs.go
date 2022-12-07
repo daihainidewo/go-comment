@@ -100,6 +100,10 @@
 // The build flags are shared by the build, clean, get, install, list, run,
 // and test commands:
 //
+//	-C dir
+//		Change to dir before running the command.
+//		Any files named on the command line are interpreted after
+//		changing directories.
 //	-a
 //		force rebuilding of packages that are already up-to-date.
 //	-n
@@ -196,6 +200,11 @@
 //		include path must be in the same directory as the Go package they are
 //		included from, and overlays will not appear when binaries and tests are
 //		run through go run and go test respectively.
+//	-pgo file
+//		specify the file path of a profile for profile-guided optimization (PGO).
+//		Special name "auto" lets the go command select a file named
+//		"default.pgo" in the main package's directory if that file exists.
+//		Special name "off" turns off PGO.
 //	-pkgdir dir
 //		install and load all packages from dir instead of the usual locations.
 //		For example, when building with a non-standard configuration,
@@ -1233,13 +1242,15 @@
 // referred to indirectly. For the full set of modules available to a build,
 // use 'go list -m -json all'.
 //
+// Edit also provides the -C, -n, and -x build flags.
+//
 // See https://golang.org/ref/mod#go-mod-edit for more about 'go mod edit'.
 //
 // # Print module requirement graph
 //
 // Usage:
 //
-//	go mod graph [-go=version]
+//	go mod graph [-go=version] [-x]
 //
 // Graph prints the module requirement graph (with replacements applied)
 // in text form. Each line in the output has two space-separated fields: a module
@@ -1249,6 +1260,8 @@
 // The -go flag causes graph to report the module graph as loaded by the
 // given Go version, instead of the version indicated by the 'go' directive
 // in the go.mod file.
+//
+// The -x flag causes graph to print the commands graph executes.
 //
 // See https://golang.org/ref/mod#go-mod-graph for more about 'go mod graph'.
 //
@@ -1276,7 +1289,7 @@
 //
 // Usage:
 //
-//	go mod tidy [-e] [-v] [-go=version] [-compat=version]
+//	go mod tidy [-e] [-v] [-x] [-go=version] [-compat=version]
 //
 // Tidy makes sure go.mod matches the source code in the module.
 // It adds any missing modules necessary to build the current module's
@@ -1303,6 +1316,8 @@
 // version. By default, tidy acts as if the -compat flag were set to the
 // version prior to the one indicated by the 'go' directive in the go.mod
 // file.
+//
+// The -x flag causes tidy to print the commands download executes.
 //
 // See https://golang.org/ref/mod#go-mod-tidy for more about 'go mod tidy'.
 //
@@ -1797,7 +1812,7 @@
 //
 // Usage:
 //
-//	go vet [-n] [-x] [-vettool prog] [build flags] [vet flags] [packages]
+//	go vet [-C dir] [-n] [-x] [-vettool prog] [build flags] [vet flags] [packages]
 //
 // Vet runs the Go vet command on the packages named by the import paths.
 //
@@ -1806,6 +1821,7 @@
 // For a list of checkers and their flags, see 'go tool vet help'.
 // For details of a specific checker such as 'printf', see 'go tool vet help printf'.
 //
+// The -C flag changes to dir before running the 'go vet' command.
 // The -n flag prints commands that would be executed.
 // The -x flag prints commands as they are executed.
 //
@@ -1856,6 +1872,8 @@
 //     GOOS environment variable.
 //   - the target architecture, as spelled by runtime.GOARCH, set with the
 //     GOARCH environment variable.
+//   - any architecture features, in the form GOARCH.feature
+//     (for example, "amd64.v2"), as detailed below.
 //   - "unix", if GOOS is a Unix or Unix-like system.
 //   - the compiler being used, either "gc" or "gccgo"
 //   - "cgo", if the cgo command is supported (see CGO_ENABLED in
@@ -1887,11 +1905,45 @@
 // Using GOOS=ios matches build tags and files as for GOOS=darwin
 // in addition to ios tags and files.
 //
-// To keep a file from being considered for the build:
+// The defined architecture feature build tags are:
+//
+//   - For GOARCH=386, GO386=387 and GO386=sse2
+//     set the 386.387 and 386.sse2 build tags, respectively.
+//   - For GOARCH=amd64, GOAMD64=v1, v2, and v3
+//     correspond to the amd64.v1, amd64.v2, and amd64.v3 feature build tags.
+//   - For GOARCH=arm, GOARM=5, 6, and 7
+//     correspond to the arm.5, arm.6, and arm.7 feature build tags.
+//   - For GOARCH=mips or mipsle,
+//     GOMIPS=hardfloat and softfloat
+//     correspond to the mips.hardfloat and mips.softfloat
+//     (or mipsle.hardfloat and mipsle.softfloat) feature build tags.
+//   - For GOARCH=mips64 or mips64le,
+//     GOMIPS64=hardfloat and softfloat
+//     correspond to the mips64.hardfloat and mips64.softfloat
+//     (or mips64le.hardfloat and mips64le.softfloat) feature build tags.
+//   - For GOARCH=ppc64 or ppc64le,
+//     GOPPC64=power8, power9, and power10 correspond to the
+//     ppc64.power8, ppc64.power9, and ppc64.power10
+//     (or ppc64le.power8, ppc64le.power9, and ppc64le.power10)
+//     feature build tags.
+//   - For GOARCH=wasm, GOWASM=satconv and signext
+//     correspond to the wasm.satconv and wasm.signext feature build tags.
+//
+// For GOARCH=amd64, arm, ppc64, and ppc64le, a particular feature level
+// sets the feature build tags for all previous levels as well.
+// For example, GOAMD64=v2 sets the amd64.v1 and amd64.v2 feature flags.
+// This ensures that code making use of v2 features continues to compile
+// when, say, GOAMD64=v4 is introduced.
+// Code handling the absence of a particular feature level
+// should use a negation:
+//
+//	//go:build !amd64.v2
+//
+// To keep a file from being considered for any build:
 //
 //	//go:build ignore
 //
-// (any other unsatisfied word will work as well, but "ignore" is conventional.)
+// (Any other unsatisfied word will work as well, but "ignore" is conventional.)
 //
 // To build a file only when using cgo, and only on Linux and OS X:
 //

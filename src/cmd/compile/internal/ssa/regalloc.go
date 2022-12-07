@@ -852,6 +852,9 @@ func (s *regAllocState) isGReg(r register) bool {
 	return s.f.Config.hasGReg && s.GReg == r
 }
 
+// Dummy value used to represent the value being held in a temporary register.
+var tmpVal Value
+
 func (s *regAllocState) regalloc(f *Func) {
 	regValLiveSet := f.newSparseSet(f.NumValues()) // set of values that may be live in register
 	defer f.retSparseSet(regValLiveSet)
@@ -1266,6 +1269,7 @@ func (s *regAllocState) regalloc(f *Func) {
 
 		// Process all the non-phi values.
 		for idx, v := range oldSched {
+			tmpReg := noRegister
 			if s.f.pass.debug > regDebug {
 				fmt.Printf("  processing %s\n", v.LongString())
 			}
@@ -1301,7 +1305,7 @@ func (s *regAllocState) regalloc(f *Func) {
 				}
 				b.Values = append(b.Values, v)
 				s.advanceUses(v)
-				goto issueSpill
+				continue
 			}
 			if v.Op == OpGetG && s.f.Config.hasGReg {
 				// use hardware g register
@@ -1311,7 +1315,7 @@ func (s *regAllocState) regalloc(f *Func) {
 				s.assignReg(s.GReg, v, v)
 				b.Values = append(b.Values, v)
 				s.advanceUses(v)
-				goto issueSpill
+				continue
 			}
 			if v.Op == OpArg {
 				// Args are "pre-spilled" values. We don't allocate
@@ -1550,6 +1554,20 @@ func (s *regAllocState) regalloc(f *Func) {
 			}
 
 		ok:
+			// Pick a temporary register if needed.
+			// It should be distinct from all the input registers, so we
+			// allocate it after all the input registers, but before
+			// the input registers are freed via advanceUses below.
+			// (Not all instructions need that distinct part, but it is conservative.)
+			if opcodeTable[v.Op].needIntTemp {
+				m := s.allocatable & s.f.Config.gpRegMask
+				if m&^desired.avoid != 0 {
+					m &^= desired.avoid
+				}
+				tmpReg = s.allocReg(m, &tmpVal)
+				s.nospill |= regMask(1) << tmpReg
+			}
+
 			// Now that all args are in regs, we're ready to issue the value itself.
 			// Before we pick a register for the output value, allow input registers
 			// to be deallocated. We do this here so that the output can use the
@@ -1574,6 +1592,11 @@ func (s *regAllocState) regalloc(f *Func) {
 				outRegs := noRegisters // TODO if this is costly, hoist and clear incrementally below.
 				maxOutIdx := -1
 				var used regMask
+				if tmpReg != noRegister {
+					// Ensure output registers are distinct from the temporary register.
+					// (Not all instructions need that distinct part, but it is conservative.)
+					used |= regMask(1) << tmpReg
+				}
 				for _, out := range regspec.outputs {
 					mask := out.regs & s.allocatable &^ used
 					if mask == 0 {
@@ -1655,6 +1678,13 @@ func (s *regAllocState) regalloc(f *Func) {
 						s.assignReg(r, v, v)
 					}
 				}
+				if tmpReg != noRegister {
+					// Remember the temp register allocation, if any.
+					if s.f.tempRegs == nil {
+						s.f.tempRegs = map[ID]*Register{}
+					}
+					s.f.tempRegs[v.ID] = &s.registers[tmpReg]
+				}
 			}
 
 			// deallocate dead args, if we have not done so
@@ -1669,8 +1699,6 @@ func (s *regAllocState) regalloc(f *Func) {
 				v.SetArg(i, a) // use register version of arguments
 			}
 			b.Values = append(b.Values, v)
-
-		issueSpill:
 		}
 
 		// Copy the control values - we need this so we can reduce the

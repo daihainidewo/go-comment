@@ -381,6 +381,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/trace"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -477,6 +478,8 @@ var (
 	testlogFile *os.File
 
 	numFailed atomic.Uint32 // number of test failures
+
+	running sync.Map // map[string]time.Time of running, unpaused tests
 )
 
 type chattyFlag struct {
@@ -508,6 +511,13 @@ func (f *chattyFlag) String() string {
 		return "true"
 	}
 	return "false"
+}
+
+func (f *chattyFlag) Get() any {
+	if f.json {
+		return "test2json"
+	}
+	return f.on
 }
 
 const marker = byte(0x16) // ^V for framing
@@ -594,12 +604,13 @@ type common struct {
 	finished    bool                 // Test function has completed.
 	inFuzzFn    bool                 // Whether the fuzz target, if this is one, is running.
 
-	chatty     *chattyPrinter // A copy of chattyPrinter, if the chatty flag is set.
-	bench      bool           // Whether the current test is a benchmark.
-	hasSub     atomic.Bool    // whether there are sub-benchmarks.
-	raceErrors int            // Number of races detected during test.
-	runner     string         // Function name of tRunner running the test.
-	isParallel bool           // Whether the test is parallel.
+	chatty         *chattyPrinter // A copy of chattyPrinter, if the chatty flag is set.
+	bench          bool           // Whether the current test is a benchmark.
+	hasSub         atomic.Bool    // whether there are sub-benchmarks.
+	cleanupStarted atomic.Bool    // Registered cleanup callbacks have started to execute
+	raceErrors     int            // Number of races detected during test.
+	runner         string         // Function name of tRunner running the test.
+	isParallel     bool           // Whether the test is parallel.
 
 	parent   *common
 	level    int       // Nesting depth of test or benchmark.
@@ -1281,6 +1292,9 @@ const (
 // If catchPanic is true, this will catch panics, and return the recovered
 // value if any.
 func (c *common) runCleanup(ph panicHandling) (panicVal any) {
+	c.cleanupStarted.Store(true)
+	defer c.cleanupStarted.Store(false)
+
 	if ph == recoverAndReturnPanic {
 		defer func() {
 			panicVal = recover()
@@ -1363,6 +1377,7 @@ func (t *T) Parallel() {
 	if t.chatty != nil {
 		t.chatty.Updatef(t.name, "=== PAUSE %s\n", t.name)
 	}
+	running.Delete(t.name)
 
 	t.signal <- true   // Release calling test.
 	<-t.parent.barrier // Wait for the parent test to complete.
@@ -1371,6 +1386,7 @@ func (t *T) Parallel() {
 	if t.chatty != nil {
 		t.chatty.Updatef(t.name, "=== CONT  %s\n", t.name)
 	}
+	running.Store(t.name, time.Now())
 
 	t.start = time.Now()
 	t.raceErrors += -race.Errors()
@@ -1450,8 +1466,10 @@ func tRunner(t *T, fn func(t *T)) {
 				finished = p.finished
 				p.mu.RUnlock()
 				if finished {
-					t.Errorf("%v: subtest may have called FailNow on a parent test", err)
-					err = nil
+					if !t.isParallel {
+						t.Errorf("%v: subtest may have called FailNow on a parent test", err)
+						err = nil
+					}
 					signal = false
 					break
 				}
@@ -1474,15 +1492,16 @@ func tRunner(t *T, fn func(t *T)) {
 		// complete even if a cleanup function calls t.FailNow. See issue 41355.
 		didPanic := false
 		defer func() {
+			// Only report that the test is complete if it doesn't panic,
+			// as otherwise the test binary can exit before the panic is
+			// reported to the user. See issue 41479.
 			if didPanic {
 				return
 			}
 			if err != nil {
 				panic(err)
 			}
-			// Only report that the test is complete if it doesn't panic,
-			// as otherwise the test binary can exit before the panic is
-			// reported to the user. See issue 41479.
+			running.Delete(t.name)
 			t.signal <- signal
 		}()
 
@@ -1568,6 +1587,10 @@ func tRunner(t *T, fn func(t *T)) {
 // Run may be called simultaneously from multiple goroutines, but all such calls
 // must return before the outer test function for t returns.
 func (t *T) Run(name string, f func(t *T)) bool {
+	if t.cleanupStarted.Load() {
+		panic("testing: t.Run called during t.Cleanup")
+	}
+
 	t.hasSub.Store(true)
 	testName, ok, _ := t.context.match.fullName(&t.common, name)
 	if !ok || shouldFailFast() {
@@ -1595,6 +1618,8 @@ func (t *T) Run(name string, f func(t *T)) bool {
 	if t.chatty != nil {
 		t.chatty.Updatef(t.name, "=== RUN   %s\n", t.name)
 	}
+	running.Store(t.name, time.Now())
+
 	// Instead of reducing the running count of this test before calling the
 	// tRunner and increasing it afterwards, we rely on tRunner keeping the
 	// count correct. This ensures that a sequence of sequential tests runs
@@ -2201,9 +2226,31 @@ func (m *M) startAlarm() time.Time {
 	m.timer = time.AfterFunc(*timeout, func() {
 		m.after()
 		debug.SetTraceback("all")
-		panic(fmt.Sprintf("test timed out after %v", *timeout))
+		extra := ""
+
+		if list := runningList(); len(list) > 0 {
+			var b strings.Builder
+			b.WriteString("\nrunning tests:")
+			for _, name := range list {
+				b.WriteString("\n\t")
+				b.WriteString(name)
+			}
+			extra = b.String()
+		}
+		panic(fmt.Sprintf("test timed out after %v%s", *timeout, extra))
 	})
 	return deadline
+}
+
+// runningList returns the list of running tests.
+func runningList() []string {
+	var list []string
+	running.Range(func(k, v any) bool {
+		list = append(list, fmt.Sprintf("%s (%v)", k.(string), time.Since(v.(time.Time)).Round(time.Second)))
+		return true
+	})
+	sort.Strings(list)
+	return list
 }
 
 // stopAlarm turns off the alarm.

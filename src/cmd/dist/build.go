@@ -386,7 +386,7 @@ func findgoversion() string {
 	// Note that we lightly parse internal/goversion/goversion.go to
 	// obtain the base version. We can't just import the package,
 	// because cmd/dist is built with a bootstrap GOROOT which could
-	// be an entirely different version of Go, like 1.4. We assume
+	// be an entirely different version of Go. We assume
 	// that the file contains "const Version = <Integer>".
 	goversionSource := readfile(pathf("%s/src/internal/goversion/goversion.go", goroot))
 	m := regexp.MustCompile(`(?m)^const Version = (\d+)`).FindStringSubmatch(goversionSource)
@@ -463,11 +463,16 @@ func setup() {
 		xmkdir(p)
 	}
 
-	p := pathf("%s/pkg/%s_%s", goroot, gohostos, gohostarch)
+	goosGoarch := pathf("%s/pkg/%s_%s", goroot, gohostos, gohostarch)
 	if rebuildall {
-		xremoveall(p)
+		xremoveall(goosGoarch)
 	}
-	xmkdirall(p)
+	xmkdirall(goosGoarch)
+	xatexit(func() {
+		if files := xreaddir(goosGoarch); len(files) == 0 {
+			xremove(goosGoarch)
+		}
+	})
 
 	if goos != gohostos || goarch != gohostarch {
 		p := pathf("%s/pkg/%s_%s", goroot, goos, goarch)
@@ -480,23 +485,29 @@ func setup() {
 	// Create object directory.
 	// We used to use it for C objects.
 	// Now we use it for the build cache, to separate dist's cache
-	// from any other cache the user might have.
-	p = pathf("%s/pkg/obj/go-build", goroot)
-	if rebuildall {
-		xremoveall(p)
+	// from any other cache the user might have, and for the location
+	// to build the bootstrap versions of the standard library.
+	obj := pathf("%s/pkg/obj", goroot)
+	if !isdir(obj) {
+		xmkdir(obj)
 	}
-	xmkdirall(p)
-	xatexit(func() { xremoveall(p) })
+	xatexit(func() { xremove(obj) })
 
-	// Create alternate driectory for intermediate
-	// standard library .a's to be placed rather than
-	// the final build's install locations.
-	p = pathf("%s/pkg/obj/go-bootstrap", goroot)
+	// Create build cache directory.
+	objGobuild := pathf("%s/pkg/obj/go-build", goroot)
 	if rebuildall {
-		xremoveall(p)
+		xremoveall(objGobuild)
 	}
-	xmkdirall(p)
-	xatexit(func() { xremoveall(p) })
+	xmkdirall(objGobuild)
+	xatexit(func() { xremoveall(objGobuild) })
+
+	// Create directory for bootstrap versions of standard library .a files.
+	objGoBootstrap := pathf("%s/pkg/obj/go-bootstrap", goroot)
+	if rebuildall {
+		xremoveall(objGoBootstrap)
+	}
+	xmkdirall(objGoBootstrap)
+	xatexit(func() { xremoveall(objGoBootstrap) })
 
 	// Create tool directory.
 	// We keep it in pkg/, just like the object directory above.
@@ -830,6 +841,19 @@ func runInstall(pkg string, ch chan struct{}) {
 	if goarch == "mips64" || goarch == "mips64le" {
 		// Define GOMIPS64_value from gomips64.
 		asmArgs = append(asmArgs, "-D", "GOMIPS64_"+gomips64)
+	}
+	if goarch == "ppc64" || goarch == "ppc64le" {
+		// We treat each powerpc version as a superset of functionality.
+		switch goppc64 {
+		case "power10":
+			asmArgs = append(asmArgs, "-D", "GOPPC64_power10")
+			fallthrough
+		case "power9":
+			asmArgs = append(asmArgs, "-D", "GOPPC64_power9")
+			fallthrough
+		default: // This should always be power8.
+			asmArgs = append(asmArgs, "-D", "GOPPC64_power8")
+		}
 	}
 	goasmh := pathf("%s/go_asm.h", workdir)
 	if IsRuntimePackagePath(pkg) {
@@ -1240,18 +1264,10 @@ var toolchain = []string{"cmd/asm", "cmd/cgo", "cmd/compile", "cmd/link"}
 // The bootstrap command runs a build from scratch,
 // stopping at having installed the go_bootstrap command.
 //
-// WARNING: This command runs after cmd/dist is built with Go 1.4.
+// WARNING: This command runs after cmd/dist is built with the Go bootstrap toolchain.
 // It rebuilds and installs cmd/dist with the new toolchain, so other
 // commands (like "go tool dist test" in run.bash) can rely on bug fixes
-// made since Go 1.4, but this function cannot. In particular, the uses
-// of os/exec in this function cannot assume that
-//
-//	cmd.Env = append(os.Environ(), "X=Y")
-//
-// sets $X to Y in the command's environment. That guarantee was
-// added after Go 1.4, and in fact in Go 1.4 it was typically the opposite:
-// if $X was already present in os.Environ(), most systems preferred
-// that setting, not the new one.
+// made since the Go bootstrap version, but this function cannot.
 func cmdbootstrap() {
 	timelog("start", "dist bootstrap")
 	defer timelog("end", "dist bootstrap")
@@ -1348,11 +1364,11 @@ func cmdbootstrap() {
 
 	// To recap, so far we have built the new toolchain
 	// (cmd/asm, cmd/cgo, cmd/compile, cmd/link)
-	// using Go 1.4's toolchain and go command.
+	// using the Go bootstrap toolchain and go command.
 	// Then we built the new go command (as go_bootstrap)
 	// using the new toolchain and our own build logic (above).
 	//
-	//	toolchain1 = mk(new toolchain, go1.4 toolchain, go1.4 cmd/go)
+	//	toolchain1 = mk(new toolchain, go1.17 toolchain, go1.17 cmd/go)
 	//	go_bootstrap = mk(new cmd/go, toolchain1, cmd/dist)
 	//
 	// The toolchain1 we built earlier is built from the new sources,
@@ -1373,12 +1389,11 @@ func cmdbootstrap() {
 	goInstall(goBootstrap, toolchain...)
 	if debug {
 		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
-		run("", ShowOutput|CheckExit, pathf("%s/buildid", tooldir), pathf("%s/pkg/%s_%s/runtime/internal/sys.a", goroot, goos, goarch))
 		copyfile(pathf("%s/compile2", tooldir), pathf("%s/compile", tooldir), writeExec)
 	}
 
 	// Toolchain2 should be semantically equivalent to toolchain1,
-	// but it was built using the new compilers instead of the Go 1.4 compilers,
+	// but it was built using the newly built compiler instead of the Go bootstrap compiler,
 	// so it should at the least run faster. Also, toolchain1 had no build IDs
 	// in the binaries, while toolchain2 does. In non-release builds, the
 	// toolchain's build IDs feed into constructing the build IDs of built targets,
@@ -1401,7 +1416,6 @@ func cmdbootstrap() {
 	goInstall(goBootstrap, append([]string{"-a"}, toolchain...)...)
 	if debug {
 		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
-		run("", ShowOutput|CheckExit, pathf("%s/buildid", tooldir), pathf("%s/pkg/%s_%s/runtime/internal/sys.a", goroot, goos, goarch))
 		copyfile(pathf("%s/compile3", tooldir), pathf("%s/compile", tooldir), writeExec)
 	}
 
@@ -1443,7 +1457,6 @@ func cmdbootstrap() {
 	checkNotStale(cmdGo, targets...)
 	if debug {
 		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
-		run("", ShowOutput|CheckExit, pathf("%s/buildid", tooldir), pathf("%s/pkg/%s_%s/runtime/internal/sys.a", goroot, goos, goarch))
 		checkNotStale(goBootstrap, append(toolchain, "runtime/internal/sys")...)
 		copyfile(pathf("%s/compile4", tooldir), pathf("%s/compile", tooldir), writeExec)
 	}

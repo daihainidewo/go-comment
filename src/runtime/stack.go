@@ -99,6 +99,7 @@ const (
 	// The guard leaves enough room for one _StackSmall frame plus
 	// a _StackLimit chain of NOSPLIT calls plus _StackSystem
 	// bytes for the OS.
+	// This arithmetic must match that in cmd/internal/objabi/stack.go:StackLimit.
 	// value 928 * 1 + 0 = 928
 	_StackGuard = 928*sys.StackGuardMultiplier + _StackSystem
 
@@ -110,6 +111,7 @@ const (
 	// NOSPLIT 函数组能拥有最大的函数栈帧大小
 	// The maximum number of bytes that a chain of NOSPLIT
 	// functions can use.
+	// This arithmetic must match that in cmd/internal/objabi/stack.go:StackLimit.
 	// 928 - 0 - 128 = 800
 	_StackLimit = _StackGuard - _StackSystem - _StackSmall
 )
@@ -631,7 +633,7 @@ type adjustinfo struct {
 
 // 判断 vpp 是否是 adjinfo 描述的旧栈的地址
 // 如果是则将 vpp 指到到新栈
-// Adjustpointer checks whether *vpp is in the old stack described by adjinfo.
+// adjustpointer checks whether *vpp is in the old stack described by adjinfo.
 // If so, it rewrites *vpp to point into the new stack.
 func adjustpointer(adjinfo *adjustinfo, vpp unsafe.Pointer) {
 	pp := (*uintptr)(vpp)

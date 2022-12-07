@@ -218,6 +218,27 @@ func TestServeFileDirPanicEmptyPath(t *testing.T) {
 	}
 }
 
+// Tests that ranges are ignored with serving empty content. (Issue 54794)
+func TestServeContentWithEmptyContentIgnoreRanges(t *testing.T) {
+	for _, r := range []string{
+		"bytes=0-128",
+		"bytes=1-",
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Range", r)
+		ServeContent(rec, req, "nothing", time.Now(), bytes.NewReader(nil))
+		res := rec.Result()
+		if res.StatusCode != 200 {
+			t.Errorf("code = %v; want 200", res.Status)
+		}
+		bodyLen := rec.Body.Len()
+		if bodyLen != 0 {
+			t.Errorf("body.Len() = %v; want 0", res.Status)
+		}
+	}
+}
+
 var fsRedirectTestData = []struct {
 	original, redirect string
 }{
@@ -721,6 +742,25 @@ func testFileServerZeroByte(t *testing.T, mode testMode) {
 	}
 	if res.StatusCode == 200 {
 		t.Errorf("got status 200; want an error. Body is:\n%s", got.Bytes())
+	}
+}
+
+func TestFileServerNamesEscape(t *testing.T) { run(t, testFileServerNamesEscape) }
+func testFileServerNamesEscape(t *testing.T, mode testMode) {
+	ts := newClientServerTest(t, mode, FileServer(Dir("testdata"))).ts
+	for _, path := range []string{
+		"/../testdata/file",
+		"/NUL", // don't read from device files on Windows
+	} {
+		res, err := ts.Client().Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode < 400 || res.StatusCode > 599 {
+			t.Errorf("Get(%q): got status %v, want 4xx or 5xx", path, res.StatusCode)
+		}
+
 	}
 }
 

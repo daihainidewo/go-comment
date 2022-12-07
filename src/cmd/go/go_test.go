@@ -129,7 +129,8 @@ func TestMain(m *testing.M) {
 					}
 					callerPos = fmt.Sprintf("%s:%d: ", file, line)
 				}
-				return fmt.Errorf("%stestgo must not write to GOROOT (installing to %s)", callerPos, filepath.Join("GOROOT", rel))
+				notice := "This error error can occur if GOROOT is stale, in which case rerunning make.bash will fix it."
+				return fmt.Errorf("%stestgo must not write to GOROOT (installing to %s) (%v)", callerPos, filepath.Join("GOROOT", rel), notice)
 			}
 		}
 
@@ -486,7 +487,7 @@ func (tg *testgoData) doRun(args []string) error {
 	}
 
 	tg.t.Logf("running testgo %v", args)
-	cmd := exec.Command(prog, args...)
+	cmd := testenv.Command(tg.t, prog, args...)
 	tg.stdout.Reset()
 	tg.stderr.Reset()
 	cmd.Dir = tg.execDir
@@ -529,7 +530,7 @@ func (tg *testgoData) runFail(args ...string) {
 // runGit runs a git command, and expects it to succeed.
 func (tg *testgoData) runGit(dir string, args ...string) {
 	tg.t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testenv.Command(tg.t, "git", args...)
 	tg.stdout.Reset()
 	tg.stderr.Reset()
 	cmd.Stdout = &tg.stdout
@@ -894,6 +895,11 @@ func TestNewReleaseRebuildsStalePackagesInGOPATH(t *testing.T) {
 	defer tg.cleanup()
 	tg.parallel()
 
+	// Set GOCACHE to an empty directory so that a previous run of
+	// this test does not affect the staleness of the packages it builds.
+	tg.tempDir("gocache")
+	tg.setenv("GOCACHE", tg.path("gocache"))
+
 	// Copy the runtime packages into a temporary GOROOT
 	// so that we can change files.
 	for _, copydir := range []string{
@@ -908,7 +914,6 @@ func TestNewReleaseRebuildsStalePackagesInGOPATH(t *testing.T) {
 		"src/internal/coverage/rtcov",
 		"src/math/bits",
 		"src/unsafe",
-		filepath.Join("pkg", runtime.GOOS+"_"+runtime.GOARCH),
 		filepath.Join("pkg/tool", goHostOS+"_"+goHostArch),
 		"pkg/include",
 	} {
@@ -1577,7 +1582,7 @@ func TestCgoPkgConfig(t *testing.T) {
 	tg.run("env", "PKG_CONFIG")
 	pkgConfig := strings.TrimSpace(tg.getStdout())
 	testenv.MustHaveExecPath(t, pkgConfig)
-	if out, err := exec.Command(pkgConfig, "--atleast-pkgconfig-version", "0.24").CombinedOutput(); err != nil {
+	if out, err := testenv.Command(t, pkgConfig, "--atleast-pkgconfig-version", "0.24").CombinedOutput(); err != nil {
 		t.Skipf("%s --atleast-pkgconfig-version 0.24: %v\n%s", pkgConfig, err, out)
 	}
 
@@ -2130,7 +2135,7 @@ func TestBuildmodePIE(t *testing.T) {
 	case "linux/386", "linux/amd64", "linux/arm", "linux/arm64", "linux/ppc64le", "linux/riscv64", "linux/s390x",
 		"android/amd64", "android/arm", "android/arm64", "android/386",
 		"freebsd/amd64",
-		"windows/386", "windows/amd64", "windows/arm":
+		"windows/386", "windows/amd64", "windows/arm", "windows/arm64":
 	case "darwin/amd64":
 	default:
 		t.Skipf("skipping test because buildmode=pie is not supported on %s", platform)
@@ -2275,7 +2280,7 @@ func testBuildmodePIE(t *testing.T, useCgo, setBuildmodeToPIE bool) {
 		panic("unreachable")
 	}
 
-	out, err := exec.Command(obj).CombinedOutput()
+	out, err := testenv.Command(t, obj).CombinedOutput()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2292,7 +2297,7 @@ func TestUpxCompression(t *testing.T) {
 	}
 
 	testenv.MustHaveExecPath(t, "upx")
-	out, err := exec.Command("upx", "--version").CombinedOutput()
+	out, err := testenv.Command(t, "upx", "--version").CombinedOutput()
 	if err != nil {
 		t.Fatalf("upx --version failed: %v", err)
 	}
@@ -2326,13 +2331,13 @@ func TestUpxCompression(t *testing.T) {
 	obj := tg.path("main")
 	tg.run("build", "-o", obj, src)
 
-	out, err = exec.Command("upx", obj).CombinedOutput()
+	out, err = testenv.Command(t, "upx", obj).CombinedOutput()
 	if err != nil {
 		t.Logf("executing upx\n%s\n", out)
 		t.Fatalf("upx failed with %v", err)
 	}
 
-	out, err = exec.Command(obj).CombinedOutput()
+	out, err = testenv.Command(t, obj).CombinedOutput()
 	if err != nil {
 		t.Logf("%s", out)
 		t.Fatalf("running compressed go binary failed with error %s", err)
@@ -2342,9 +2347,11 @@ func TestUpxCompression(t *testing.T) {
 	}
 }
 
+var gocacheverify = godebug.New("gocacheverify")
+
 func TestCacheListStale(t *testing.T) {
 	tooSlow(t)
-	if godebug.Get("gocacheverify") == "1" {
+	if gocacheverify.Value() == "1" {
 		t.Skip("GODEBUG gocacheverify")
 	}
 	tg := testgo(t)
@@ -2367,7 +2374,7 @@ func TestCacheListStale(t *testing.T) {
 func TestCacheCoverage(t *testing.T) {
 	tooSlow(t)
 
-	if godebug.Get("gocacheverify") == "1" {
+	if gocacheverify.Value() == "1" {
 		t.Skip("GODEBUG gocacheverify")
 	}
 
@@ -2401,7 +2408,7 @@ func TestIssue22588(t *testing.T) {
 
 func TestIssue22531(t *testing.T) {
 	tooSlow(t)
-	if godebug.Get("gocacheverify") == "1" {
+	if gocacheverify.Value() == "1" {
 		t.Skip("GODEBUG gocacheverify")
 	}
 	tg := testgo(t)
@@ -2430,7 +2437,7 @@ func TestIssue22531(t *testing.T) {
 
 func TestIssue22596(t *testing.T) {
 	tooSlow(t)
-	if godebug.Get("gocacheverify") == "1" {
+	if gocacheverify.Value() == "1" {
 		t.Skip("GODEBUG gocacheverify")
 	}
 	tg := testgo(t)
@@ -2460,7 +2467,7 @@ func TestIssue22596(t *testing.T) {
 func TestTestCache(t *testing.T) {
 	tooSlow(t)
 
-	if godebug.Get("gocacheverify") == "1" {
+	if gocacheverify.Value() == "1" {
 		t.Skip("GODEBUG gocacheverify")
 	}
 	tg := testgo(t)
@@ -2909,36 +2916,4 @@ func TestExecInDeletedDir(t *testing.T) {
 
 	// `go version` should not fail
 	tg.run("version")
-}
-
-// A missing C compiler should not force the net package to be stale.
-// Issue 47215.
-func TestMissingCC(t *testing.T) {
-	if !canCgo {
-		t.Skip("test is only meaningful on systems with cgo")
-	}
-	cc := os.Getenv("CC")
-	if cc == "" {
-		cc = "gcc"
-	}
-	if filepath.IsAbs(cc) {
-		t.Skipf(`"CC" (%s) is an absolute path`, cc)
-	}
-	_, err := exec.LookPath(cc)
-	if err != nil {
-		t.Skipf(`"CC" (%s) not on PATH`, cc)
-	}
-
-	tg := testgo(t)
-	defer tg.cleanup()
-	netStale, _ := tg.isStale("net")
-	if netStale {
-		t.Skip(`skipping test because "net" package is currently stale`)
-	}
-
-	tg.setenv("PATH", "") // No C compiler on PATH.
-	netStale, _ = tg.isStale("net")
-	if netStale {
-		t.Error(`clearing "PATH" causes "net" to be stale`)
-	}
 }

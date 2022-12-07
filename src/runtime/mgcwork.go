@@ -522,7 +522,7 @@ func putfull(b *workbuf) {
 // trygetfull 尝试从 full 中获取 workbuf
 // 没有立即可用的返回 nil
 // trygetfull tries to get a full or partially empty workbuffer.
-// If one is not immediately available return nil
+// If one is not immediately available return nil.
 //
 //go:nowritebarrier
 func trygetfull() *workbuf {

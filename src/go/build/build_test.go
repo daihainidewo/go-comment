@@ -671,21 +671,6 @@ func TestImportPackageOutsideModule(t *testing.T) {
 	}
 }
 
-func TestImportDirTarget(t *testing.T) {
-	testenv.MustHaveGoBuild(t) // really must just have source
-	ctxt := Default
-	ctxt.GOPATH = ""
-	// In GOROOT only a handful of packages have install targets. Most stdlib packages will
-	// only be built and placed in the build cache.
-	p, err := ctxt.ImportDir(filepath.Join(testenv.GOROOT(t), "src/runtime/cgo"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.PkgTargetRoot == "" || p.PkgObj == "" {
-		t.Errorf("p.PkgTargetRoot == %q, p.PkgObj == %q, want non-empty", p.PkgTargetRoot, p.PkgObj)
-	}
-}
-
 // TestIssue23594 prevents go/build from regressing and populating Package.Doc
 // from comments in test files.
 func TestIssue23594(t *testing.T) {
@@ -699,6 +684,22 @@ func TestIssue23594(t *testing.T) {
 
 	if p.Doc != "Correct" {
 		t.Fatalf("incorrectly set .Doc to %q", p.Doc)
+	}
+}
+
+// TestIssue56509 tests that go/build does not add non-go files to InvalidGoFiles
+// when they have unparsable comments.
+func TestIssue56509(t *testing.T) {
+	// The directory testdata/bads contains a .s file that has an unparsable
+	// comment. (go/build parses initial comments in non-go files looking for
+	// //go:build or //+go build comments).
+	p, err := ImportDir("testdata/bads", 0)
+	if err == nil {
+		t.Fatalf("could not import testdata/bads: %v", err)
+	}
+
+	if len(p.InvalidGoFiles) != 0 {
+		t.Fatalf("incorrectly added non-go file to InvalidGoFiles")
 	}
 }
 
@@ -788,5 +789,15 @@ func TestAllTags(t *testing.T) {
 	wantFiles = []string{"alltags.go"}
 	if !reflect.DeepEqual(p.GoFiles, wantFiles) {
 		t.Errorf("GoFiles = %v, want %v", p.GoFiles, wantFiles)
+	}
+}
+
+func TestAllTagsNonSourceFile(t *testing.T) {
+	p, err := Default.ImportDir("testdata/non_source_tags", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.AllTags) > 0 {
+		t.Errorf("AllTags = %v, want empty", p.AllTags)
 	}
 }

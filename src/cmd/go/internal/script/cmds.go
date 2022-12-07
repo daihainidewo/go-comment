@@ -188,7 +188,7 @@ func Cmp() Cmd {
 			},
 		},
 		func(s *State, args ...string) (WaitFunc, error) {
-			return nil, doCompare(s, true, args...)
+			return nil, doCompare(s, false, args...)
 		})
 }
 
@@ -981,7 +981,7 @@ func Stop() Cmd {
 		})
 }
 
-// stoperr is the sentinel error type returned by the Stop command.
+// stopError is the sentinel error type returned by the Stop command.
 type stopError struct {
 	msg string
 }

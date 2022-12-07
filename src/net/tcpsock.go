@@ -229,10 +229,19 @@ func (c *TCPConn) SetNoDelay(noDelay bool) error {
 }
 
 // newTCPConn 通过 fd 创建一个没有延迟的TCP连接
-func newTCPConn(fd *netFD) *TCPConn {
-	c := &TCPConn{conn{fd}}
-	setNoDelay(c.fd, true)
-	return c
+func newTCPConn(fd *netFD, keepAlive time.Duration, keepAliveHook func(time.Duration)) *TCPConn {
+	setNoDelay(fd, true)
+	if keepAlive == 0 {
+		keepAlive = defaultTCPKeepAlive
+	}
+	if keepAlive > 0 {
+		setKeepAlive(fd, true)
+		setKeepAlivePeriod(fd, keepAlive)
+		if keepAliveHook != nil {
+			keepAliveHook(keepAlive)
+		}
+	}
+	return &TCPConn{conn{fd}}
 }
 
 // DialTCP acts like Dial for TCP networks.

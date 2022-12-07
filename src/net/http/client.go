@@ -384,7 +384,7 @@ func setRequestCancel(req *Request, rt RoundTripper, deadline time.Time) (stopTi
 	initialReqCancel := req.Cancel // the user's original Request.Cancel, if any
 
 	var cancelCtx func()
-	if oldCtx := req.Context(); timeBeforeContextDeadline(deadline, oldCtx) {
+	if timeBeforeContextDeadline(deadline, oldCtx) {
 		// 如果没有过期获取取消函数
 		req.ctx, cancelCtx = context.WithDeadline(oldCtx, deadline)
 	}
@@ -530,7 +530,7 @@ func (c *Client) checkRedirect(req *Request, via []*Request) error {
 
 // redirectBehavior 处理重定向
 // redirectBehavior describes what should happen when the
-// client encounters a 3xx status code from the server
+// client encounters a 3xx status code from the server.
 func redirectBehavior(reqMethod string, resp *Response, ireq *Request) (redirectMethod string, shouldRedirect, includeBody bool) {
 	switch resp.StatusCode {
 	case 301, 302, 303: // 重定向使用GET

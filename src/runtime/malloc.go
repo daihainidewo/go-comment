@@ -1231,6 +1231,16 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// the garbage collector could follow a pointer to x,
 	// but see uninitialized memory or stale heap bits.
 	publicationBarrier()
+	// As x and the heap bits are initialized, update
+	// freeIndexForScan now so x is seen by the GC
+	// (including convervative scan) as an allocated object.
+	// While this pointer can't escape into user code as a
+	// _live_ pointer until we return, conservative scanning
+	// may find a dead pointer that happens to point into this
+	// object. Delaying this update until now ensures that
+	// conservative scanning considers this pointer dead until
+	// this point.
+	span.freeIndexForScan = span.freeindex
 
 	// 如果在GC期间就将当前对象标记为黑
 	// Allocate black during GC.
@@ -1379,7 +1389,7 @@ func memclrNoHeapPointersChunked(size uintptr, x unsafe.Pointer) {
 
 // implementation of new builtin
 // compiler (both frontend and SSA backend) knows the signature
-// of this function
+// of this function.
 func newobject(typ *_type) unsafe.Pointer {
 	return mallocgc(typ.size, typ, true)
 }

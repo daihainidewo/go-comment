@@ -61,6 +61,7 @@ func init() {
 	cmdVendor.Flag.BoolVar(&cfg.BuildV, "v", false, "")
 	cmdVendor.Flag.BoolVar(&vendorE, "e", false, "")
 	cmdVendor.Flag.StringVar(&vendorO, "o", "", "")
+	base.AddChdirFlag(&cmdVendor.Flag)
 	base.AddModCommonFlags(&cmdVendor.Flag)
 }
 
@@ -210,6 +211,9 @@ func moduleLine(m, r module.Version) string {
 		b.WriteString(m.Version)
 	}
 	if r.Path != "" {
+		if strings.HasPrefix(r.Path, "./vendor") || strings.HasPrefix(r.Path, ".\vendor") {
+			base.Fatalf("go: replacement path %s inside vendor directory", r.Path)
+		}
 		b.WriteString(" => ")
 		b.WriteString(r.Path)
 		if r.Version != "" {
