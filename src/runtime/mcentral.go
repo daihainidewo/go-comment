@@ -99,7 +99,7 @@ func (c *mcentral) cacheSpan() *mspan {
 	deductSweepCredit(spanBytes, 0)
 
 	traceDone := false
-	if trace.enabled {
+	if traceEnabled() {
 		traceGCSweepStart()
 	}
 
@@ -172,7 +172,7 @@ func (c *mcentral) cacheSpan() *mspan {
 		}
 		sweep.active.end(sl)
 	}
-	if trace.enabled {
+	if traceEnabled() {
 		traceGCSweepDone()
 		traceDone = true
 	}
@@ -185,7 +185,7 @@ func (c *mcentral) cacheSpan() *mspan {
 
 	// At this point s is a span that should have free slots.
 havespan:
-	if trace.enabled && !traceDone {
+	if traceEnabled() && !traceDone {
 		traceGCSweepDone()
 	}
 	n := int(s.nelems) - int(s.allocCount)

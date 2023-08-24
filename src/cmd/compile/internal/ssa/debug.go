@@ -70,8 +70,8 @@ func (ls *liveSlot) String() string {
 	return fmt.Sprintf("0x%x.%d.%d", ls.Registers, ls.stackOffsetValue(), int32(ls.StackOffset)&1)
 }
 
-func (loc liveSlot) absent() bool {
-	return loc.Registers == 0 && !loc.onStack()
+func (ls liveSlot) absent() bool {
+	return ls.Registers == 0 && !ls.onStack()
 }
 
 // StackOffset encodes whether a value is on the stack and if so, where.
@@ -433,7 +433,7 @@ func (sc *slotCanonicalizer) canonSlot(idx SlKeyIdx) LocalSlot {
 // synthesizes new (dead) values for the non-live params or the
 // non-live pieces of partially live params.
 func PopulateABIInRegArgOps(f *Func) {
-	pri := f.ABISelf.ABIAnalyzeFuncType(f.Type.FuncType())
+	pri := f.ABISelf.ABIAnalyzeFuncType(f.Type)
 
 	// When manufacturing new slots that correspond to splits of
 	// composite parameters, we want to avoid creating a new sub-slot
@@ -803,7 +803,7 @@ func (state *debugState) liveness() []*BlockDebug {
 // the first call, subsequent calls can only shrink startState.
 //
 // Passing forLocationLists=true enables additional side-effects that
-// are necessary for building location lists but superflous while still
+// are necessary for building location lists but superfluous while still
 // iterating to an answer.
 //
 // If previousBlock is non-nil, it registers changes vs. that block's
@@ -969,7 +969,7 @@ func (state *debugState) mergePredecessors(b *Block, blockLocs []*BlockDebug, pr
 	}
 
 	state.currentState.reset(abt.T{})
-	// The normal logic of "reset" is incuded in the intersection loop below.
+	// The normal logic of "reset" is included in the intersection loop below.
 
 	slotLocs := state.currentState.slots
 
@@ -1751,10 +1751,10 @@ func isNamedRegParam(p abi.ABIParamAssignment) bool {
 // it constructs a 2-element location list: the first element holds
 // the input register, and the second element holds the stack location
 // of the param (the assumption being that when optimization is off,
-// each input param reg will be spilled in the prolog.
+// each input param reg will be spilled in the prolog).
 func BuildFuncDebugNoOptimized(ctxt *obj.Link, f *Func, loggingEnabled bool, stackOffset func(LocalSlot) int32, rval *FuncDebug) {
 
-	pri := f.ABISelf.ABIAnalyzeFuncType(f.Type.FuncType())
+	pri := f.ABISelf.ABIAnalyzeFuncType(f.Type)
 
 	// Look to see if we have any named register-promoted parameters.
 	// If there are none, bail early and let the caller sort things

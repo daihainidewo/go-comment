@@ -13,8 +13,9 @@
 //
 // Within these functions, use the Error, Fail or related methods to signal failure.
 //
-// To write a new test suite, create a file whose name ends _test.go that
-// contains the TestXxx functions as described here.
+// To write a new test suite, create a file that
+// contains the TestXxx functions as described here,
+// and give that file a name ending in "_test.go".
 // The file will be excluded from regular
 // package builds but will be included when the "go test" command is run.
 //
@@ -440,6 +441,7 @@ func Init() {
 	parallel = flag.Int("test.parallel", runtime.GOMAXPROCS(0), "run at most `n` tests in parallel")
 	testlog = flag.String("test.testlogfile", "", "write test action log to `file` (for use only by cmd/go)")
 	shuffle = flag.String("test.shuffle", "off", "randomize the execution order of tests and benchmarks")
+	fullPath = flag.Bool("test.fullpath", false, "show full file names in error messages")
 
 	initBenchmarkFlags()
 	initFuzzFlags()
@@ -471,6 +473,7 @@ var (
 	parallel             *int
 	shuffle              *string
 	testlog              *string
+	fullPath             *bool
 
 	haveExamples bool // are there examples?
 
@@ -641,6 +644,22 @@ func Short() bool {
 	return *short
 }
 
+// testBinary is set by cmd/go to "1" if this is a binary built by "go test".
+// The value is set to "1" by a -X option to cmd/link. We assume that
+// because this is possible, the compiler will not optimize testBinary
+// into a constant on the basis that it is an unexported package-scope
+// variable that is never changed. If the compiler ever starts implementing
+// such an optimization, we will need some technique to mark this variable
+// as "changed by a cmd/link -X option".
+var testBinary = "0"
+
+// Testing reports whether the current code is being run in a test.
+// This will report true in programs created by "go test",
+// false in programs created by "go build".
+func Testing() bool {
+	return testBinary == "1"
+}
+
 // CoverMode reports what the test coverage mode is set to. The
 // values are "set", "count", or "atomic". The return value will be
 // empty if test coverage is not enabled.
@@ -750,8 +769,9 @@ func (c *common) decorate(s string, skip int) string {
 	file := frame.File
 	line := frame.Line
 	if file != "" {
-		// Truncate file name at last file name separator.
-		if index := strings.LastIndex(file, "/"); index >= 0 {
+		if *fullPath {
+			// If relative path, truncate file name at last file name separator.
+		} else if index := strings.LastIndex(file, "/"); index >= 0 {
 			file = file[index+1:]
 		} else if index = strings.LastIndex(file, "\\"); index >= 0 {
 			file = file[index+1:]
@@ -1914,7 +1934,6 @@ func (m *M) Run() (code int) {
 				// in which case every test will run nothing and succeed,
 				// with no obvious way to detect this problem (since no tests are running).
 				// So make 'no tests to run' a hard failure when testing package testing itself.
-				// The compile-only builders use -run=^$ to run no tests, so allow that.
 				fmt.Print(chatty.prefix(), "FAIL: package testing must run tests\n")
 				testOk = false
 			}

@@ -11,6 +11,8 @@ import (
 	"unsafe"
 )
 
+const staticLockRanking = true
+
 // worldIsStopped 原子的跟踪STW
 // worldIsStopped is accessed atomically to track world-stops. 1 == world
 // stopped.
@@ -57,7 +59,7 @@ func getLockRank(l *mutex) lockRank {
 // split on entry to lock2() would record stack split locks as taken after l,
 // even though l is not actually locked yet.
 func lockWithRank(l *mutex, rank lockRank) {
-	if l == &debuglock || l == &paniclk {
+	if l == &debuglock || l == &paniclk || l == &raceFiniLock {
 		// 这两个锁不需要rank
 		// debuglock is only used for println/printlock(). Don't do lock
 		// rank recording for it, since print/println are used when
@@ -68,6 +70,10 @@ func lockWithRank(l *mutex, rank lockRank) {
 		// lock ordering problem. Additionally, paniclk may be taken
 		// after effectively any lock (anywhere we might panic), which
 		// the partial order doesn't cover.
+		//
+		// raceFiniLock is held while exiting when running
+		// the race detector. Don't do lock rank recording for it,
+		// since we are exiting.
 		lock2(l)
 		return
 	}
@@ -173,7 +179,7 @@ func checkRanks(gp *g, prevRank, rank lockRank) {
 
 // See comment on lockWithRank regarding stack splitting.
 func unlockWithRank(l *mutex) {
-	if l == &debuglock || l == &paniclk {
+	if l == &debuglock || l == &paniclk || l == &raceFiniLock {
 		// See comment at beginning of lockWithRank.
 		unlock2(l)
 		return

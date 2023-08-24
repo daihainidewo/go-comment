@@ -151,7 +151,8 @@ type RoundTripper interface {
 // refererForURL 将上次的请求认证信息抹去并返回
 // refererForURL returns a referer without any authentication info or
 // an empty string if lastReq scheme is https and newReq scheme is http.
-func refererForURL(lastReq, newReq *url.URL) string {
+// If the referer was explicitly set, then it will continue to be used.
+func refererForURL(lastReq, newReq *url.URL, explicitRef string) string {
 	// https://tools.ietf.org/html/rfc7231#section-5.5.2
 	//   "Clients SHOULD NOT include a Referer header field in a
 	//    (non-secure) HTTP request if the referring page was
@@ -160,6 +161,10 @@ func refererForURL(lastReq, newReq *url.URL) string {
 		// 上次请求是https 新请求是http 就返回空字符串
 		return ""
 	}
+	if explicitRef != "" {
+		return explicitRef
+	}
+
 	referer := lastReq.String()
 	if lastReq.User != nil {
 		// This is not very efficient, but is the best we can
@@ -209,6 +214,9 @@ func (c *Client) transport() RoundTripper {
 	}
 	return DefaultTransport
 }
+
+// ErrSchemeMismatch is returned when a server returns an HTTP response to an HTTPS client.
+var ErrSchemeMismatch = errors.New("http: server gave HTTP response to HTTPS client")
 
 // send issues an HTTP request.
 // Caller should close resp.Body when done reading from it.
@@ -274,7 +282,7 @@ func send(ireq *Request, rt RoundTripper, deadline time.Time) (resp *Response, d
 			// response looks like HTTP and give a more helpful error.
 			// See golang.org/issue/11111.
 			if string(tlsErr.RecordHeader[:]) == "HTTP/" {
-				err = errors.New("http: server gave HTTP response to HTTPS client")
+				err = ErrSchemeMismatch
 			}
 		}
 		return nil, didTimeout, err
@@ -712,7 +720,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 
 			// Add the Referer header from the most recent
 			// request URL to the new one, if it's not https->http:
-			if ref := refererForURL(reqs[len(reqs)-1].URL, req.URL); ref != "" {
+			if ref := refererForURL(reqs[len(reqs)-1].URL, req.URL, req.Header.Get("Referer")); ref != "" {
 				req.Header.Set("Referer", ref)
 			}
 			err = c.checkRedirect(req, reqs)
@@ -1045,8 +1053,8 @@ func shouldCopyHeaderOnRedirect(headerKey string, initial, dest *url.URL) bool {
 		// directly, we don't know their scope, so we assume
 		// it's for *.domain.com.
 
-		ihost := canonicalAddr(initial)
-		dhost := canonicalAddr(dest)
+		ihost := idnaASCIIFromURL(initial)
+		dhost := idnaASCIIFromURL(dest)
 		return isDomainOrSubdomain(dhost, ihost)
 	}
 	// All other headers are copied:

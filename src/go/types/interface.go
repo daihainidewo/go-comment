@@ -26,7 +26,7 @@ type Interface struct {
 }
 
 // typeSet returns the type set for interface t.
-func (t *Interface) typeSet() *_TypeSet { return computeInterfaceTypeSet(t.check, token.NoPos, t) }
+func (t *Interface) typeSet() *_TypeSet { return computeInterfaceTypeSet(t.check, nopos, t) }
 
 // emptyInterface represents the empty (completed) interface
 var emptyInterface = Interface{complete: true, tset: &topTypeSet}
@@ -151,6 +151,7 @@ func (t *Interface) String() string   { return TypeString(t, nil) }
 // Implementation
 
 func (t *Interface) cleanup() {
+	t.typeSet() // any interface that escapes type checking must be safe for concurrent use
 	t.check = nil
 	t.embedPos = nil
 }

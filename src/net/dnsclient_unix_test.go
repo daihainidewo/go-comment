@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -190,6 +191,19 @@ func TestAvoidDNSName(t *testing.T) {
 	}
 }
 
+func TestNameListAvoidDNS(t *testing.T) {
+	c := &dnsConfig{search: []string{"go.dev.", "onion."}}
+	got := c.nameList("www")
+	if !slices.Equal(got, []string{"www.", "www.go.dev."}) {
+		t.Fatalf(`nameList("www") = %v, want "www.", "www.go.dev."`, got)
+	}
+
+	got = c.nameList("www.onion")
+	if !slices.Equal(got, []string{"www.onion.go.dev."}) {
+		t.Fatalf(`nameList("www.onion") = %v, want "www.onion.go.dev."`, got)
+	}
+}
+
 var fakeDNSServerSuccessful = fakeDNSServer{rh: func(_, _ string, q dnsmessage.Message, _ time.Time) (dnsmessage.Message, error) {
 	r := dnsmessage.Message{
 		Header: dnsmessage.Header{
@@ -220,7 +234,7 @@ var fakeDNSServerSuccessful = fakeDNSServer{rh: func(_, _ string, q dnsmessage.M
 func TestLookupTorOnion(t *testing.T) {
 	defer dnsWaitGroup.Wait()
 	r := Resolver{PreferGo: true, Dial: fakeDNSServerSuccessful.DialContext}
-	addrs, err := r.LookupIPAddr(context.Background(), "foo.onion")
+	addrs, err := r.LookupIPAddr(context.Background(), "foo.onion.")
 	if err != nil {
 		t.Fatalf("lookup = %v; want nil", err)
 	}
@@ -1442,7 +1456,7 @@ func TestDNSGoroutineRace(t *testing.T) {
 func lookupWithFake(fake fakeDNSServer, name string, typ dnsmessage.Type) error {
 	r := Resolver{PreferGo: true, Dial: fake.DialContext}
 
-	conf := resolvConf.dnsConfig.Load()
+	conf := getSystemDNSConfig()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1604,7 +1618,7 @@ func TestDNSDialTCP(t *testing.T) {
 	ctx := context.Background()
 	_, _, err := r.exchange(ctx, "0.0.0.0", mustQuestion("com.", dnsmessage.TypeALL, dnsmessage.ClassINET), time.Second, useUDPOrTCP, false)
 	if err != nil {
-		t.Fatal("exhange failed:", err)
+		t.Fatal("exchange failed:", err)
 	}
 }
 
@@ -2209,9 +2223,29 @@ func TestGoLookupIPCNAMEOrderHostsAliasesDNSFilesMode(t *testing.T) {
 }
 
 func testGoLookupIPCNAMEOrderHostsAliases(t *testing.T, mode hostLookupOrder, lookup, lookupRes string) {
+	fake := fakeDNSServer{
+		rh: func(_, _ string, q dnsmessage.Message, _ time.Time) (dnsmessage.Message, error) {
+			var answers []dnsmessage.Resource
+
+			if mode != hostLookupDNSFiles {
+				t.Fatal("received unexpected DNS query")
+			}
+
+			return dnsmessage.Message{
+				Header: dnsmessage.Header{
+					ID:       q.Header.ID,
+					Response: true,
+				},
+				Questions: []dnsmessage.Question{q.Questions[0]},
+				Answers:   answers,
+			}, nil
+		},
+	}
+
+	r := Resolver{PreferGo: true, Dial: fake.DialContext}
 	ins := []string{lookup, absDomainName(lookup), strings.ToLower(lookup), strings.ToUpper(lookup)}
 	for _, in := range ins {
-		_, res, err := goResolver.goLookupIPCNAMEOrder(context.Background(), "ip", in, mode, nil)
+		_, res, err := r.goLookupIPCNAMEOrder(context.Background(), "ip", in, mode, nil)
 		if err != nil {
 			t.Errorf("expected err == nil, but got error: %v", err)
 		}
@@ -2592,5 +2626,36 @@ func TestLookupOrderFilesNoSuchHost(t *testing.T) {
 		if dnsErr == nil || *dnsErr != expectedErr {
 			t.Errorf("Lookup%v: unexpected error: %v", v.name, err)
 		}
+	}
+}
+
+func TestExtendedRCode(t *testing.T) {
+	fake := fakeDNSServer{
+		rh: func(_, _ string, q dnsmessage.Message, _ time.Time) (dnsmessage.Message, error) {
+			fraudSuccessCode := dnsmessage.RCodeSuccess | 1<<10
+
+			var edns0Hdr dnsmessage.ResourceHeader
+			edns0Hdr.SetEDNS0(maxDNSPacketSize, fraudSuccessCode, false)
+
+			return dnsmessage.Message{
+				Header: dnsmessage.Header{
+					ID:       q.Header.ID,
+					Response: true,
+					RCode:    fraudSuccessCode,
+				},
+				Questions: []dnsmessage.Question{q.Questions[0]},
+				Additionals: []dnsmessage.Resource{{
+					Header: edns0Hdr,
+					Body:   &dnsmessage.OPTResource{},
+				}},
+			}, nil
+		},
+	}
+
+	r := &Resolver{PreferGo: true, Dial: fake.DialContext}
+	_, _, err := r.tryOneName(context.Background(), getSystemDNSConfig(), "go.dev.", dnsmessage.TypeA)
+	var dnsErr *DNSError
+	if !(errors.As(err, &dnsErr) && dnsErr.Err == errServerMisbehaving.Error()) {
+		t.Fatalf("r.tryOneName(): unexpected error: %v", err)
 	}
 }

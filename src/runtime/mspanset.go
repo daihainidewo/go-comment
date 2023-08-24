@@ -382,7 +382,7 @@ func (p *spanSetBlockAlloc) free(block *spanSetBlock) {
 }
 
 // headTailIndex 表示队列的头尾
-// haidTailIndex represents a combined 32-bit head and 32-bit tail
+// headTailIndex represents a combined 32-bit head and 32-bit tail
 // of a queue into a single 64-bit value.
 type headTailIndex uint64
 

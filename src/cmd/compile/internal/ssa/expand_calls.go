@@ -64,15 +64,15 @@ type registerCursor struct {
 	regValues *[]*Value // values assigned to registers accumulate here
 }
 
-func (rc *registerCursor) String() string {
+func (c *registerCursor) String() string {
 	dest := "<none>"
-	if rc.storeDest != nil {
-		dest = rc.storeDest.String()
+	if c.storeDest != nil {
+		dest = c.storeDest.String()
 	}
 	regs := "<none>"
-	if rc.regValues != nil {
+	if c.regValues != nil {
 		regs = ""
-		for i, x := range *rc.regValues {
+		for i, x := range *c.regValues {
 			if i > 0 {
 				regs = regs + "; "
 			}
@@ -80,7 +80,7 @@ func (rc *registerCursor) String() string {
 		}
 	}
 	// not printing the config because that has not been useful
-	return fmt.Sprintf("RCSR{storeDest=%v, regsLen=%d, nextSlice=%d, regValues=[%s]}", dest, rc.regsLen, rc.nextSlice, regs)
+	return fmt.Sprintf("RCSR{storeDest=%v, regsLen=%d, nextSlice=%d, regValues=[%s]}", dest, c.regsLen, c.nextSlice, regs)
 }
 
 // next effectively post-increments the register cursor; the receiver is advanced,
@@ -276,7 +276,7 @@ func (x *expandState) indent(n int) {
 	x.indentLevel += n
 }
 
-// Printf does an indented fmt.Printf on te format and args.
+// Printf does an indented fmt.Printf on the format and args.
 func (x *expandState) Printf(format string, a ...interface{}) (n int, err error) {
 	if x.indentLevel > 0 {
 		fmt.Printf("%[1]*s", x.indentLevel, "")
@@ -855,7 +855,7 @@ func storeOneArg(x *expandState, pos src.XPos, b *Block, locs []*LocalSlot, suff
 // storeOneLoad creates a decomposed (one step) load that is then stored.
 func storeOneLoad(x *expandState, pos src.XPos, b *Block, source, mem *Value, t *types.Type, offArg, offStore int64, loadRegOffset Abi1RO, storeRc registerCursor) *Value {
 	from := x.offsetFrom(source.Block, source.Args[0], offArg, types.NewPtr(t))
-	w := source.Block.NewValue2(source.Pos, OpLoad, t, from, mem)
+	w := b.NewValue2(source.Pos, OpLoad, t, from, mem)
 	return x.storeArgOrLoad(pos, b, w, mem, t, offStore, loadRegOffset, storeRc)
 }
 
@@ -962,7 +962,7 @@ func (x *expandState) storeArgOrLoad(pos src.XPos, b *Block, source, mem *Value,
 		eltRO := x.regWidth(elt)
 		source.Type = t
 		for i := int64(0); i < t.NumElem(); i++ {
-			sel := source.Block.NewValue1I(pos, OpArraySelect, elt, i, source)
+			sel := b.NewValue1I(pos, OpArraySelect, elt, i, source)
 			mem = x.storeArgOrLoad(pos, b, sel, mem, elt, storeOffset+i*elt.Size(), loadRegOffset, storeRc.at(t, 0))
 			loadRegOffset += eltRO
 			pos = pos.WithNotStmt()
@@ -997,7 +997,7 @@ func (x *expandState) storeArgOrLoad(pos src.XPos, b *Block, source, mem *Value,
 		source.Type = t
 		for i := 0; i < t.NumFields(); i++ {
 			fld := t.Field(i)
-			sel := source.Block.NewValue1I(pos, OpStructSelect, fld.Type, int64(i), source)
+			sel := b.NewValue1I(pos, OpStructSelect, fld.Type, int64(i), source)
 			mem = x.storeArgOrLoad(pos, b, sel, mem, fld.Type, storeOffset+fld.Offset, loadRegOffset, storeRc.next(fld.Type))
 			loadRegOffset += x.regWidth(fld.Type)
 			pos = pos.WithNotStmt()
@@ -1009,48 +1009,48 @@ func (x *expandState) storeArgOrLoad(pos src.XPos, b *Block, source, mem *Value,
 			break
 		}
 		tHi, tLo := x.intPairTypes(t.Kind())
-		sel := source.Block.NewValue1(pos, OpInt64Hi, tHi, source)
+		sel := b.NewValue1(pos, OpInt64Hi, tHi, source)
 		mem = x.storeArgOrLoad(pos, b, sel, mem, tHi, storeOffset+x.hiOffset, loadRegOffset+x.hiRo, storeRc.plus(x.hiRo))
 		pos = pos.WithNotStmt()
-		sel = source.Block.NewValue1(pos, OpInt64Lo, tLo, source)
+		sel = b.NewValue1(pos, OpInt64Lo, tLo, source)
 		return x.storeArgOrLoad(pos, b, sel, mem, tLo, storeOffset+x.lowOffset, loadRegOffset+x.loRo, storeRc.plus(x.hiRo))
 
 	case types.TINTER:
-		sel := source.Block.NewValue1(pos, OpITab, x.typs.BytePtr, source)
+		sel := b.NewValue1(pos, OpITab, x.typs.BytePtr, source)
 		mem = x.storeArgOrLoad(pos, b, sel, mem, x.typs.BytePtr, storeOffset, loadRegOffset, storeRc.next(x.typs.BytePtr))
 		pos = pos.WithNotStmt()
-		sel = source.Block.NewValue1(pos, OpIData, x.typs.BytePtr, source)
+		sel = b.NewValue1(pos, OpIData, x.typs.BytePtr, source)
 		return x.storeArgOrLoad(pos, b, sel, mem, x.typs.BytePtr, storeOffset+x.ptrSize, loadRegOffset+RO_iface_data, storeRc)
 
 	case types.TSTRING:
-		sel := source.Block.NewValue1(pos, OpStringPtr, x.typs.BytePtr, source)
+		sel := b.NewValue1(pos, OpStringPtr, x.typs.BytePtr, source)
 		mem = x.storeArgOrLoad(pos, b, sel, mem, x.typs.BytePtr, storeOffset, loadRegOffset, storeRc.next(x.typs.BytePtr))
 		pos = pos.WithNotStmt()
-		sel = source.Block.NewValue1(pos, OpStringLen, x.typs.Int, source)
+		sel = b.NewValue1(pos, OpStringLen, x.typs.Int, source)
 		return x.storeArgOrLoad(pos, b, sel, mem, x.typs.Int, storeOffset+x.ptrSize, loadRegOffset+RO_string_len, storeRc)
 
 	case types.TSLICE:
 		et := types.NewPtr(t.Elem())
-		sel := source.Block.NewValue1(pos, OpSlicePtr, et, source)
+		sel := b.NewValue1(pos, OpSlicePtr, et, source)
 		mem = x.storeArgOrLoad(pos, b, sel, mem, et, storeOffset, loadRegOffset, storeRc.next(et))
 		pos = pos.WithNotStmt()
-		sel = source.Block.NewValue1(pos, OpSliceLen, x.typs.Int, source)
+		sel = b.NewValue1(pos, OpSliceLen, x.typs.Int, source)
 		mem = x.storeArgOrLoad(pos, b, sel, mem, x.typs.Int, storeOffset+x.ptrSize, loadRegOffset+RO_slice_len, storeRc.next(x.typs.Int))
-		sel = source.Block.NewValue1(pos, OpSliceCap, x.typs.Int, source)
+		sel = b.NewValue1(pos, OpSliceCap, x.typs.Int, source)
 		return x.storeArgOrLoad(pos, b, sel, mem, x.typs.Int, storeOffset+2*x.ptrSize, loadRegOffset+RO_slice_cap, storeRc)
 
 	case types.TCOMPLEX64:
-		sel := source.Block.NewValue1(pos, OpComplexReal, x.typs.Float32, source)
+		sel := b.NewValue1(pos, OpComplexReal, x.typs.Float32, source)
 		mem = x.storeArgOrLoad(pos, b, sel, mem, x.typs.Float32, storeOffset, loadRegOffset, storeRc.next(x.typs.Float32))
 		pos = pos.WithNotStmt()
-		sel = source.Block.NewValue1(pos, OpComplexImag, x.typs.Float32, source)
+		sel = b.NewValue1(pos, OpComplexImag, x.typs.Float32, source)
 		return x.storeArgOrLoad(pos, b, sel, mem, x.typs.Float32, storeOffset+4, loadRegOffset+RO_complex_imag, storeRc)
 
 	case types.TCOMPLEX128:
-		sel := source.Block.NewValue1(pos, OpComplexReal, x.typs.Float64, source)
+		sel := b.NewValue1(pos, OpComplexReal, x.typs.Float64, source)
 		mem = x.storeArgOrLoad(pos, b, sel, mem, x.typs.Float64, storeOffset, loadRegOffset, storeRc.next(x.typs.Float64))
 		pos = pos.WithNotStmt()
-		sel = source.Block.NewValue1(pos, OpComplexImag, x.typs.Float64, source)
+		sel = b.NewValue1(pos, OpComplexImag, x.typs.Float64, source)
 		return x.storeArgOrLoad(pos, b, sel, mem, x.typs.Float64, storeOffset+8, loadRegOffset+RO_complex_imag, storeRc)
 	}
 
@@ -1090,7 +1090,7 @@ func (x *expandState) rewriteArgs(v *Value, firstArg int) {
 	if v.Op == OpTailLECall {
 		// For tail call, we unwind the frame before the call so we'll use the caller's
 		// SP.
-		sp = x.f.Entry.NewValue0(src.NoXPos, OpGetCallerSP, x.typs.Uintptr)
+		sp = x.f.Entry.NewValue1(src.NoXPos, OpGetCallerSP, x.typs.Uintptr, mem)
 	}
 	for i, a := range v.Args[firstArg : len(v.Args)-1] { // skip leading non-parameter SSA Args and trailing mem SSA Arg.
 		oldArgs = append(oldArgs, a)
@@ -1113,9 +1113,12 @@ func (x *expandState) rewriteArgs(v *Value, firstArg int) {
 					}
 				}
 			}
+			if x.debug > 1 {
+				x.Printf("...storeArg %s, %v, %d\n", a.LongString(), aType, aOffset)
+			}
 			// "Dereference" of addressed (probably not-SSA-eligible) value becomes Move
 			// TODO(register args) this will be more complicated with registers in the picture.
-			mem = x.rewriteDereference(v.Block, sp, a, mem, aOffset, aux.SizeOfArg(auxI), aType, a.Pos)
+			mem = x.rewriteDereference(v.Block, sp, a, mem, aOffset, aux.SizeOfArg(auxI), aType, v.Pos)
 		} else {
 			var rc registerCursor
 			var result *[]*Value
@@ -1137,7 +1140,7 @@ func (x *expandState) rewriteArgs(v *Value, firstArg int) {
 				x.Printf("...storeArg %s, %v, %d\n", a.LongString(), aType, aOffset)
 			}
 			rc.init(aRegs, aux.abiInfo, result, sp)
-			mem = x.storeArgOrLoad(a.Pos, v.Block, a, mem, aType, aOffset, 0, rc)
+			mem = x.storeArgOrLoad(v.Pos, v.Block, a, mem, aType, aOffset, 0, rc)
 		}
 	}
 	var preArgStore [2]*Value

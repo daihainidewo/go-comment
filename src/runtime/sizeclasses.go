@@ -88,6 +88,7 @@ const (
 	largeSizeDiv    = 128
 	_NumSizeClasses = 68
 	_PageShift      = 13
+	maxObjsPerSpan  = 1024
 )
 
 // class_to_size		每个等级的大小

@@ -62,7 +62,7 @@ import (
 )
 
 // A ParseError is returned for parsing errors.
-// Line numbers are 1-indexed and columns are 0-indexed.
+// Line and column numbers are 1-indexed.
 type ParseError struct {
 	StartLine int   // Line where the record starts
 	Line      int   // Line where the error occurred
@@ -187,8 +187,9 @@ func NewReader(r io.Reader) *Reader {
 // Read reads one record (a slice of fields) from r.
 // If the record has an unexpected number of fields,
 // Read returns the record along with the error ErrFieldCount.
-// Except for that case, Read always returns either a non-nil
-// record or a non-nil error, but not both.
+// If the record contains a field that cannot be parsed,
+// Read returns a partial record along with the parse error.
+// The partial record contains all fields read before the error.
 // If there is no data left to be read, Read returns nil, io.EOF.
 // If ReuseRecord is true, the returned slice may be shared
 // between multiple calls to Read.

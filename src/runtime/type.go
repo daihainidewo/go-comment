@@ -11,126 +11,31 @@ import (
 	"unsafe"
 )
 
-// 类型标志位
-// tflag is documented in reflect/type.go.
-//
-// tflag values must be kept in sync with copies in:
-//
-//	cmd/compile/internal/reflectdata/reflect.go
-//	cmd/link/internal/ld/decodesym.go
-//	reflect/type.go
-//	internal/reflectlite/type.go
-type tflag uint8
+type nameOff = abi.NameOff
+type typeOff = abi.TypeOff
+type textOff = abi.TextOff
 
-const (
-	tflagUncommon      tflag = 1 << 0 // 是否自定义类型
-	tflagExtraStar     tflag = 1 << 1 // 有无 *
-	tflagNamed         tflag = 1 << 2 // 有无名字
-	tflagRegularMemory tflag = 1 << 3 // equal and hash can treat values of this type as a single region of t.size bytes
-)
+type _type = abi.Type
 
-// _type 核心类型结构
-// Needs to be in sync with ../cmd/link/internal/ld/decodesym.go:/^func.commonsize,
-// ../cmd/compile/internal/reflectdata/reflect.go:/^func.dcommontype and
-// ../reflect/type.go:/^type.rtype.
-// ../internal/reflectlite/type.go:/^type.rtype.
-type _type struct {
-	size       uintptr // 类型占用内存大小
-	ptrdata    uintptr // size of memory prefix holding all pointers 类型在 ptrdata 后面的字节都不包含指针
-	hash       uint32  // 类型哈希值
-	tflag      tflag   // 类型标志位
-	align      uint8   // 类型对齐
-	fieldAlign uint8   // 字段对齐
-	kind       uint8   // 类型编码
-	// function for comparing objects of this type
-	// (ptr to object A, ptr to object B) -> ==?
-	equal func(unsafe.Pointer, unsafe.Pointer) bool // 两个指向当前类型的指针 判断指向地址是否相等
-	// gcdata stores the GC type data for the garbage collector.
-	// If the KindGCProg bit is set in kind, gcdata is a GC program.
-	// Otherwise it is a ptrmask bitmap. See mbitmap.go for details.
-	gcdata    *byte
-	str       nameOff // type 名字的偏移量
-	ptrToThis typeOff
+// rtype is a wrapper that allows us to define additional methods.
+type rtype struct {
+	*abi.Type // embedding is okay here (unlike reflect) because none of this is public
 }
 
-// 获取类型名字 详细名字
-func (t *_type) string() string {
-	s := t.nameOff(t.str).name()
-	if t.tflag&tflagExtraStar != 0 {
-		// 去掉 *
+func (t rtype) string() string {
+	s := t.nameOff(t.Str).Name()
+	if t.TFlag&abi.TFlagExtraStar != 0 {
 		return s[1:]
 	}
 	return s
 }
 
-// 返回非内置类型结构
-// 在内置类型后面追加 uncommontype
-func (t *_type) uncommon() *uncommontype {
-	if t.tflag&tflagUncommon == 0 {
-		// 不是内置类型 返回 nil
-		return nil
-	}
-	switch t.kind & kindMask {
-	case kindStruct:
-		type u struct {
-			structtype
-			u uncommontype
-		}
-		return &(*u)(unsafe.Pointer(t)).u
-	case kindPtr:
-		type u struct {
-			ptrtype
-			u uncommontype
-		}
-		return &(*u)(unsafe.Pointer(t)).u
-	case kindFunc:
-		type u struct {
-			functype
-			u uncommontype
-		}
-		return &(*u)(unsafe.Pointer(t)).u
-	case kindSlice:
-		type u struct {
-			slicetype
-			u uncommontype
-		}
-		return &(*u)(unsafe.Pointer(t)).u
-	case kindArray:
-		type u struct {
-			arraytype
-			u uncommontype
-		}
-		return &(*u)(unsafe.Pointer(t)).u
-	case kindChan:
-		type u struct {
-			chantype
-			u uncommontype
-		}
-		return &(*u)(unsafe.Pointer(t)).u
-	case kindMap:
-		type u struct {
-			maptype
-			u uncommontype
-		}
-		return &(*u)(unsafe.Pointer(t)).u
-	case kindInterface:
-		type u struct {
-			interfacetype
-			u uncommontype
-		}
-		return &(*u)(unsafe.Pointer(t)).u
-	default:
-		type u struct {
-			_type
-			u uncommontype
-		}
-		return &(*u)(unsafe.Pointer(t)).u
-	}
+func (t rtype) uncommon() *uncommontype {
+	return t.Uncommon()
 }
 
-// 获取类型名中 [] 包含的值
-func (t *_type) name() string {
-	if t.tflag&tflagNamed == 0 {
+func (t rtype) name() string {
+	if t.TFlag&abi.TFlagNamed == 0 {
 		return ""
 	}
 	s := t.string()
@@ -152,19 +57,17 @@ func (t *_type) name() string {
 // available. This is not the same as the reflect package's PkgPath
 // method, in that it returns the package path for struct and interface
 // types, not just named types.
-func (t *_type) pkgpath() string {
+func (t rtype) pkgpath() string {
 	if u := t.uncommon(); u != nil {
-		// 如果是非内置类型 通过查表返回包名
-		return t.nameOff(u.pkgpath).name()
+		return t.nameOff(u.PkgPath).Name()
 	}
-	// 内置类型 只有 struct 和 interface 有 pkgpath
-	switch t.kind & kindMask {
+	switch t.Kind_ & kindMask {
 	case kindStruct:
-		st := (*structtype)(unsafe.Pointer(t))
-		return st.pkgPath.name()
+		st := (*structtype)(unsafe.Pointer(t.Type))
+		return st.PkgPath.Name()
 	case kindInterface:
-		it := (*interfacetype)(unsafe.Pointer(t))
-		return it.pkgpath.name()
+		it := (*interfacetype)(unsafe.Pointer(t.Type))
+		return it.PkgPath.Name()
 	}
 	return ""
 }
@@ -217,7 +120,7 @@ func resolveNameOff(ptrInModule unsafe.Pointer, off nameOff) name {
 				println("runtime: nameOff", hex(off), "out of range", hex(md.types), "-", hex(md.etypes))
 				throw("runtime: name offset out of range")
 			}
-			return name{(*byte)(unsafe.Pointer(res))}
+			return name{Bytes: (*byte)(unsafe.Pointer(res))}
 		}
 	}
 
@@ -233,12 +136,11 @@ func resolveNameOff(ptrInModule unsafe.Pointer, off nameOff) name {
 		}
 		throw("runtime: name offset base pointer out of range")
 	}
-	return name{(*byte)(res)}
+	return name{Bytes: (*byte)(res)}
 }
 
-// 获取类型的名字
-func (t *_type) nameOff(off nameOff) name {
-	return resolveNameOff(unsafe.Pointer(t), off)
+func (t rtype) nameOff(off nameOff) name {
+	return resolveNameOff(unsafe.Pointer(t.Type), off)
 }
 
 func resolveTypeOff(ptrInModule unsafe.Pointer, off typeOff) *_type {
@@ -279,17 +181,17 @@ func resolveTypeOff(ptrInModule unsafe.Pointer, off typeOff) *_type {
 	return (*_type)(unsafe.Pointer(res))
 }
 
-func (t *_type) typeOff(off typeOff) *_type {
-	return resolveTypeOff(unsafe.Pointer(t), off)
+func (t rtype) typeOff(off typeOff) *_type {
+	return resolveTypeOff(unsafe.Pointer(t.Type), off)
 }
 
-func (t *_type) textOff(off textOff) unsafe.Pointer {
+func (t rtype) textOff(off textOff) unsafe.Pointer {
 	if off == -1 {
 		// -1 is the sentinel value for unreachable code.
 		// See cmd/link/internal/ld/data.go:relocsym.
 		return unsafe.Pointer(abi.FuncPCABIInternal(unreachableMethod))
 	}
-	base := uintptr(unsafe.Pointer(t))
+	base := uintptr(unsafe.Pointer(t.Type))
 	var md *moduledata
 	for next := &firstmoduledata; next != nil; next = next.next {
 		if base >= next.types && base < next.etypes {
@@ -314,235 +216,40 @@ func (t *_type) textOff(off textOff) unsafe.Pointer {
 	return unsafe.Pointer(res)
 }
 
-// 返回入参类型
-func (t *functype) in() []*_type {
-	// See funcType in reflect/type.go for details on data layout.
-	uadd := uintptr(unsafe.Sizeof(functype{}))
-	if t.typ.tflag&tflagUncommon != 0 {
-		// 自定义类型加上偏移量
-		uadd += unsafe.Sizeof(uncommontype{})
-	}
-	return (*[1 << 20]*_type)(add(unsafe.Pointer(t), uadd))[:t.inCount]
-}
+type uncommontype = abi.UncommonType
 
-// 返回返回值类型
-func (t *functype) out() []*_type {
-	// See funcType in reflect/type.go for details on data layout.
-	uadd := uintptr(unsafe.Sizeof(functype{}))
-	if t.typ.tflag&tflagUncommon != 0 {
-		uadd += unsafe.Sizeof(uncommontype{})
-	}
-	outCount := t.outCount & (1<<15 - 1)
-	return (*[1 << 20]*_type)(add(unsafe.Pointer(t), uadd))[t.inCount : t.inCount+outCount]
-}
+type interfacetype = abi.InterfaceType
 
-func (t *functype) dotdotdot() bool {
-	return t.outCount&(1<<15) != 0
-}
+type maptype = abi.MapType
 
-// 偏移量
-type nameOff int32
-type typeOff int32
-type textOff int32
+type arraytype = abi.ArrayType
 
-// 成员函数
-type method struct {
-	name nameOff
-	mtyp typeOff
-	ifn  textOff
-	tfn  textOff
-}
+type chantype = abi.ChanType
 
-// 自定义类型额外数据
-type uncommontype struct {
-	// 包路径偏移量
-	pkgpath nameOff
-	mcount  uint16 // number of methods
-	xcount  uint16 // number of exported methods
-	moff    uint32 // offset from this uncommontype to [mcount]method
-	_       uint32 // unused
-}
+type slicetype = abi.SliceType
 
-// 接口函数
-type imethod struct {
-	name nameOff
-	ityp typeOff
-}
+type functype = abi.FuncType
 
-// 接口类型
-type interfacetype struct {
-	typ     _type
-	pkgpath name
-	mhdr    []imethod
-}
+type ptrtype = abi.PtrType
 
-// map 具体类型
-type maptype struct {
-	typ    _type
-	key    *_type
-	elem   *_type
-	bucket *_type // internal type representing a hash bucket
-	// function for hashing keys (ptr to key, seed) -> hash
-	hasher     func(unsafe.Pointer, uintptr) uintptr
-	keysize    uint8  // size of key slot
-	elemsize   uint8  // size of elem slot
-	bucketsize uint16 // size of bucket
-	flags      uint32
-}
+type name = abi.Name
 
-// Note: flag values must match those used in the TMAP case
-// in ../cmd/compile/internal/reflectdata/reflect.go:writeType.
-func (mt *maptype) indirectkey() bool { // store ptr to key instead of key itself
-	return mt.flags&1 != 0
-}
-func (mt *maptype) indirectelem() bool { // store ptr to elem instead of elem itself
-	return mt.flags&2 != 0
-}
-func (mt *maptype) reflexivekey() bool { // true if k==k for all keys
-	return mt.flags&4 != 0
-}
-func (mt *maptype) needkeyupdate() bool { // true if we need to update key on an overwrite
-	return mt.flags&8 != 0
-}
+type structtype = abi.StructType
 
-// map 是否会panic
-func (mt *maptype) hashMightPanic() bool { // true if hash function might panic
-	return mt.flags&16 != 0
-}
-
-type arraytype struct {
-	typ   _type
-	elem  *_type
-	slice *_type
-	len   uintptr
-}
-
-type chantype struct {
-	typ  _type
-	elem *_type
-	dir  uintptr
-}
-
-type slicetype struct {
-	typ  _type
-	elem *_type
-}
-
-type functype struct {
-	typ      _type
-	inCount  uint16
-	outCount uint16
-}
-
-type ptrtype struct {
-	typ  _type
-	elem *_type
-}
-
-type structfield struct {
-	name   name
-	typ    *_type
-	offset uintptr
-}
-
-type structtype struct {
-	typ     _type
-	pkgPath name
-	fields  []structfield
-}
-
-/*
-name 内存结构
-	flags 			uint8	0bit是否可导出 1bit是否有tag 2bit是否有pkgPath
-	nameLength 		varint
-	name 			*byte
-	tagLength 		varint
-	tag 			*byte
-	pkgPathNameOff	nameOff
-*/
-
-// name is an encoded type name with optional extra data.
-// See reflect/type.go for details.
-type name struct {
-	bytes *byte
-}
-
-// 获取偏移量为 off 的值
-func (n name) data(off int) *byte {
-	return (*byte)(add(unsafe.Pointer(n.bytes), uintptr(off)))
-}
-
-// 是否可导出
-func (n name) isExported() bool {
-	return (*n.bytes)&(1<<0) != 0
-}
-
-func (n name) isEmbedded() bool {
-	return (*n.bytes)&(1<<3) != 0
-}
-
-// 读取 varint
-// 用最高位标记是否有后续
-func (n name) readvarint(off int) (int, int) {
-	v := 0
-	for i := 0; ; i++ {
-		x := *n.data(off + i)
-		v += int(x&0x7f) << (7 * i)
-		if x&0x80 == 0 {
-			return i + 1, v
-		}
-	}
-}
-
-func (n name) name() string {
-	if n.bytes == nil {
+func pkgPath(n name) string {
+	if n.Bytes == nil || *n.Data(0)&(1<<2) == 0 {
 		return ""
 	}
-	i, l := n.readvarint(1)
-	if l == 0 {
-		return ""
-	}
-	return unsafe.String(n.data(1+i), l)
-}
-
-func (n name) tag() string {
-	if *n.data(0)&(1<<1) == 0 {
-		// 没有tag 返回空
-		return ""
-	}
-	i, l := n.readvarint(1)
-	i2, l2 := n.readvarint(1 + i + l)
-	return unsafe.String(n.data(1+i+l+i2), l2)
-}
-
-// 获取包路径
-func (n name) pkgPath() string {
-	if n.bytes == nil || *n.data(0)&(1<<2) == 0 {
-		// 没有包路径
-		return ""
-	}
-	i, l := n.readvarint(1)
+	i, l := n.ReadVarint(1)
 	off := 1 + i + l
-	if *n.data(0)&(1<<1) != 0 {
-		// 如果有 tag 则加上 tag 的偏移量
-		i2, l2 := n.readvarint(off)
+	if *n.Data(0)&(1<<1) != 0 {
+		i2, l2 := n.ReadVarint(off)
 		off += i2 + l2
 	}
 	var nameOff nameOff
-	copy((*[4]byte)(unsafe.Pointer(&nameOff))[:], (*[4]byte)(unsafe.Pointer(n.data(off)))[:])
-	// 获取包路径的 name
-	pkgPathName := resolveNameOff(unsafe.Pointer(n.bytes), nameOff)
-	return pkgPathName.name()
-}
-
-// 是否是 _
-// 空白占位符
-func (n name) isBlank() bool {
-	if n.bytes == nil {
-		return false
-	}
-	_, l := n.readvarint(1)
-	return l == 1 && *n.data(2) == '_'
+	copy((*[4]byte)(unsafe.Pointer(&nameOff))[:], (*[4]byte)(unsafe.Pointer(n.Data(off)))[:])
+	pkgPathName := resolveNameOff(unsafe.Pointer(n.Bytes), nameOff)
+	return pkgPathName.Name()
 }
 
 // typelinksinit scans the types from extra modules and builds the
@@ -566,13 +273,13 @@ func typelinksinit() {
 				t = prev.typemap[typeOff(tl)]
 			}
 			// Add to typehash if not seen before.
-			tlist := typehash[t.hash]
+			tlist := typehash[t.Hash]
 			for _, tcur := range tlist {
 				if tcur == t {
 					continue collect
 				}
 			}
-			typehash[t.hash] = append(tlist, t)
+			typehash[t.Hash] = append(tlist, t)
 		}
 
 		if md.typemap == nil {
@@ -584,7 +291,7 @@ func typelinksinit() {
 			md.typemap = tm
 			for _, tl := range md.typelinks {
 				t := (*_type)(unsafe.Pointer(md.types + uintptr(tl)))
-				for _, candidate := range typehash[t.hash] {
+				for _, candidate := range typehash[t.Hash] {
 					seen := map[_typePair]struct{}{}
 					if typesEqual(t, candidate, seen) {
 						t = candidate
@@ -604,7 +311,10 @@ type _typePair struct {
 	t2 *_type
 }
 
-// 判断两个类型是否相同
+func toRType(t *abi.Type) rtype {
+	return rtype{t}
+}
+
 // typesEqual reports whether two types are equal.
 //
 // Everywhere in the runtime and reflect packages, it is assumed that
@@ -632,24 +342,23 @@ func typesEqual(t, v *_type, seen map[_typePair]struct{}) bool {
 		// 两个类型指针相同就返回 true
 		return true
 	}
-	kind := t.kind & kindMask
-	if kind != v.kind&kindMask {
-		// 类型不同返回 false
+	kind := t.Kind_ & kindMask
+	if kind != v.Kind_&kindMask {
 		return false
 	}
-	if t.string() != v.string() {
-		// 类型名不相同返回 false
+	rt, rv := toRType(t), toRType(v)
+	if rt.string() != rv.string() {
 		return false
 	}
-	ut := t.uncommon()
-	uv := v.uncommon()
+	ut := t.Uncommon()
+	uv := v.Uncommon()
 	if ut != nil || uv != nil {
 		if ut == nil || uv == nil {
 			// 有一个为 nil 就不相等
 			return false
 		}
-		pkgpatht := t.nameOff(ut.pkgpath).name()
-		pkgpathv := v.nameOff(uv.pkgpath).name()
+		pkgpatht := rt.nameOff(ut.PkgPath).Name()
+		pkgpathv := rv.nameOff(uv.PkgPath).Name()
 		if pkgpatht != pkgpathv {
 			// 两者包路径不同返回 false
 			return false
@@ -666,28 +375,24 @@ func typesEqual(t, v *_type, seen map[_typePair]struct{}) bool {
 	case kindArray:
 		at := (*arraytype)(unsafe.Pointer(t))
 		av := (*arraytype)(unsafe.Pointer(v))
-		// 判断数组元素类型和数组长度是否相同
-		return typesEqual(at.elem, av.elem, seen) && at.len == av.len
+		return typesEqual(at.Elem, av.Elem, seen) && at.Len == av.Len
 	case kindChan:
 		ct := (*chantype)(unsafe.Pointer(t))
 		cv := (*chantype)(unsafe.Pointer(v))
-		// 判断 dir 和 channel 元素类型是否相同
-		return ct.dir == cv.dir && typesEqual(ct.elem, cv.elem, seen)
+		return ct.Dir == cv.Dir && typesEqual(ct.Elem, cv.Elem, seen)
 	case kindFunc:
 		ft := (*functype)(unsafe.Pointer(t))
 		fv := (*functype)(unsafe.Pointer(v))
-		if ft.outCount != fv.outCount || ft.inCount != fv.inCount {
-			// 入参和返回值个数不相同返回 false
+		if ft.OutCount != fv.OutCount || ft.InCount != fv.InCount {
 			return false
 		}
-		// 判断入参类型和返回值类型是否相同
-		tin, vin := ft.in(), fv.in()
+		tin, vin := ft.InSlice(), fv.InSlice()
 		for i := 0; i < len(tin); i++ {
 			if !typesEqual(tin[i], vin[i], seen) {
 				return false
 			}
 		}
-		tout, vout := ft.out(), fv.out()
+		tout, vout := ft.OutSlice(), fv.OutSlice()
 		for i := 0; i < len(tout); i++ {
 			if !typesEqual(tout[i], vout[i], seen) {
 				return false
@@ -697,31 +402,27 @@ func typesEqual(t, v *_type, seen map[_typePair]struct{}) bool {
 	case kindInterface:
 		it := (*interfacetype)(unsafe.Pointer(t))
 		iv := (*interfacetype)(unsafe.Pointer(v))
-		if it.pkgpath.name() != iv.pkgpath.name() {
-			// 包名不一致返回 false
+		if it.PkgPath.Name() != iv.PkgPath.Name() {
 			return false
 		}
-		if len(it.mhdr) != len(iv.mhdr) {
-			// 方法数不一致返回 false
+		if len(it.Methods) != len(iv.Methods) {
 			return false
 		}
-		for i := range it.mhdr {
-			tm := &it.mhdr[i]
-			vm := &iv.mhdr[i]
+		for i := range it.Methods {
+			tm := &it.Methods[i]
+			vm := &iv.Methods[i]
 			// Note the mhdr array can be relocated from
 			// another module. See #17724.
-			tname := resolveNameOff(unsafe.Pointer(tm), tm.name)
-			vname := resolveNameOff(unsafe.Pointer(vm), vm.name)
-			if tname.name() != vname.name() {
-				// 方法名不同返回 false
+			tname := resolveNameOff(unsafe.Pointer(tm), tm.Name)
+			vname := resolveNameOff(unsafe.Pointer(vm), vm.Name)
+			if tname.Name() != vname.Name() {
 				return false
 			}
-			if tname.pkgPath() != vname.pkgPath() {
-				// 方法包名不同返回 false
+			if pkgPath(tname) != pkgPath(vname) {
 				return false
 			}
-			tityp := resolveTypeOff(unsafe.Pointer(tm), tm.ityp)
-			vityp := resolveTypeOff(unsafe.Pointer(vm), vm.ityp)
+			tityp := resolveTypeOff(unsafe.Pointer(tm), tm.Typ)
+			vityp := resolveTypeOff(unsafe.Pointer(vm), vm.Typ)
 			if !typesEqual(tityp, vityp, seen) {
 				// 方法类型是否相同
 				return false
@@ -731,49 +432,40 @@ func typesEqual(t, v *_type, seen map[_typePair]struct{}) bool {
 	case kindMap:
 		mt := (*maptype)(unsafe.Pointer(t))
 		mv := (*maptype)(unsafe.Pointer(v))
-		// 判断 map 的 key 和 elem 的类型是否相同
-		return typesEqual(mt.key, mv.key, seen) && typesEqual(mt.elem, mv.elem, seen)
+		return typesEqual(mt.Key, mv.Key, seen) && typesEqual(mt.Elem, mv.Elem, seen)
 	case kindPtr:
 		pt := (*ptrtype)(unsafe.Pointer(t))
 		pv := (*ptrtype)(unsafe.Pointer(v))
-		// 判断指针指向类型是否相同
-		return typesEqual(pt.elem, pv.elem, seen)
+		return typesEqual(pt.Elem, pv.Elem, seen)
 	case kindSlice:
 		st := (*slicetype)(unsafe.Pointer(t))
 		sv := (*slicetype)(unsafe.Pointer(v))
-		// 判断切片元素类型是否相同
-		return typesEqual(st.elem, sv.elem, seen)
+		return typesEqual(st.Elem, sv.Elem, seen)
 	case kindStruct:
 		st := (*structtype)(unsafe.Pointer(t))
 		sv := (*structtype)(unsafe.Pointer(v))
-		if len(st.fields) != len(sv.fields) {
-			// 结构体成员数不一样返回 false
+		if len(st.Fields) != len(sv.Fields) {
 			return false
 		}
-		if st.pkgPath.name() != sv.pkgPath.name() {
-			// 结构体包名不一样返回 false
+		if st.PkgPath.Name() != sv.PkgPath.Name() {
 			return false
 		}
-		for i := range st.fields {
-			tf := &st.fields[i]
-			vf := &sv.fields[i]
-			if tf.name.name() != vf.name.name() {
-				// 字段名不一样返回 false
+		for i := range st.Fields {
+			tf := &st.Fields[i]
+			vf := &sv.Fields[i]
+			if tf.Name.Name() != vf.Name.Name() {
 				return false
 			}
-			if !typesEqual(tf.typ, vf.typ, seen) {
-				// 类型不一样返回 false
+			if !typesEqual(tf.Typ, vf.Typ, seen) {
 				return false
 			}
-			if tf.name.tag() != vf.name.tag() {
-				// tag 不一样返回 false
+			if tf.Name.Tag() != vf.Name.Tag() {
 				return false
 			}
-				// 匿名偏移不一样返回 false
-			if tf.offset != vf.offset {
+			if tf.Offset != vf.Offset {
 				return false
 			}
-			if tf.name.isEmbedded() != vf.name.isEmbedded() {
+			if tf.Name.IsEmbedded() != vf.Name.IsEmbedded() {
 				return false
 			}
 		}

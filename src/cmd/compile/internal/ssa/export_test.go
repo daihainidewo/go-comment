@@ -55,7 +55,17 @@ type Conf struct {
 
 func (c *Conf) Frontend() Frontend {
 	if c.fe == nil {
-		c.fe = TestFrontend{t: c.tb, ctxt: c.config.ctxt}
+		f := ir.NewFunc(src.NoXPos, src.NoXPos, &types.Sym{
+			Pkg:  types.NewPkg("my/import/path", "path"),
+			Name: "function",
+		}, nil)
+		f.LSym = &obj.LSym{Name: "my/import/path.function"}
+
+		c.fe = TestFrontend{
+			t:    c.tb,
+			ctxt: c.config.ctxt,
+			f:    f,
+		}
 	}
 	return c.fe
 }
@@ -65,22 +75,19 @@ func (c *Conf) Frontend() Frontend {
 type TestFrontend struct {
 	t    testing.TB
 	ctxt *obj.Link
+	f    *ir.Func
 }
 
 func (TestFrontend) StringData(s string) *obj.LSym {
 	return nil
 }
 func (TestFrontend) Auto(pos src.XPos, t *types.Type) *ir.Name {
-	n := ir.NewNameAt(pos, &types.Sym{Name: "aFakeAuto"})
-	n.SetType(t)
+	n := ir.NewNameAt(pos, &types.Sym{Name: "aFakeAuto"}, t)
 	n.Class = ir.PAUTO
 	return n
 }
 func (d TestFrontend) SplitSlot(parent *LocalSlot, suffix string, offset int64, t *types.Type) LocalSlot {
 	return LocalSlot{N: parent.N, Type: t, Off: offset}
-}
-func (TestFrontend) Line(_ src.XPos) string {
-	return "unknown.go:0"
 }
 func (TestFrontend) AllocFrame(f *Func) {
 }
@@ -89,8 +96,6 @@ func (d TestFrontend) Syslook(s string) *obj.LSym {
 }
 func (TestFrontend) UseWriteBarrier() bool {
 	return true // only writebarrier_test cares
-}
-func (TestFrontend) SetWBPos(pos src.XPos) {
 }
 
 func (d TestFrontend) Logf(msg string, args ...interface{}) { d.t.Logf(msg, args...) }
@@ -101,10 +106,10 @@ func (d TestFrontend) Warnl(_ src.XPos, msg string, args ...interface{})  { d.t.
 func (d TestFrontend) Debug_checknil() bool                               { return false }
 
 func (d TestFrontend) MyImportPath() string {
-	return "my/import/path"
+	return d.f.Sym().Pkg.Path
 }
-func (d TestFrontend) LSym() string {
-	return "my/import/path.function"
+func (d TestFrontend) Func() *ir.Func {
+	return d.f
 }
 
 var testTypes Types

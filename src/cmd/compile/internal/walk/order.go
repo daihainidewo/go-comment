@@ -73,7 +73,7 @@ func (o *orderState) newTemp(t *types.Type, clear bool) *ir.Name {
 		}
 		o.free[key] = a[:len(a)-1]
 	} else {
-		v = typecheck.Temp(t)
+		v = typecheck.TempAt(base.Pos, ir.CurFunc, t)
 	}
 	if clear {
 		o.append(ir.NewAssignStmt(base.Pos, v, nil))
@@ -303,7 +303,7 @@ func (o *orderState) mapKeyTemp(outerPos src.XPos, t *types.Type, n ir.Node) ir.
 // For:
 //
 //	x = m[string(k)]
-//	x = m[T1{... Tn{..., string(k), ...}]
+//	x = m[T1{... Tn{..., string(k), ...}}]
 //
 // where k is []byte, T1 to Tn is a nesting of struct and array literals,
 // the allocation of backing bytes for the string can be avoided
@@ -433,9 +433,9 @@ func (o *orderState) edge() {
 	// freezes the counter when it reaches the value of 255. However, a range
 	// of experiments showed that that decreases overall performance.
 	o.append(ir.NewIfStmt(base.Pos,
-		ir.NewBinaryExpr(base.Pos, ir.OEQ, counter, ir.NewInt(0xff)),
-		[]ir.Node{ir.NewAssignStmt(base.Pos, counter, ir.NewInt(1))},
-		[]ir.Node{ir.NewAssignOpStmt(base.Pos, ir.OADD, counter, ir.NewInt(1))}))
+		ir.NewBinaryExpr(base.Pos, ir.OEQ, counter, ir.NewInt(base.Pos, 0xff)),
+		[]ir.Node{ir.NewAssignStmt(base.Pos, counter, ir.NewInt(base.Pos, 1))},
+		[]ir.Node{ir.NewAssignOpStmt(base.Pos, ir.OADD, counter, ir.NewInt(base.Pos, 1))}))
 }
 
 // orderBlock orders the block of statements in n into a new slice,
@@ -536,7 +536,7 @@ func (o *orderState) call(nn ir.Node) {
 	}
 
 	n := nn.(*ir.CallExpr)
-	typecheck.FixVariadicCall(n)
+	typecheck.AssertFixedCall(n)
 
 	if isFuncPCIntrinsic(n) && isIfaceOfFunc(n.Args[0]) {
 		// For internal/abi.FuncPCABIxxx(fn), if fn is a defined function,
@@ -713,8 +713,6 @@ func (o *orderState) stmt(n ir.Node) {
 	case ir.OBREAK,
 		ir.OCONTINUE,
 		ir.ODCL,
-		ir.ODCLCONST,
-		ir.ODCLTYPE,
 		ir.OFALL,
 		ir.OGOTO,
 		ir.OLABEL,
@@ -740,7 +738,7 @@ func (o *orderState) stmt(n ir.Node) {
 			}
 		}
 
-	case ir.OCHECKNIL, ir.OCLOSE, ir.OPANIC, ir.ORECV:
+	case ir.OCHECKNIL, ir.OCLEAR, ir.OCLOSE, ir.OPANIC, ir.ORECV:
 		n := n.(*ir.UnaryExpr)
 		t := o.markTemp()
 		n.X = o.expr(n.X, nil)
@@ -817,8 +815,14 @@ func (o *orderState) stmt(n ir.Node) {
 		// Mark []byte(str) range expression to reuse string backing storage.
 		// It is safe because the storage cannot be mutated.
 		n := n.(*ir.RangeStmt)
-		if n.X.Op() == ir.OSTR2BYTES {
-			n.X.(*ir.ConvExpr).SetOp(ir.OSTR2BYTESTMP)
+		if x, ok := n.X.(*ir.ConvExpr); ok {
+			switch x.Op() {
+			case ir.OSTR2BYTES:
+				x.SetOp(ir.OSTR2BYTESTMP)
+				fallthrough
+			case ir.OSTR2BYTESTMP:
+				x.MarkNonNil() // "range []byte(nil)" is fine
+			}
 		}
 
 		t := o.markTemp()
@@ -868,7 +872,7 @@ func (o *orderState) stmt(n ir.Node) {
 
 			// n.Prealloc is the temp for the iterator.
 			// MapIterType contains pointers and needs to be zeroed.
-			n.Prealloc = o.newTemp(reflectdata.MapIterType(xt), true)
+			n.Prealloc = o.newTemp(reflectdata.MapIterType(), true)
 		}
 		n.Key = o.exprInPlace(n.Key)
 		n.Value = o.exprInPlace(n.Value)
@@ -1247,6 +1251,8 @@ func (o *orderState) expr1(n, lhs ir.Node) ir.Node {
 		ir.OMAKEMAP,
 		ir.OMAKESLICE,
 		ir.OMAKESLICECOPY,
+		ir.OMAX,
+		ir.OMIN,
 		ir.ONEW,
 		ir.OREAL,
 		ir.ORECOVERFP,

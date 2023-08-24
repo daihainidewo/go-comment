@@ -54,7 +54,8 @@ func netpollIsPollDescriptor(fd uintptr) bool {
 func netpollopen(fd uintptr, pd *pollDesc) uintptr {
 	var ev syscall.EpollEvent
 	ev.Events = syscall.EPOLLIN | syscall.EPOLLOUT | syscall.EPOLLRDHUP | syscall.EPOLLET
-	*(**pollDesc)(unsafe.Pointer(&ev.Data)) = pd
+	tp := taggedPointerPack(unsafe.Pointer(pd), pd.fdseq.Load())
+	*(*taggedPointer)(unsafe.Pointer(&ev.Data)) = tp
 	return syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, int32(fd), &ev)
 }
 
@@ -97,10 +98,10 @@ func netpollBreak() {
 // delay < 0: blocks indefinitely
 // delay == 0: does not block, just polls
 // delay > 0: block for up to that many nanoseconds
-func netpoll(delay int64) gList {
+func netpoll(delay int64) (gList, int32) {
 	if epfd == -1 {
 		// 没有初始化就返回空列表
-		return gList{}
+		return gList{}, 0
 	}
 	var waitms int32
 	if delay < 0 {
@@ -127,11 +128,12 @@ retry:
 		// If a timed sleep was interrupted, just return to
 		// recalculate how long we should sleep now.
 		if waitms > 0 {
-			return gList{}
+			return gList{}, 0
 		}
 		goto retry
 	}
 	var toRun gList
+	delta := int32(0)
 	for i := int32(0); i < n; i++ {
 		ev := events[i]
 		if ev.Events == 0 {
@@ -162,10 +164,14 @@ retry:
 			mode += 'w'
 		}
 		if mode != 0 {
-			pd := *(**pollDesc)(unsafe.Pointer(&ev.Data))
-			pd.setEventErr(ev.Events == syscall.EPOLLERR)
-			netpollready(&toRun, pd, mode)
+			tp := *(*taggedPointer)(unsafe.Pointer(&ev.Data))
+			pd := (*pollDesc)(tp.pointer())
+			tag := tp.tag()
+			if pd.fdseq.Load() == tag {
+				pd.setEventErr(ev.Events == syscall.EPOLLERR, tag)
+				delta += netpollready(&toRun, pd, mode)
+			}
 		}
 	}
-	return toRun
+	return toRun, delta
 }

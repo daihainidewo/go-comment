@@ -117,12 +117,8 @@ func (fd *netFD) addrFunc() func(syscall.Sockaddr) Addr {
 
 func (fd *netFD) dial(ctx context.Context, laddr, raddr sockaddr, ctrlCtxFn func(context.Context, string, string, syscall.RawConn) error) error {
 	var c *rawConn
-	var err error
 	if ctrlCtxFn != nil {
-		c, err = newRawConn(fd)
-		if err != nil {
-			return err
-		}
+		c = newRawConn(fd)
 		var ctrlAddr string
 		if raddr != nil {
 			ctrlAddr = raddr.String()
@@ -135,6 +131,7 @@ func (fd *netFD) dial(ctx context.Context, laddr, raddr sockaddr, ctrlCtxFn func
 	}
 
 	var lsa syscall.Sockaddr
+	var err error
 	if laddr != nil {
 		if lsa, err = laddr.sockaddr(fd.family); err != nil {
 			return err
@@ -187,10 +184,7 @@ func (fd *netFD) listenStream(ctx context.Context, laddr sockaddr, backlog int, 
 	}
 
 	if ctrlCtxFn != nil {
-		c, err := newRawConn(fd)
-		if err != nil {
-			return err
-		}
+		c := newRawConn(fd)
 		if err := ctrlCtxFn(ctx, fd.ctrlNetwork(), laddr.String(), c); err != nil {
 			return err
 		}
@@ -241,10 +235,7 @@ func (fd *netFD) listenDatagram(ctx context.Context, laddr sockaddr, ctrlCtxFn f
 	}
 
 	if ctrlCtxFn != nil {
-		c, err := newRawConn(fd)
-		if err != nil {
-			return err
-		}
+		c := newRawConn(fd)
 		if err := ctrlCtxFn(ctx, fd.ctrlNetwork(), laddr.String(), c); err != nil {
 			return err
 		}

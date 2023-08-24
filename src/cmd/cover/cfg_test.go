@@ -7,7 +7,7 @@ package main_test
 import (
 	"encoding/json"
 	"fmt"
-	"internal/coverage"
+	"internal/coverage/covcmd"
 	"internal/testenv"
 	"os"
 	"path/filepath"
@@ -24,7 +24,7 @@ func writeFile(t *testing.T, path string, contents []byte) {
 func writePkgConfig(t *testing.T, outdir, tag, ppath, pname string, gran string) string {
 	incfg := filepath.Join(outdir, tag+"incfg.txt")
 	outcfg := filepath.Join(outdir, "outcfg.txt")
-	p := coverage.CoverPkgConfig{
+	p := covcmd.CoverPkgConfig{
 		PkgPath:     ppath,
 		PkgName:     pname,
 		Granularity: gran,
@@ -41,7 +41,9 @@ func writePkgConfig(t *testing.T, outdir, tag, ppath, pname string, gran string)
 func writeOutFileList(t *testing.T, infiles []string, outdir, tag string) ([]string, string) {
 	outfilelist := filepath.Join(outdir, tag+"outfilelist.txt")
 	var sb strings.Builder
-	outfs := []string{}
+	cv := filepath.Join(outdir, "covervars.go")
+	outfs := []string{cv}
+	fmt.Fprintf(&sb, "%s\n", cv)
 	for _, inf := range infiles {
 		base := filepath.Base(inf)
 		of := filepath.Join(outdir, tag+".cov."+base)

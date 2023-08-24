@@ -16,7 +16,7 @@ import (
 // fixalloc 是一个简单的固定大小对象的空闲链表分配器
 // 由 sysAlloc 的 FixAlloc 管理 mcache 和 mspan 的对象
 //
-// FixAlloc is a simple free-list allocator for fixed size objects.
+// fixalloc is a simple free-list allocator for fixed size objects.
 // Malloc uses a FixAlloc wrapped around sysAlloc to manage its
 // mcache and mspan objects.
 //

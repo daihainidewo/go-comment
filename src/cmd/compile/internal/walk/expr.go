@@ -98,6 +98,10 @@ func walkExpr1(n ir.Node, init *ir.Nodes) ir.Node {
 		n := n.(*ir.SelectorExpr)
 		return n.FuncName()
 
+	case ir.OMIN, ir.OMAX:
+		n := n.(*ir.CallExpr)
+		return walkMinMax(n, init)
+
 	case ir.ONOT, ir.ONEG, ir.OPLUS, ir.OBITNOT, ir.OREAL, ir.OIMAG, ir.OSPTR, ir.OITAB, ir.OIDATA:
 		n := n.(*ir.UnaryExpr)
 		n.X = walkExpr(n.X, init)
@@ -279,6 +283,10 @@ func walkExpr1(n ir.Node, init *ir.Nodes) ir.Node {
 	case ir.OCOPY:
 		return walkCopy(n.(*ir.BinaryExpr), init, base.Flag.Cfg.Instrumenting && !base.Flag.CompilingRuntime)
 
+	case ir.OCLEAR:
+		n := n.(*ir.UnaryExpr)
+		return walkClear(n)
+
 	case ir.OCLOSE:
 		n := n.(*ir.UnaryExpr)
 		return walkClose(n, init)
@@ -451,7 +459,7 @@ func safeExpr(n ir.Node, init *ir.Nodes) ir.Node {
 }
 
 func copyExpr(n ir.Node, t *types.Type, init *ir.Nodes) ir.Node {
-	l := typecheck.Temp(t)
+	l := typecheck.TempAt(base.Pos, ir.CurFunc, t)
 	appendWalkStmt(init, ir.NewAssignStmt(base.Pos, l, n))
 	return l
 }
@@ -556,7 +564,7 @@ func walkCall(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 			fn := arg.(*ir.ConvExpr).X.(*ir.Name)
 			abi := fn.Func.ABI
 			if abi != wantABI {
-				base.ErrorfAt(n.Pos(), "internal/abi.%s expects an %v function, %s is defined as %v", name, wantABI, fn.Sym().Name, abi)
+				base.ErrorfAt(n.Pos(), 0, "internal/abi.%s expects an %v function, %s is defined as %v", name, wantABI, fn.Sym().Name, abi)
 			}
 			var e ir.Node = ir.NewLinksymExpr(n.Pos(), fn.Sym().LinksymABI(abi), types.Types[types.TUINTPTR])
 			e = ir.NewAddrExpr(n.Pos(), e)
@@ -566,7 +574,7 @@ func walkCall(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 		// fn is not a defined function. It must be ABIInternal.
 		// Read the address from func value, i.e. *(*uintptr)(idata(fn)).
 		if wantABI != obj.ABIInternal {
-			base.ErrorfAt(n.Pos(), "internal/abi.%s does not accept func expression, which is ABIInternal", name)
+			base.ErrorfAt(n.Pos(), 0, "internal/abi.%s does not accept func expression, which is ABIInternal", name)
 		}
 		arg = walkExpr(arg, init)
 		var e ir.Node = ir.NewUnaryExpr(n.Pos(), ir.OIDATA, arg)
@@ -600,7 +608,7 @@ func walkCall1(n *ir.CallExpr, init *ir.Nodes) {
 
 	for i, arg := range args {
 		// Validate argument and parameter types match.
-		param := params.Field(i)
+		param := params[i]
 		if !types.Identical(arg.Type(), param.Type) {
 			base.FatalfAt(n.Pos(), "assigning %L to parameter %v (type %v)", arg, param.Sym, param.Type)
 		}
@@ -610,14 +618,13 @@ func walkCall1(n *ir.CallExpr, init *ir.Nodes) {
 		// to prevent that calls from clobbering arguments already on the stack.
 		if mayCall(arg) {
 			// assignment of arg to Temp
-			tmp := typecheck.Temp(param.Type)
+			tmp := typecheck.TempAt(base.Pos, ir.CurFunc, param.Type)
 			init.Append(convas(typecheck.Stmt(ir.NewAssignStmt(base.Pos, tmp, arg)).(*ir.AssignStmt), init))
 			// replace arg with temp
 			args[i] = tmp
 		}
 	}
 
-	n.Args = args
 	funSym := n.X.Sym()
 	if base.Debug.Libfuzzer != 0 && funSym != nil {
 		if hook, found := hooks[funSym.Pkg.Path+"."+funSym.Name]; found {
@@ -707,7 +714,7 @@ func walkDotType(n *ir.TypeAssertExpr, init *ir.Nodes) ir.Node {
 	n.X = walkExpr(n.X, init)
 	// Set up interface type addresses for back end.
 	if !n.Type().IsInterface() && !n.X.Type().IsEmptyInterface() {
-		n.ITab = reflectdata.ITabAddr(n.Type(), n.X.Type())
+		n.ITab = reflectdata.ITabAddrAt(base.Pos, n.Type(), n.X.Type())
 	}
 	return n
 }
@@ -755,7 +762,7 @@ func walkIndex(n *ir.IndexExpr, init *ir.Nodes) ir.Node {
 
 // mapKeyArg returns an expression for key that is suitable to be passed
 // as the key argument for runtime map* functions.
-// n is is the map indexing or delete Node (to provide Pos).
+// n is the map indexing or delete Node (to provide Pos).
 func mapKeyArg(fast int, n, key ir.Node, assigned bool) ir.Node {
 	if fast == mapslow {
 		// standard version takes key by reference.
@@ -970,14 +977,14 @@ func usemethod(n *ir.CallExpr) {
 	}
 
 	t := dot.Selection.Type
-	if t.NumParams() != 1 || t.Params().Field(0).Type.Kind() != pKind {
+	if t.NumParams() != 1 || t.Param(0).Type.Kind() != pKind {
 		return
 	}
 	switch t.NumResults() {
 	case 1:
 		// ok
 	case 2:
-		if t.Results().Field(1).Type.Kind() != types.TBOOL {
+		if t.Result(1).Type.Kind() != types.TBOOL {
 			return
 		}
 	default:
@@ -986,7 +993,7 @@ func usemethod(n *ir.CallExpr) {
 
 	// Check that first result type is "reflect.Method". Note that we have to check sym name and sym package
 	// separately, as we can't check for exact string "reflect.Method" reliably (e.g., see #19028 and #38515).
-	if s := t.Results().Field(0).Type.Sym(); s != nil && s.Name == "Method" && types.IsReflectPkg(s.Pkg) {
+	if s := t.Result(0).Type.Sym(); s != nil && types.ReflectSymName(s) == "Method" {
 		ir.CurFunc.SetReflectMethod(true)
 		// The LSym is initialized at this point. We need to set the attribute on the LSym.
 		ir.CurFunc.LSym.Set(obj.AttrReflectMethod, true)

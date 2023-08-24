@@ -13,6 +13,7 @@ import (
 	"go/parser"
 	"go/token"
 	"internal/coverage"
+	"internal/coverage/covcmd"
 	"internal/coverage/encodemeta"
 	"internal/coverage/slicewriter"
 	"io"
@@ -50,7 +51,7 @@ where -pkgcfg points to a file containing the package path,
 package name, module path, and related info from "go build",
 and -outfilelist points to a file containing the filenames
 of the instrumented output files (one per input file).
-See https://pkg.go.dev/internal/coverage#CoverPkgConfig for
+See https://pkg.go.dev/internal/coverage/covcmd#CoverPkgConfig for
 more on the package config.
 `
 
@@ -72,9 +73,16 @@ var (
 	pkgcfg      = flag.String("pkgcfg", "", "enable full-package instrumentation mode using params from specified config file")
 )
 
-var pkgconfig coverage.CoverPkgConfig
+var pkgconfig covcmd.CoverPkgConfig
 
-var outputfiles []string // set when -pkgcfg is in use
+// outputfiles is the list of *.cover.go instrumented outputs to write,
+// one per input (set when -pkgcfg is in use)
+var outputfiles []string
+
+// covervarsoutfile is an additional Go source file into which we'll
+// write definitions of coverage counter variables + meta data variables
+// (set when -pkgcfg is in use).
+var covervarsoutfile string
 
 var profile string // The profile to read; the value of -html or -func
 
@@ -88,7 +96,7 @@ const (
 func main() {
 	objabi.AddVersionFlag()
 	flag.Usage = usage
-	flag.Parse()
+	objabi.Flagparse(usage)
 
 	// Usage information when no arguments.
 	if flag.NFlag() == 0 && flag.NArg() == 0 {
@@ -165,6 +173,8 @@ func parseFlags() error {
 				if outputfiles, err = readOutFileList(*outfilelist); err != nil {
 					return err
 				}
+				covervarsoutfile = outputfiles[0]
+				outputfiles = outputfiles[1:]
 				numInputs := len(flag.Args())
 				numOutputs := len(outputfiles)
 				if numOutputs != numInputs {
@@ -382,8 +392,23 @@ func (f *File) Visit(node ast.Node) ast.Visitor {
 		if n.Name.Name == "_" || n.Body == nil {
 			return nil
 		}
-		// Determine proper function or method name.
 		fname := n.Name.Name
+		// Skip AddUint32 and StoreUint32 if we're instrumenting
+		// sync/atomic itself in atomic mode (out of an abundance of
+		// caution), since as part of the instrumentation process we
+		// add calls to AddUint32/StoreUint32, and we don't want to
+		// somehow create an infinite loop.
+		//
+		// Note that in the current implementation (Go 1.20) both
+		// routines are assembly stubs that forward calls to the
+		// runtime/internal/atomic equivalents, hence the infinite
+		// loop scenario is purely theoretical (maybe if in some
+		// future implementation one of these functions might be
+		// written in Go). See #57445 for more details.
+		if atomicOnAtomic() && (fname == "AddUint32" || fname == "StoreUint32") {
+			return nil
+		}
+		// Determine proper function or method name.
 		if r := n.Recv; r != nil && len(r.List) == 1 {
 			t := r.List[0].Type
 			star := ""
@@ -508,8 +533,8 @@ func (f *File) postFunc(fn ast.Node, funcname string, flit bool, body *ast.Block
 	}
 	if *mode == "atomic" {
 		hookWrite = func(cv string, which int, val string) string {
-			return fmt.Sprintf("%s.StoreUint32(&%s[%d], %s)", atomicPackageName,
-				cv, which, val)
+			return fmt.Sprintf("%sStoreUint32(&%s[%d], %s)",
+				atomicPackagePrefix(), cv, which, val)
 		}
 	}
 
@@ -542,9 +567,6 @@ func annotate(names []string) {
 	if *pkgcfg != "" {
 		pp := pkgconfig.PkgPath
 		pn := pkgconfig.PkgName
-		if pn == "main" {
-			pp = "main"
-		}
 		mp := pkgconfig.ModulePath
 		mdb, err := encodemeta.NewCoverageMetaDataBuilder(pp, pn, mp)
 		if err != nil {
@@ -556,9 +578,9 @@ func annotate(names []string) {
 	}
 	// TODO: process files in parallel here if it matters.
 	for k, name := range names {
-		last := false
-		if k == len(names)-1 {
-			last = true
+		if strings.ContainsAny(name, "\r\n") {
+			// annotateFile uses '//line' directives, which don't permit newlines.
+			log.Fatalf("cover: input path contains newline character: %q", name)
 		}
 
 		fd := os.Stdout
@@ -578,16 +600,27 @@ func annotate(names []string) {
 			}
 			isStdout = false
 		}
-		p.annotateFile(name, fd, last)
+		p.annotateFile(name, fd)
 		if !isStdout {
 			if err := fd.Close(); err != nil {
 				log.Fatalf("cover: %s", err)
 			}
 		}
 	}
+
+	if *pkgcfg != "" {
+		fd, err := os.Create(covervarsoutfile)
+		if err != nil {
+			log.Fatalf("cover: %s", err)
+		}
+		p.emitMetaData(fd)
+		if err := fd.Close(); err != nil {
+			log.Fatalf("cover: %s", err)
+		}
+	}
 }
 
-func (p *Package) annotateFile(name string, fd io.Writer, last bool) {
+func (p *Package) annotateFile(name string, fd io.Writer) {
 	fset := token.NewFileSet()
 	content, err := os.ReadFile(name)
 	if err != nil {
@@ -615,9 +648,13 @@ func (p *Package) annotateFile(name string, fd io.Writer, last bool) {
 		// We do this even if there is an existing import, because the
 		// existing import may be shadowed at any given place we want
 		// to refer to it, and our name (_cover_atomic_) is less likely to
-		// be shadowed.
-		file.edit.Insert(file.offset(file.astFile.Name.End()),
-			fmt.Sprintf("; import %s %q", atomicPackageName, atomicPackagePath))
+		// be shadowed. The one exception is if we're visiting the
+		// sync/atomic package itself, in which case we can refer to
+		// functions directly without an import prefix. See also #57445.
+		if pkgconfig.PkgPath != "sync/atomic" {
+			file.edit.Insert(file.offset(file.astFile.Name.End()),
+				fmt.Sprintf("; import %s %q", atomicPackageName, atomicPackagePath))
+		}
 	}
 	if pkgconfig.PkgName == "main" {
 		file.edit.Insert(file.offset(file.astFile.Name.End()),
@@ -629,6 +666,11 @@ func (p *Package) annotateFile(name string, fd io.Writer, last bool) {
 	}
 	newContent := file.edit.Bytes()
 
+	if strings.ContainsAny(name, "\r\n") {
+		// This should have been checked by the caller already, but we double check
+		// here just to be sure we haven't missed a caller somewhere.
+		panic(fmt.Sprintf("annotateFile: name contains unexpected newline character: %q", name))
+	}
 	fmt.Fprintf(fd, "//line %s:1:1\n", name)
 	fd.Write(newContent)
 
@@ -640,12 +682,7 @@ func (p *Package) annotateFile(name string, fd io.Writer, last bool) {
 	// Emit a reference to the atomic package to avoid
 	// import and not used error when there's no code in a file.
 	if *mode == "atomic" {
-		fmt.Fprintf(fd, "var _ = %s.LoadUint32\n", atomicPackageName)
-	}
-
-	// Last file? Emit meta-data and converage config.
-	if last {
-		p.emitMetaData(fd)
+		fmt.Fprintf(fd, "\nvar _ = %sLoadUint32\n", atomicPackagePrefix())
 	}
 }
 
@@ -661,7 +698,7 @@ func incCounterStmt(f *File, counter string) string {
 
 // atomicCounterStmt returns the expression: atomic.AddUint32(&__count[23], 1)
 func atomicCounterStmt(f *File, counter string) string {
-	return fmt.Sprintf("%s.AddUint32(&%s, 1)", atomicPackageName, counter)
+	return fmt.Sprintf("%sAddUint32(&%s, 1)", atomicPackagePrefix(), counter)
 }
 
 // newCounter creates a new counter expression of the appropriate form.
@@ -1057,6 +1094,9 @@ func (p *Package) emitMetaData(w io.Writer) {
 		panic("internal error: seen functions with regonly/testmain")
 	}
 
+	// Emit package name.
+	fmt.Fprintf(w, "\npackage %s\n\n", pkgconfig.PkgName)
+
 	// Emit package ID var.
 	fmt.Fprintf(w, "\nvar %sP uint32\n", *varVar)
 
@@ -1083,7 +1123,7 @@ func (p *Package) emitMetaData(w io.Writer) {
 	}
 	fmt.Fprintf(w, "}\n")
 
-	fixcfg := coverage.CoverFixupConfig{
+	fixcfg := covcmd.CoverFixupConfig{
 		Strategy:           "normal",
 		MetaVar:            mkMetaVar(),
 		MetaLen:            len(payload),
@@ -1100,4 +1140,21 @@ func (p *Package) emitMetaData(w io.Writer) {
 	if err := os.WriteFile(pkgconfig.OutConfig, fixdata, 0666); err != nil {
 		log.Fatalf("error writing %s: %v", pkgconfig.OutConfig, err)
 	}
+}
+
+// atomicOnAtomic returns true if we're instrumenting
+// the sync/atomic package AND using atomic mode.
+func atomicOnAtomic() bool {
+	return *mode == "atomic" && pkgconfig.PkgPath == "sync/atomic"
+}
+
+// atomicPackagePrefix returns the import path prefix used to refer to
+// our special import of sync/atomic; this is either set to the
+// constant atomicPackageName plus a dot or the empty string if we're
+// instrumenting the sync/atomic package itself.
+func atomicPackagePrefix() string {
+	if atomicOnAtomic() {
+		return ""
+	}
+	return atomicPackageName + "."
 }

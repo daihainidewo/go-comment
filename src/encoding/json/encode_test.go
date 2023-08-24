@@ -15,7 +15,6 @@ import (
 	"runtime/debug"
 	"strconv"
 	"testing"
-	"unicode"
 )
 
 type Optionals struct {
@@ -114,7 +113,7 @@ func TestRoundtripStringTag(t *testing.T) {
 				"BoolStr": "false",
 				"IntStr": "0",
 				"UintptrStr": "0",
-				"StrStr": "\"\\u0008\\u000c\\n\\r\\t\\\"\\\\\"",
+				"StrStr": "\"\\b\\f\\n\\r\\t\\\"\\\\\"",
 				"NumberStr": "0"
 			}`,
 		},
@@ -701,54 +700,6 @@ func TestDuplicatedFieldDisappears(t *testing.T) {
 	}
 }
 
-func TestStringBytes(t *testing.T) {
-	t.Parallel()
-	// Test that encodeState.stringBytes and encodeState.string use the same encoding.
-	var r []rune
-	for i := '\u0000'; i <= unicode.MaxRune; i++ {
-		if testing.Short() && i > 1000 {
-			i = unicode.MaxRune
-		}
-		r = append(r, i)
-	}
-	s := string(r) + "\xff\xff\xffhello" // some invalid UTF-8 too
-
-	for _, escapeHTML := range []bool{true, false} {
-		es := &encodeState{}
-		es.string(s, escapeHTML)
-
-		esBytes := &encodeState{}
-		esBytes.stringBytes([]byte(s), escapeHTML)
-
-		enc := es.Buffer.String()
-		encBytes := esBytes.Buffer.String()
-		if enc != encBytes {
-			i := 0
-			for i < len(enc) && i < len(encBytes) && enc[i] == encBytes[i] {
-				i++
-			}
-			enc = enc[i:]
-			encBytes = encBytes[i:]
-			i = 0
-			for i < len(enc) && i < len(encBytes) && enc[len(enc)-i-1] == encBytes[len(encBytes)-i-1] {
-				i++
-			}
-			enc = enc[:len(enc)-i]
-			encBytes = encBytes[:len(encBytes)-i]
-
-			if len(enc) > 20 {
-				enc = enc[:20] + "..."
-			}
-			if len(encBytes) > 20 {
-				encBytes = encBytes[:20] + "..."
-			}
-
-			t.Errorf("with escapeHTML=%t, encodings differ at %#q vs %#q",
-				escapeHTML, enc, encBytes)
-		}
-	}
-}
-
 func TestIssue10281(t *testing.T) {
 	type Foo struct {
 		N Number
@@ -844,11 +795,11 @@ var encodeStringTests = []struct {
 	{"\x05", `"\u0005"`},
 	{"\x06", `"\u0006"`},
 	{"\x07", `"\u0007"`},
-	{"\x08", `"\u0008"`},
+	{"\x08", `"\b"`},
 	{"\x09", `"\t"`},
 	{"\x0a", `"\n"`},
 	{"\x0b", `"\u000b"`},
-	{"\x0c", `"\u000c"`},
+	{"\x0c", `"\f"`},
 	{"\x0d", `"\r"`},
 	{"\x0e", `"\u000e"`},
 	{"\x0f", `"\u000f"`},

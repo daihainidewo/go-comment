@@ -5,6 +5,7 @@
 package net
 
 import (
+	"internal/poll"
 	"runtime"
 	"syscall"
 )
@@ -61,8 +62,22 @@ func (c *rawConn) Write(f func(uintptr) bool) error {
 	return err
 }
 
-func newRawConn(fd *netFD) (*rawConn, error) {
-	return &rawConn{fd: fd}, nil
+// PollFD returns the poll.FD of the underlying connection.
+//
+// Other packages in std that also import internal/poll (such as os)
+// can use a type assertion to access this extension method so that
+// they can pass the *poll.FD to functions like poll.Splice.
+//
+// PollFD is not intended for use outside the standard library.
+func (c *rawConn) PollFD() *poll.FD {
+	if !c.ok() {
+		return nil
+	}
+	return &c.fd.pfd
+}
+
+func newRawConn(fd *netFD) *rawConn {
+	return &rawConn{fd: fd}
 }
 
 type rawListener struct {
@@ -78,6 +93,6 @@ func (l *rawListener) Write(func(uintptr) bool) error {
 }
 
 // newRawListener 基础文件描述符监听器
-func newRawListener(fd *netFD) (*rawListener, error) {
-	return &rawListener{rawConn{fd: fd}}, nil
+func newRawListener(fd *netFD) *rawListener {
+	return &rawListener{rawConn{fd: fd}}
 }

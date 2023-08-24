@@ -85,13 +85,13 @@ const DefaultMaxIdleConnsPerHost = 2
 // ClientTrace.Got1xxResponse.
 //
 // Transport only retries a request upon encountering a network error
-// if the request is idempotent and either has no body or has its
-// Request.GetBody defined. HTTP requests are considered idempotent if
-// they have HTTP methods GET, HEAD, OPTIONS, or TRACE; or if their
-// Header map contains an "Idempotency-Key" or "X-Idempotency-Key"
-// entry. If the idempotency key value is a zero-length slice, the
-// request is treated as idempotent but the header is not sent on the
-// wire.
+// if the connection has been already been used successfully and if the
+// request is idempotent and either has no body or has its Request.GetBody
+// defined. HTTP requests are considered idempotent if they have HTTP methods
+// GET, HEAD, OPTIONS, or TRACE; or if their Header map contains an
+// "Idempotency-Key" or "X-Idempotency-Key" entry. If the idempotency key
+// value is a zero-length slice, the request is treated as idempotent but the
+// header is not sent on the wire.
 type Transport struct {
 	idleMu       sync.Mutex                          // 空闲连接池锁
 	closeIdle    bool                                // 用户关闭所有空闲连接 user has requested to close all idle conns
@@ -180,7 +180,7 @@ type Transport struct {
 	TLSClientConfig *tls.Config
 
 	// TLSHandshakeTimeout TLS握手超时
-	// TLSHandshakeTimeout specifies the maximum amount of time waiting to
+	// TLSHandshakeTimeout specifies the maximum amount of time to
 	// wait for a TLS handshake. Zero means no timeout.
 	TLSHandshakeTimeout time.Duration
 
@@ -395,6 +395,7 @@ var http2client = godebug.New("http2client")
 func (t *Transport) onceSetNextProtoDefaults() {
 	t.tlsNextProtoWasNil = (t.TLSNextProto == nil)
 	if http2client.Value() == "0" {
+		http2client.IncNonDefault()
 		return
 	}
 
@@ -668,6 +669,12 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 			}
 			if e, ok := err.(transportReadFromServerError); ok {
 				err = e.err
+			}
+			if b, ok := req.Body.(*readTrackingBody); ok && !b.didClose {
+				// Issue 49621: Close the request body if pconn.roundTrip
+				// didn't do so already. This can happen if the pconn
+				// write loop exits without reading the write request.
+				req.closeBody()
 			}
 			return nil, err
 		}
@@ -1263,7 +1270,11 @@ var zeroDialer net.Dialer
 // dial 拨号建连
 func (t *Transport) dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	if t.DialContext != nil {
-		return t.DialContext(ctx, network, addr)
+		c, err := t.DialContext(ctx, network, addr)
+		if c == nil && err == nil {
+			err = errors.New("net/http: Transport.DialContext hook returned (nil, nil)")
+		}
+		return c, err
 	}
 	if t.Dial != nil {
 		c, err := t.Dial(network, addr)
@@ -1284,9 +1295,8 @@ func (t *Transport) dial(ctx context.Context, network, addr string) (net.Conn, e
 // These three options are racing against each other and use
 // wantConn to coordinate and agree about the winning outcome.
 type wantConn struct {
-	cm    connectMethod    // 连接方法
-	key   connectMethodKey // 连接方法key cm.key()
-	ctx   context.Context  // context for dial
+	cm    connectMethod
+	key   connectMethodKey // cm.key()
 	ready chan struct{}    // closed when pc, err pair is delivered
 
 	// hooks for testing to know when dials are done
@@ -1295,7 +1305,8 @@ type wantConn struct {
 	beforeDial func()
 	afterDial  func()
 
-	mu  sync.Mutex // protects pc, err, close(ready)
+	mu  sync.Mutex      // protects ctx, pc, err, close(ready)
+	ctx context.Context // context for dial, cleared after delivered or canceled
 	pc  *persistConn
 	err error
 }
@@ -1311,6 +1322,13 @@ func (w *wantConn) waiting() bool {
 	}
 }
 
+// getCtxForDial returns context for dial or nil if connection was delivered or canceled.
+func (w *wantConn) getCtxForDial() context.Context {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.ctx
+}
+
 // tryDeliver 尝试将 pc 和 err 给 w 返回是否成功 成功则关闭ready管道
 // tryDeliver attempts to deliver pc, err to w and reports whether it succeeded.
 func (w *wantConn) tryDeliver(pc *persistConn, err error) bool {
@@ -1321,6 +1339,7 @@ func (w *wantConn) tryDeliver(pc *persistConn, err error) bool {
 		return false
 	}
 
+	w.ctx = nil
 	w.pc = pc
 	w.err = err
 	if w.pc == nil && w.err == nil {
@@ -1339,6 +1358,7 @@ func (w *wantConn) cancel(t *Transport, err error) {
 		close(w.ready) // catch misbehavior in future delivery
 	}
 	pc := w.pc
+	w.ctx = nil
 	w.pc = nil
 	w.err = err
 	w.mu.Unlock()
@@ -1570,8 +1590,12 @@ func (t *Transport) queueForDial(w *wantConn) {
 // If the dial is canceled or unsuccessful, dialConnFor decrements t.connCount[w.cm.key()].
 func (t *Transport) dialConnFor(w *wantConn) {
 	defer w.afterDial()
+	ctx := w.getCtxForDial()
+	if ctx == nil {
+		return
+	}
 
-	pc, err := t.dialConn(w.ctx, w.cm)
+	pc, err := t.dialConn(ctx, w.cm)
 	delivered := w.tryDeliver(pc, err)
 	if err == nil && (!delivered || pc.alt != nil) {
 		// 建立连接成功但是 w 没有使用 pc 或者 pc 是 http2 就将连接存入空闲列表
@@ -2394,7 +2418,7 @@ func (pc *persistConn) readLoop() {
 		case <-rc.req.Cancel:
 			// 取消请求
 			alive = false
-			pc.t.CancelRequest(rc.req)
+			pc.t.cancelRequest(rc.cancelKey, errRequestCanceled)
 		case <-rc.req.Context().Done():
 			// 取消请求
 			alive = false
@@ -2616,7 +2640,10 @@ func (pc *persistConn) writeLoop() {
 // maxWriteWaitBeforeConnReuse is how long the a Transport RoundTrip
 // will wait to see the Request's Body.Write result after getting a
 // response from the server. See comments in (*persistConn).wroteRequest.
-const maxWriteWaitBeforeConnReuse = 50 * time.Millisecond
+//
+// In tests, we set this to a large value to avoid flakiness from inconsistent
+// recycling of connections.
+var maxWriteWaitBeforeConnReuse = 50 * time.Millisecond
 
 // wroteRequest is a check before recycling a connection that the previous write
 // (from writeLoop above) happened and was successful.
@@ -2925,19 +2952,21 @@ var portMap = map[string]string{
 	"socks5": "1080",
 }
 
-// canonicalAddr returns url.Host but always with a ":port" suffix.
-// canonicalAddr 格式化url host后带port
-// canonicalAddr returns url.Host but always with a ":port" suffix.
-func canonicalAddr(url *url.URL) string {
+func idnaASCIIFromURL(url *url.URL) string {
 	addr := url.Hostname()
 	if v, err := idnaASCII(addr); err == nil {
 		addr = v
 	}
+	return addr
+}
+
+// canonicalAddr returns url.Host but always with a ":port" suffix.
+func canonicalAddr(url *url.URL) string {
 	port := url.Port()
 	if port == "" {
 		port = portMap[url.Scheme]
 	}
-	return net.JoinHostPort(addr, port)
+	return net.JoinHostPort(idnaASCIIFromURL(url), port)
 }
 
 // bodyEOFSignal 描述http1读取到响应结尾时的信号 确保连接可以复用
