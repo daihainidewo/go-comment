@@ -949,6 +949,7 @@ var gStatusStrings = [...]string{
 	_Gpreempted: "preempted",
 }
 
+// goroutineheader 打印 g 的信息
 func goroutineheader(gp *g) {
 	gpstatus := readgstatus(gp)
 
@@ -986,6 +987,7 @@ func goroutineheader(gp *g) {
 	print("]:\n")
 }
 
+// tracebackothers 打印所有 g 信息
 func tracebackothers(me *g) {
 	level, _, _ := gotraceback()
 

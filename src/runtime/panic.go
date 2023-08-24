@@ -480,6 +480,7 @@ func freedeferfn() {
 	throw("freedefer with d.fn != nil")
 }
 
+// deferreturn 执行所有调用者的 defer 函数
 // deferreturn runs deferred functions for the caller's frame.
 // The compiler inserts a call to this at the end of any
 // function which calls defer.
@@ -1471,6 +1472,7 @@ func dopanic_m(gp *g, pc, sp uintptr) bool {
 	return docrash
 }
 
+// canpanic 如果信号应该 throw 替代 panic 返回 false
 // canpanic returns false if a signal should throw instead of
 // panicking.
 //
@@ -1542,6 +1544,7 @@ func shouldPushSigpanic(gp *g, pc, lr uintptr) bool {
 	return true
 }
 
+// isAbortPC 判断是否是 runtime.abort 的 pc
 // isAbortPC reports whether pc is the program counter at which
 // runtime.abort raises a signal.
 //

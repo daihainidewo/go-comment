@@ -634,6 +634,7 @@ func forEachG(fn func(gp *g)) {
 	unlock(&allglock)
 }
 
+// forEachGRace 为所有 g 调用 fn
 // forEachGRace calls fn on every G from allgs.
 //
 // forEachGRace avoids locking, but does not exclude addition of new Gs during
