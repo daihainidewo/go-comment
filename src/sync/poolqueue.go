@@ -39,7 +39,7 @@ type poolDequeue struct {
 	// The head index is stored in the most-significant bits so
 	// that we can atomically add to it and the overflow is
 	// harmless.
-	headTail uint64
+	headTail atomic.Uint64
 
 	// vals 是interface{}的环形队列，长度必须是2的幂次
 	// vals[i].typ 为 nil 则 slot 是空的，否则non-nil
@@ -95,7 +95,7 @@ func (d *poolDequeue) pack(head, tail uint32) uint64 {
 // pushHead adds val at the head of the queue. It returns false if the
 // queue is full. It must only be called by a single producer.
 func (d *poolDequeue) pushHead(val any) bool {
-	ptrs := atomic.LoadUint64(&d.headTail)
+	ptrs := d.headTail.Load()
 	head, tail := d.unpack(ptrs)
 	if (tail+uint32(len(d.vals)))&(1<<dequeueBits-1) == head {
 		// Queue is full.
@@ -125,7 +125,7 @@ func (d *poolDequeue) pushHead(val any) bool {
 	// 头指针偏移
 	// Increment head. This passes ownership of slot to popTail
 	// and acts as a store barrier for writing the slot.
-	atomic.AddUint64(&d.headTail, 1<<dequeueBits)
+	d.headTail.Add(1 << dequeueBits)
 	return true
 }
 
@@ -136,7 +136,7 @@ func (d *poolDequeue) pushHead(val any) bool {
 func (d *poolDequeue) popHead() (any, bool) {
 	var slot *eface
 	for {
-		ptrs := atomic.LoadUint64(&d.headTail)
+		ptrs := d.headTail.Load()
 		head, tail := d.unpack(ptrs)
 		if tail == head {
 			// Queue is empty.
@@ -148,7 +148,7 @@ func (d *poolDequeue) popHead() (any, bool) {
 		// slot.
 		head--
 		ptrs2 := d.pack(head, tail)
-		if atomic.CompareAndSwapUint64(&d.headTail, ptrs, ptrs2) {
+		if d.headTail.CompareAndSwap(ptrs, ptrs2) {
 			// 如果成功修改了值就退出循环
 			// 获取弹出的 slot
 			// We successfully took back slot.
@@ -177,7 +177,7 @@ func (d *poolDequeue) popHead() (any, bool) {
 func (d *poolDequeue) popTail() (any, bool) {
 	var slot *eface
 	for {
-		ptrs := atomic.LoadUint64(&d.headTail)
+		ptrs := d.headTail.Load()
 		head, tail := d.unpack(ptrs)
 		if tail == head {
 			// Queue is empty.
@@ -188,7 +188,7 @@ func (d *poolDequeue) popTail() (any, bool) {
 		// above) and increment tail. If this succeeds, then
 		// we own the slot at tail.
 		ptrs2 := d.pack(head, tail+1)
-		if atomic.CompareAndSwapUint64(&d.headTail, ptrs, ptrs2) {
+		if d.headTail.CompareAndSwap(ptrs, ptrs2) {
 			// Success.
 			// cas 获取 slot
 			slot = &d.vals[tail&uint32(len(d.vals)-1)]

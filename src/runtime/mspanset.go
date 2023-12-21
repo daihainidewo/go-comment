@@ -338,7 +338,7 @@ func (s *atomicSpanSetSpinePointer) Load() spanSetSpinePointer {
 
 // Stores the spanSetSpinePointer.
 //
-// It has the same semantics as atomic.UnsafePointer.
+// It has the same semantics as [atomic.UnsafePointer].
 func (s *atomicSpanSetSpinePointer) StoreNoWB(p spanSetSpinePointer) {
 	s.a.StoreNoWB(p.p)
 }
@@ -350,7 +350,7 @@ type spanSetSpinePointer struct {
 
 // lookup returns &s[idx].
 func (s spanSetSpinePointer) lookup(idx uintptr) *atomic.Pointer[spanSetBlock] {
-	return (*atomic.Pointer[spanSetBlock])(add(unsafe.Pointer(s.p), goarch.PtrSize*idx))
+	return (*atomic.Pointer[spanSetBlock])(add(s.p, goarch.PtrSize*idx))
 }
 
 // spanSetBlockPool spanSetBlock 的全局池

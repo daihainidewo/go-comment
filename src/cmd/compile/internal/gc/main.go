@@ -9,16 +9,18 @@ import (
 	"bytes"
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/coverage"
-	"cmd/compile/internal/devirtualize"
 	"cmd/compile/internal/dwarfgen"
 	"cmd/compile/internal/escape"
 	"cmd/compile/internal/inline"
+	"cmd/compile/internal/inline/interleaved"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/logopt"
 	"cmd/compile/internal/loopvar"
 	"cmd/compile/internal/noder"
 	"cmd/compile/internal/pgo"
 	"cmd/compile/internal/pkginit"
+	"cmd/compile/internal/reflectdata"
+	"cmd/compile/internal/rttype"
 	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/ssagen"
 	"cmd/compile/internal/staticinit"
@@ -189,6 +191,7 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 
 	typecheck.InitUniverse()
 	typecheck.InitRuntime()
+	rttype.Init()
 
 	// Parse and typecheck input.
 	noder.LoadPackage(flag.Args())
@@ -204,27 +207,11 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 
 	dwarfgen.RecordPackageName()
 
-	// Prepare for backend processing. This must happen before pkginit,
-	// because it generates itabs for initializing global variables.
+	// Prepare for backend processing.
 	ssagen.InitConfig()
-
-	// Create "init" function for package-scope variable initialization
-	// statements, if any.
-	pkginit.MakeInit()
 
 	// Apply coverage fixups, if applicable.
 	coverage.Fixup()
-
-	// Compute Addrtaken for names.
-	// We need to wait until typechecking is done so that when we see &x[i]
-	// we know that x has its address taken if x is an array, but not if x is a slice.
-	// We compute Addrtaken in bulk here.
-	// After this phase, we maintain Addrtaken incrementally.
-	if typecheck.DirtyAddrtaken {
-		typecheck.ComputeAddrtaken(typecheck.Target.Funcs)
-		typecheck.DirtyAddrtaken = false
-	}
-	typecheck.IncrementalAddrtaken = true
 
 	// Read profile file and build profile-graph and weighted-call-graph.
 	base.Timer.Start("fe", "pgo-load-profile")
@@ -237,30 +224,15 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 		}
 	}
 
-	base.Timer.Start("fe", "pgo-devirtualization")
-	if profile != nil && base.Debug.PGODevirtualize > 0 {
-		// TODO(prattmic): No need to use bottom-up visit order. This
-		// is mirroring the PGO IRGraph visit order, which also need
-		// not be bottom-up.
-		ir.VisitFuncsBottomUp(typecheck.Target.Funcs, func(list []*ir.Func, recursive bool) {
-			for _, fn := range list {
-				devirtualize.ProfileGuided(fn, profile)
-			}
-		})
-		ir.CurFunc = nil
-	}
+	// Interleaved devirtualization and inlining.
+	base.Timer.Start("fe", "devirtualize-and-inline")
+	interleaved.DevirtualizeAndInlinePackage(typecheck.Target, profile)
 
-	// Inlining
-	base.Timer.Start("fe", "inlining")
-	if base.Flag.LowerL != 0 {
-		inline.InlinePackage(profile)
-	}
 	noder.MakeWrappers(typecheck.Target) // must happen after inlining
 
-	// Devirtualize and get variable capture right in for loops
+	// Get variable capture right in for loops.
 	var transformed []loopvar.VarAndLoop
 	for _, fn := range typecheck.Target.Funcs {
-		devirtualize.Static(fn)
 		transformed = append(transformed, loopvar.ForCapture(fn)...)
 	}
 	ir.CurFunc = nil
@@ -295,18 +267,62 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 
 	ir.CurFunc = nil
 
-	// Compile top level functions.
-	// Don't use range--walk can add functions to Target.Decls.
-	base.Timer.Start("be", "compilefuncs")
-	fcount := int64(0)
-	for i := 0; i < len(typecheck.Target.Funcs); i++ {
-		fn := typecheck.Target.Funcs[i]
-		enqueueFunc(fn)
-		fcount++
-	}
-	base.Timer.AddEvent(fcount, "funcs")
+	reflectdata.WriteBasicTypes()
 
-	compileFunctions()
+	// Compile top-level declarations.
+	//
+	// There are cyclic dependencies between all of these phases, so we
+	// need to iterate all of them until we reach a fixed point.
+	base.Timer.Start("be", "compilefuncs")
+	for nextFunc, nextExtern := 0, 0; ; {
+		reflectdata.WriteRuntimeTypes()
+
+		if nextExtern < len(typecheck.Target.Externs) {
+			switch n := typecheck.Target.Externs[nextExtern]; n.Op() {
+			case ir.ONAME:
+				dumpGlobal(n)
+			case ir.OLITERAL:
+				dumpGlobalConst(n)
+			case ir.OTYPE:
+				reflectdata.NeedRuntimeType(n.Type())
+			}
+			nextExtern++
+			continue
+		}
+
+		if nextFunc < len(typecheck.Target.Funcs) {
+			enqueueFunc(typecheck.Target.Funcs[nextFunc])
+			nextFunc++
+			continue
+		}
+
+		// The SSA backend supports using multiple goroutines, so keep it
+		// as late as possible to maximize how much work we can batch and
+		// process concurrently.
+		if len(compilequeue) != 0 {
+			compileFunctions()
+			continue
+		}
+
+		// Finalize DWARF inline routine DIEs, then explicitly turn off
+		// further DWARF inlining generation to avoid problems with
+		// generated method wrappers.
+		//
+		// Note: The DWARF fixup code for inlined calls currently doesn't
+		// allow multiple invocations, so we intentionally run it just
+		// once after everything else. Worst case, some generated
+		// functions have slightly larger DWARF DIEs.
+		if base.Ctxt.DwFixups != nil {
+			base.Ctxt.DwFixups.Finalize(base.Ctxt.Pkgpath, base.Debug.DwarfInl != 0)
+			base.Ctxt.DwFixups = nil
+			base.Flag.GenDwarfInl = 0
+			continue // may have called reflectdata.TypeLinksym (#62156)
+		}
+
+		break
+	}
+
+	base.Timer.AddEvent(int64(len(typecheck.Target.Funcs)), "funcs")
 
 	if base.Flag.CompilingRuntime {
 		// Write barriers are now known. Check the call graph.
@@ -316,15 +332,6 @@ func Main(archInit func(*ssagen.ArchInfo)) {
 	// Add keep relocations for global maps.
 	if base.Debug.WrapGlobalMapCtl != 1 {
 		staticinit.AddKeepRelocations()
-	}
-
-	// Finalize DWARF inline routine DIEs, then explicitly turn off
-	// DWARF inlining gen so as to avoid problems with generated
-	// method wrappers.
-	if base.Ctxt.DwFixups != nil {
-		base.Ctxt.DwFixups.Finalize(base.Ctxt.Pkgpath, base.Debug.DwarfInl != 0)
-		base.Ctxt.DwFixups = nil
-		base.Flag.GenDwarfInl = 0
 	}
 
 	// Write object data to disk.

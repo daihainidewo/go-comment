@@ -185,7 +185,7 @@ func (u *unwinder) initAt(pc0, sp0, lr0 uintptr, gp *g, flags unwindFlags) {
 		} else {
 			// pc 暂存 sp
 			// sp 偏移指针大小
-			frame.pc = uintptr(*(*uintptr)(unsafe.Pointer(frame.sp)))
+			frame.pc = *(*uintptr)(unsafe.Pointer(frame.sp))
 			frame.sp += goarch.PtrSize
 		}
 	}
@@ -208,7 +208,7 @@ func (u *unwinder) initAt(pc0, sp0, lr0 uintptr, gp *g, flags unwindFlags) {
 	f := findfunc(frame.pc)
 	if !f.valid() {
 		if flags&unwindSilentErrors == 0 {
-			print("runtime: g ", gp.goid, ": unknown pc ", hex(frame.pc), "\n")
+			print("runtime: g ", gp.goid, " gp=", gp, ": unknown pc ", hex(frame.pc), "\n")
 			tracebackHexdump(gp.stack, &frame, 0)
 		}
 		if flags&(unwindPrintErrors|unwindSilentErrors) == 0 {
@@ -342,30 +342,37 @@ func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
 	if flag&abi.FuncFlagTopFrame != 0 {
 		// This function marks the top of the stack. Stop the traceback.
 		frame.lr = 0
-	} else if flag&abi.FuncFlagSPWrite != 0 {
+	} else if flag&abi.FuncFlagSPWrite != 0 && (!innermost || u.flags&(unwindPrintErrors|unwindSilentErrors) != 0) {
 		// The function we are in does a write to SP that we don't know
 		// how to encode in the spdelta table. Examples include context
 		// switch routines like runtime.gogo but also any code that switches
 		// to the g0 stack to run host C code.
-		if u.flags&(unwindPrintErrors|unwindSilentErrors) != 0 {
-			// We can't reliably unwind the SP (we might
-			// not even be on the stack we think we are),
-			// so stop the traceback here.
-			frame.lr = 0
-		} else {
-			// For a GC stack traversal, we should only see
-			// an SPWRITE function when it has voluntarily preempted itself on entry
-			// during the stack growth check. In that case, the function has
-			// not yet had a chance to do any writes to SP and is safe to unwind.
-			// isAsyncSafePoint does not allow assembly functions to be async preempted,
-			// and preemptPark double-checks that SPWRITE functions are not async preempted.
-			// So for GC stack traversal, we can safely ignore SPWRITE for the innermost frame,
-			// but farther up the stack we'd better not find any.
-			if !innermost {
-				println("traceback: unexpected SPWRITE function", funcname(f))
-				throw("traceback")
-			}
+		// We can't reliably unwind the SP (we might not even be on
+		// the stack we think we are), so stop the traceback here.
+		//
+		// The one exception (encoded in the complex condition above) is that
+		// we assume if we're doing a precise traceback, and this is the
+		// innermost frame, that the SPWRITE function voluntarily preempted itself on entry
+		// during the stack growth check. In that case, the function has
+		// not yet had a chance to do any writes to SP and is safe to unwind.
+		// isAsyncSafePoint does not allow assembly functions to be async preempted,
+		// and preemptPark double-checks that SPWRITE functions are not async preempted.
+		// So for GC stack traversal, we can safely ignore SPWRITE for the innermost frame,
+		// but farther up the stack we'd better not find any.
+		// This is somewhat imprecise because we're just guessing that we're in the stack
+		// growth check. It would be better if SPWRITE were encoded in the spdelta
+		// table so we would know for sure that we were still in safe code.
+		//
+		// uSE uPE inn | action
+		//  T   _   _  | frame.lr = 0
+		//  F   T   _  | frame.lr = 0
+		//  F   F   F  | print; panic
+		//  F   F   T  | ignore SPWrite
+		if u.flags&(unwindPrintErrors|unwindSilentErrors) == 0 && !innermost {
+			println("traceback: unexpected SPWRITE function", funcname(f))
+			throw("traceback")
 		}
+		frame.lr = 0
 	} else {
 		var lrPtr uintptr
 		if usesLR {
@@ -1182,6 +1189,8 @@ var gStatusStrings = [...]string{
 
 // goroutineheader 打印 g 的信息
 func goroutineheader(gp *g) {
+	level, _, _ := gotraceback()
+
 	gpstatus := readgstatus(gp)
 
 	isScan := gpstatus&_Gscan != 0
@@ -1205,7 +1214,16 @@ func goroutineheader(gp *g) {
 	if (gpstatus == _Gwaiting || gpstatus == _Gsyscall) && gp.waitsince != 0 {
 		waitfor = (nanotime() - gp.waitsince) / 60e9
 	}
-	print("goroutine ", gp.goid, " [", status)
+	print("goroutine ", gp.goid)
+	if gp.m != nil && gp.m.throwing >= throwTypeRuntime && gp == gp.m.curg || level >= 2 {
+		print(" gp=", gp)
+		if gp.m != nil {
+			print(" m=", gp.m.id, " mp=", gp.m)
+		} else {
+			print(" m=nil")
+		}
+	}
+	print(" [", status)
 	if isScan {
 		print(" (scan)")
 	}
@@ -1319,7 +1337,7 @@ func isSystemGoroutine(gp *g, fixed bool) bool {
 	if !f.valid() {
 		return false
 	}
-	if f.funcID == abi.FuncID_runtime_main || f.funcID == abi.FuncID_handleAsyncEvent {
+	if f.funcID == abi.FuncID_runtime_main || f.funcID == abi.FuncID_corostart || f.funcID == abi.FuncID_handleAsyncEvent {
 		return false
 	}
 	if f.funcID == abi.FuncID_runfinq {

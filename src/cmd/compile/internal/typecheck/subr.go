@@ -26,18 +26,10 @@ func LookupNum(prefix string, n int) *types.Sym {
 }
 
 // Given funarg struct list, return list of fn args.
-func NewFuncParams(origs []*types.Field, mustname bool) []*types.Field {
+func NewFuncParams(origs []*types.Field) []*types.Field {
 	res := make([]*types.Field, len(origs))
 	for i, orig := range origs {
-		s := orig.Sym
-		if mustname && (s == nil || s.Name == "_") {
-			// invent a name so that we can refer to it in the trampoline
-			s = LookupNum(".anon", i)
-		} else if s != nil && s.Pkg != types.LocalPkg {
-			// TODO(mdempsky): Preserve original position, name, and package.
-			s = Lookup(s.Name)
-		}
-		p := types.NewField(orig.Pos, s, orig.Type)
+		p := types.NewField(orig.Pos, orig.Sym, orig.Type)
 		p.SetIsDDD(orig.IsDDD())
 		res[i] = p
 	}
@@ -51,61 +43,7 @@ func NodAddr(n ir.Node) *ir.AddrExpr {
 
 // NodAddrAt returns a node representing &n at position pos.
 func NodAddrAt(pos src.XPos, n ir.Node) *ir.AddrExpr {
-	n = markAddrOf(n)
-	return ir.NewAddrExpr(pos, n)
-}
-
-func markAddrOf(n ir.Node) ir.Node {
-	if IncrementalAddrtaken {
-		// We can only do incremental addrtaken computation when it is ok
-		// to typecheck the argument of the OADDR. That's only safe after the
-		// main typecheck has completed, and not loading the inlined body.
-		// The argument to OADDR needs to be typechecked because &x[i] takes
-		// the address of x if x is an array, but not if x is a slice.
-		// Note: OuterValue doesn't work correctly until n is typechecked.
-		n = typecheck(n, ctxExpr)
-		if x := ir.OuterValue(n); x.Op() == ir.ONAME {
-			x.Name().SetAddrtaken(true)
-		}
-	} else {
-		// Remember that we built an OADDR without computing the Addrtaken bit for
-		// its argument. We'll do that later in bulk using computeAddrtaken.
-		DirtyAddrtaken = true
-	}
-	return n
-}
-
-// If IncrementalAddrtaken is false, we do not compute Addrtaken for an OADDR Node
-// when it is built. The Addrtaken bits are set in bulk by computeAddrtaken.
-// If IncrementalAddrtaken is true, then when an OADDR Node is built the Addrtaken
-// field of its argument is updated immediately.
-var IncrementalAddrtaken = false
-
-// If DirtyAddrtaken is true, then there are OADDR whose corresponding arguments
-// have not yet been marked as Addrtaken.
-var DirtyAddrtaken = false
-
-func ComputeAddrtaken(funcs []*ir.Func) {
-	var doVisit func(n ir.Node)
-	doVisit = func(n ir.Node) {
-		if n.Op() == ir.OADDR {
-			if x := ir.OuterValue(n.(*ir.AddrExpr).X); x.Op() == ir.ONAME {
-				x.Name().SetAddrtaken(true)
-				if x.Name().IsClosureVar() {
-					// Mark the original variable as Addrtaken so that capturevars
-					// knows not to pass it by value.
-					x.Name().Defn.Name().SetAddrtaken(true)
-				}
-			}
-		}
-		if n.Op() == ir.OCLOSURE {
-			ir.VisitList(n.(*ir.ClosureExpr).Func.Body, doVisit)
-		}
-	}
-
-	for _, fn := range funcs {
-		ir.Visit(fn, doVisit)
-	}
+	return ir.NewAddrExpr(pos, Expr(n))
 }
 
 // LinksymAddr returns a new expression that evaluates to the address
@@ -299,7 +237,7 @@ func assignconvfn(n ir.Node, t *types.Type, context func() string) ir.Node {
 		return n
 	}
 
-	op, why := Assignop(n.Type(), t)
+	op, why := assignOp(n.Type(), t)
 	if op == ir.OXXX {
 		base.Errorf("cannot use %L as type %v in %s%s", n, t, context(), why)
 		op = ir.OCONV
@@ -315,7 +253,7 @@ func assignconvfn(n ir.Node, t *types.Type, context func() string) ir.Node {
 // If so, return op code to use in conversion.
 // If not, return OXXX. In this case, the string return parameter may
 // hold a reason why. In all other cases, it'll be the empty string.
-func Assignop(src, dst *types.Type) (ir.Op, string) {
+func assignOp(src, dst *types.Type) (ir.Op, string) {
 	if src == dst {
 		return ir.OCONVNOP, ""
 	}
@@ -327,10 +265,7 @@ func Assignop(src, dst *types.Type) (ir.Op, string) {
 	if types.Identical(src, dst) {
 		return ir.OCONVNOP, ""
 	}
-	return Assignop1(src, dst)
-}
 
-func Assignop1(src, dst *types.Type) (ir.Op, string) {
 	// 2. src and dst have identical underlying types and
 	//   a. either src or dst is not a named type, or
 	//   b. both are empty interface types, or
@@ -429,7 +364,7 @@ func Assignop1(src, dst *types.Type) (ir.Op, string) {
 // If not, return OXXX. In this case, the string return parameter may
 // hold a reason why. In all other cases, it'll be the empty string.
 // srcConstant indicates whether the value of type src is a constant.
-func Convertop(srcConstant bool, src, dst *types.Type) (ir.Op, string) {
+func convertOp(srcConstant bool, src, dst *types.Type) (ir.Op, string) {
 	if src == dst {
 		return ir.OCONVNOP, ""
 	}
@@ -452,7 +387,7 @@ func Convertop(srcConstant bool, src, dst *types.Type) (ir.Op, string) {
 	}
 
 	// 1. src can be assigned to dst.
-	op, why := Assignop(src, dst)
+	op, why := assignOp(src, dst)
 	if op != ir.OXXX {
 		return op, why
 	}

@@ -18,6 +18,8 @@ import (
 	"cmd/compile/internal/compare"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/objw"
+	"cmd/compile/internal/rttype"
+	"cmd/compile/internal/staticdata"
 	"cmd/compile/internal/typebits"
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
@@ -71,16 +73,14 @@ const (
 	MAXELEMSIZE = abi.MapMaxElemBytes
 )
 
-func structfieldSize() int { return abi.StructFieldSize(types.PtrSize) } // Sizeof(runtime.structfield{})
-func imethodSize() int     { return abi.IMethodSize(types.PtrSize) }     // Sizeof(runtime.imethod{})
-func commonSize() int      { return abi.CommonSize(types.PtrSize) }      // Sizeof(runtime._type{})
+func commonSize() int { return int(rttype.Type.Size()) } // Sizeof(runtime._type{})
 
 // runtime.uncommontype 对象的字节大小
 func uncommonSize(t *types.Type) int { // Sizeof(runtime.uncommontype{})
 	if t.Sym() == nil && len(methods(t)) == 0 {
 		return 0
 	}
-	return int(abi.UncommonSize())
+	return int(rttype.UncommonType.Size())
 }
 
 func makefield(name string, t *types.Type) *types.Field {
@@ -414,6 +414,10 @@ func dimportpath(p *types.Pkg) {
 		return
 	}
 
+	if p == types.LocalPkg && base.Ctxt.Pkgpath == "" {
+		panic("missing pkgpath")
+	}
+
 	// If we are compiling the runtime package, there are two runtime packages around
 	// -- localpkg and Pkgs.Runtime. We don't want to produce import path symbols for
 	// both of them, so just produce one for localpkg.
@@ -428,51 +432,35 @@ func dimportpath(p *types.Pkg) {
 	p.Pathsym = s
 }
 
-func dgopkgpath(s *obj.LSym, ot int, pkg *types.Pkg) int {
+func dgopkgpath(c rttype.Cursor, pkg *types.Pkg) {
+	c = c.Field("Bytes")
 	if pkg == nil {
-		return objw.Uintptr(s, ot, 0)
-	}
-
-	if pkg == types.LocalPkg && base.Ctxt.Pkgpath == "" {
-		// If we don't know the full import path of the package being compiled
-		// (i.e. -p was not passed on the compiler command line), emit a reference to
-		// type:.importpath.""., which the linker will rewrite using the correct import path.
-		// Every package that imports this one directly defines the symbol.
-		// See also https://groups.google.com/forum/#!topic/golang-dev/myb9s53HxGQ.
-		ns := base.Ctxt.Lookup(`type:.importpath."".`)
-		return objw.SymPtr(s, ot, ns, 0)
+		c.WritePtr(nil)
+		return
 	}
 
 	dimportpath(pkg)
-	return objw.SymPtr(s, ot, pkg.Pathsym, 0)
+	c.WritePtr(pkg.Pathsym)
 }
 
-// dgopkgpathOff writes an offset relocation in s at offset ot to the pkg path symbol.
-func dgopkgpathOff(s *obj.LSym, ot int, pkg *types.Pkg) int {
+// dgopkgpathOff writes an offset relocation to the pkg path symbol to c.
+func dgopkgpathOff(c rttype.Cursor, pkg *types.Pkg) {
 	if pkg == nil {
-		return objw.Uint32(s, ot, 0)
-	}
-	if pkg == types.LocalPkg && base.Ctxt.Pkgpath == "" {
-		// If we don't know the full import path of the package being compiled
-		// (i.e. -p was not passed on the compiler command line), emit a reference to
-		// type:.importpath.""., which the linker will rewrite using the correct import path.
-		// Every package that imports this one directly defines the symbol.
-		// See also https://groups.google.com/forum/#!topic/golang-dev/myb9s53HxGQ.
-		ns := base.Ctxt.Lookup(`type:.importpath."".`)
-		return objw.SymPtrOff(s, ot, ns)
+		c.WriteInt32(0)
+		return
 	}
 
 	dimportpath(pkg)
-	return objw.SymPtrOff(s, ot, pkg.Pathsym)
+	c.WriteSymPtrOff(pkg.Pathsym, false)
 }
 
 // dnameField dumps a reflect.name for a struct field.
-func dnameField(lsym *obj.LSym, ot int, spkg *types.Pkg, ft *types.Field) int {
+func dnameField(c rttype.Cursor, spkg *types.Pkg, ft *types.Field) {
 	if !types.IsExported(ft.Sym.Name) && ft.Sym.Pkg != spkg {
 		base.Fatalf("package mismatch for %v", ft.Sym)
 	}
 	nsym := dname(ft.Sym.Name, ft.Note, nil, types.IsExported(ft.Sym.Name), ft.Embedded != 0)
-	return objw.SymPtr(lsym, ot, nsym, 0)
+	c.Field("Bytes").WritePtr(nsym)
 }
 
 // dnameData writes the contents of a reflect.name into s at offset ot.
@@ -517,7 +505,9 @@ func dnameData(s *obj.LSym, ot int, name, tag string, pkg *types.Pkg, exported, 
 	ot = int(s.WriteBytes(base.Ctxt, int64(ot), b))
 
 	if pkg != nil {
-		ot = dgopkgpathOff(s, ot, pkg)
+		c := rttype.NewCursor(s, int64(ot), types.Types[types.TUINT32])
+		dgopkgpathOff(c, pkg)
+		ot += 4
 	}
 
 	return ot
@@ -548,7 +538,9 @@ func dname(name, tag string, pkg *types.Pkg, exported, embedded bool) *obj.LSym 
 			}
 		}
 	} else {
-		sname = fmt.Sprintf(`%s"".%d`, sname, dnameCount)
+		// TODO(mdempsky): We should be able to share these too (except
+		// maybe when dynamic linking).
+		sname = fmt.Sprintf("%s%s.%d", sname, types.LocalPkg.Prefix, dnameCount)
 		dnameCount++
 	}
 	if embedded {
@@ -566,14 +558,14 @@ func dname(name, tag string, pkg *types.Pkg, exported, embedded bool) *obj.LSym 
 
 // dextratype dumps the fields of a runtime.uncommontype.
 // dataAdd is the offset in bytes after the header where the
-// backing array of the []method field is written (by dextratypeData).
-func dextratype(lsym *obj.LSym, ot int, t *types.Type, dataAdd int) int {
+// backing array of the []method field should be written.
+func dextratype(lsym *obj.LSym, off int64, t *types.Type, dataAdd int) {
 	m := methods(t)
 	if t.Sym() == nil && len(m) == 0 {
-		return ot
+		base.Fatalf("extra requested of type with no extra info %v", t)
 	}
-	noff := int(types.RoundUp(int64(ot), int64(types.PtrSize)))
-	if noff != ot {
+	noff := types.RoundUp(off, int64(types.PtrSize))
+	if noff != off {
 		base.Fatalf("unexpected alignment in dextratype for %v", t)
 	}
 
@@ -581,7 +573,8 @@ func dextratype(lsym *obj.LSym, ot int, t *types.Type, dataAdd int) int {
 		writeType(a.type_)
 	}
 
-	ot = dgopkgpathOff(lsym, ot, typePkg(t))
+	c := rttype.NewCursor(lsym, off, rttype.UncommonType)
+	dgopkgpathOff(c.Field("PkgPath"), typePkg(t))
 
 	dataAdd += uncommonSize(t)
 	mcount := len(m)
@@ -593,11 +586,27 @@ func dextratype(lsym *obj.LSym, ot int, t *types.Type, dataAdd int) int {
 		base.Fatalf("methods are too far away on %v: %d", t, dataAdd)
 	}
 
-	ot = objw.Uint16(lsym, ot, uint16(mcount))
-	ot = objw.Uint16(lsym, ot, uint16(xcount))
-	ot = objw.Uint32(lsym, ot, uint32(dataAdd))
-	ot = objw.Uint32(lsym, ot, 0)
-	return ot
+	c.Field("Mcount").WriteUint16(uint16(mcount))
+	c.Field("Xcount").WriteUint16(uint16(xcount))
+	c.Field("Moff").WriteUint32(uint32(dataAdd))
+	// Note: there is an unused uint32 field here.
+
+	// Write the backing array for the []method field.
+	array := rttype.NewArrayCursor(lsym, off+int64(dataAdd), rttype.Method, mcount)
+	for i, a := range m {
+		exported := types.IsExported(a.name.Name)
+		var pkg *types.Pkg
+		if !exported && a.name.Pkg != typePkg(t) {
+			pkg = a.name.Pkg
+		}
+		nsym := dname(a.name.Name, "", pkg, exported, false)
+
+		e := array.Elem(i)
+		e.Field("Name").WriteSymPtrOff(nsym, false)
+		dmethodptrOff(e.Field("Mtyp"), writeType(a.mtype))
+		dmethodptrOff(e.Field("Ifn"), a.isym)
+		dmethodptrOff(e.Field("Tfn"), a.tsym)
+	}
 }
 
 func typePkg(t *types.Type) *types.Pkg {
@@ -616,34 +625,11 @@ func typePkg(t *types.Type) *types.Pkg {
 	return nil
 }
 
-// dextratypeData dumps the backing array for the []method field of
-// runtime.uncommontype.
-func dextratypeData(lsym *obj.LSym, ot int, t *types.Type) int {
-	for _, a := range methods(t) {
-		// ../../../../runtime/type.go:/method
-		exported := types.IsExported(a.name.Name)
-		var pkg *types.Pkg
-		if !exported && a.name.Pkg != typePkg(t) {
-			pkg = a.name.Pkg
-		}
-		nsym := dname(a.name.Name, "", pkg, exported, false)
-
-		ot = objw.SymPtrOff(lsym, ot, nsym)
-		ot = dmethodptrOff(lsym, ot, writeType(a.mtype))
-		ot = dmethodptrOff(lsym, ot, a.isym)
-		ot = dmethodptrOff(lsym, ot, a.tsym)
-	}
-	return ot
-}
-
-func dmethodptrOff(s *obj.LSym, ot int, x *obj.LSym) int {
-	objw.Uint32(s, ot, 0)
-	r := obj.Addrel(s)
-	r.Off = int32(ot)
-	r.Siz = 4
+func dmethodptrOff(c rttype.Cursor, x *obj.LSym) {
+	c.WriteInt32(0)
+	r := c.Reloc()
 	r.Sym = x
 	r.Type = objabi.R_METHODOFF
-	return ot + 4
 }
 
 var kinds = []int{
@@ -681,8 +667,8 @@ var (
 )
 
 // types.Type 转储成 runtime._type
-// dcommontype dumps the contents of a reflect.rtype (runtime._type).
-func dcommontype(lsym *obj.LSym, t *types.Type) int {
+// dcommontype dumps the contents of a reflect.rtype (runtime._type) to c.
+func dcommontype(c rttype.Cursor, t *types.Type) {
 	types.CalcSize(t)
 	eqfunc := geneq(t)
 
@@ -714,10 +700,9 @@ func dcommontype(lsym *obj.LSym, t *types.Type) int {
 	//		str           nameOff
 	//		ptrToThis     typeOff
 	//	}
-	ot := 0
-	ot = objw.Uintptr(lsym, ot, uint64(t.Size()))
-	ot = objw.Uintptr(lsym, ot, uint64(ptrdata))
-	ot = objw.Uint32(lsym, ot, types.TypeHash(t))
+	c.Field("Size_").WriteUintptr(uint64(t.Size()))
+	c.Field("PtrBytes").WriteUintptr(uint64(ptrdata))
+	c.Field("Hash").WriteUint32(types.TypeHash(t))
 
 	var tflag abi.TFlag
 	if uncommonSize(t) != 0 {
@@ -754,7 +739,7 @@ func dcommontype(lsym *obj.LSym, t *types.Type) int {
 		// this should optimize away completely
 		panic("Unexpected change in size of abi.TFlag")
 	}
-	ot = objw.Uint8(lsym, ot, uint8(tflag))
+	c.Field("TFlag").WriteUint8(uint8(tflag))
 
 	// runtime (and common sense) expects alignment to be a power of two.
 	i := int(uint8(t.Alignment()))
@@ -765,8 +750,8 @@ func dcommontype(lsym *obj.LSym, t *types.Type) int {
 	if i&(i-1) != 0 {
 		base.Fatalf("invalid alignment %d for %v", uint8(t.Alignment()), t)
 	}
-	ot = objw.Uint8(lsym, ot, uint8(t.Alignment())) // align
-	ot = objw.Uint8(lsym, ot, uint8(t.Alignment())) // fieldAlign
+	c.Field("Align_").WriteUint8(uint8(t.Alignment()))
+	c.Field("FieldAlign_").WriteUint8(uint8(t.Alignment()))
 
 	i = kinds[t.Kind()]
 	if types.IsDirectIface(t) {
@@ -775,26 +760,14 @@ func dcommontype(lsym *obj.LSym, t *types.Type) int {
 	if useGCProg {
 		i |= objabi.KindGCProg
 	}
-	ot = objw.Uint8(lsym, ot, uint8(i)) // kind
-	if eqfunc != nil {
-		ot = objw.SymPtr(lsym, ot, eqfunc, 0) // equality function
-	} else {
-		ot = objw.Uintptr(lsym, ot, 0) // type we can't do == with
-	}
-	ot = objw.SymPtr(lsym, ot, gcsym, 0) // gcdata
+	c.Field("Kind_").WriteUint8(uint8(i))
+
+	c.Field("Equal").WritePtr(eqfunc)
+	c.Field("GCData").WritePtr(gcsym)
 
 	nsym := dname(p, "", nil, exported, false)
-	ot = objw.SymPtrOff(lsym, ot, nsym) // str
-	// ptrToThis
-	if sptr == nil {
-		ot = objw.Uint32(lsym, ot, 0)
-	} else if sptrWeak {
-		ot = objw.SymPtrWeakOff(lsym, ot, sptr)
-	} else {
-		ot = objw.SymPtrOff(lsym, ot, sptr)
-	}
-
-	return ot
+	c.Field("Str").WriteSymPtrOff(nsym, false)
+	c.Field("PtrToThis").WriteSymPtrOff(sptr, sptrWeak)
 }
 
 // TrackSym returns the symbol for tracking use of field/method f, assumed
@@ -998,87 +971,137 @@ func writeType(t *types.Type) *obj.LSym {
 		return lsym
 	}
 
-	ot := 0
+	// Type layout                          Written by               Marker
+	// +--------------------------------+                            - 0
+	// | abi/internal.Type              |   dcommontype
+	// +--------------------------------+                            - A
+	// | additional type-dependent      |   code in the switch below
+	// | fields, e.g.                   |
+	// | abi/internal.ArrayType.Len     |
+	// +--------------------------------+                            - B
+	// | internal/abi.UncommonType      |   dextratype
+	// | This section is optional,      |
+	// | if type has a name or methods  |
+	// +--------------------------------+                            - C
+	// | variable-length data           |   code in the switch below
+	// | referenced by                  |
+	// | type-dependent fields, e.g.    |
+	// | abi/internal.StructType.Fields |
+	// | dataAdd = size of this section |
+	// +--------------------------------+                            - D
+	// | method list, if any            |   dextratype
+	// +--------------------------------+                            - E
+
+	// UncommonType section is included if we have a name or a method.
+	extra := t.Sym() != nil || len(methods(t)) != 0
+
+	// Decide the underlying type of the descriptor, and remember
+	// the size we need for variable-length data.
+	var rt *types.Type
+	dataAdd := 0
 	switch t.Kind() {
 	default:
-		ot = dcommontype(lsym, t)
-		ot = dextratype(lsym, ot, t, 0)
-
+		rt = rttype.Type
 	case types.TARRAY:
-		// ../../../../runtime/type.go:/arrayType
+		rt = rttype.ArrayType
+	case types.TSLICE:
+		rt = rttype.SliceType
+	case types.TCHAN:
+		rt = rttype.ChanType
+	case types.TFUNC:
+		rt = rttype.FuncType
+		dataAdd = (t.NumRecvs() + t.NumParams() + t.NumResults()) * types.PtrSize
+	case types.TINTER:
+		rt = rttype.InterfaceType
+		dataAdd = len(imethods(t)) * int(rttype.IMethod.Size())
+	case types.TMAP:
+		rt = rttype.MapType
+	case types.TPTR:
+		rt = rttype.PtrType
+		// TODO: use rttype.Type for Elem() is ANY?
+	case types.TSTRUCT:
+		rt = rttype.StructType
+		dataAdd = t.NumFields() * int(rttype.StructField.Size())
+	}
+
+	// Compute offsets of each section.
+	B := rt.Size()
+	C := B
+	if extra {
+		C = B + rttype.UncommonType.Size()
+	}
+	D := C + int64(dataAdd)
+	E := D + int64(len(methods(t)))*rttype.Method.Size()
+
+	// Write the runtime._type
+	c := rttype.NewCursor(lsym, 0, rt)
+	if rt == rttype.Type {
+		dcommontype(c, t)
+	} else {
+		dcommontype(c.Field("Type"), t)
+	}
+
+	// Write additional type-specific data
+	// (Both the fixed size and variable-sized sections.)
+	switch t.Kind() {
+	case types.TARRAY:
+		// internal/abi.ArrayType
 		s1 := writeType(t.Elem())
 		t2 := types.NewSlice(t.Elem())
 		s2 := writeType(t2)
-		ot = dcommontype(lsym, t)
-		ot = objw.SymPtr(lsym, ot, s1, 0)
-		ot = objw.SymPtr(lsym, ot, s2, 0)
-		ot = objw.Uintptr(lsym, ot, uint64(t.NumElem()))
-		ot = dextratype(lsym, ot, t, 0)
+		c.Field("Elem").WritePtr(s1)
+		c.Field("Slice").WritePtr(s2)
+		c.Field("Len").WriteUintptr(uint64(t.NumElem()))
 
 	case types.TSLICE:
-		// ../../../../runtime/type.go:/sliceType
+		// internal/abi.SliceType
 		s1 := writeType(t.Elem())
-		ot = dcommontype(lsym, t)
-		ot = objw.SymPtr(lsym, ot, s1, 0)
-		ot = dextratype(lsym, ot, t, 0)
+		c.Field("Elem").WritePtr(s1)
 
 	case types.TCHAN:
-		// ../../../../runtime/type.go:/chanType
+		// internal/abi.ChanType
 		s1 := writeType(t.Elem())
-		ot = dcommontype(lsym, t)
-		ot = objw.SymPtr(lsym, ot, s1, 0)
-		ot = objw.Uintptr(lsym, ot, uint64(t.ChanDir()))
-		ot = dextratype(lsym, ot, t, 0)
+		c.Field("Elem").WritePtr(s1)
+		c.Field("Dir").WriteInt(int64(t.ChanDir()))
 
 	case types.TFUNC:
+		// internal/abi.FuncType
 		for _, t1 := range t.RecvParamsResults() {
 			writeType(t1.Type)
 		}
-
-		ot = dcommontype(lsym, t)
 		inCount := t.NumRecvs() + t.NumParams()
 		outCount := t.NumResults()
 		if t.IsVariadic() {
 			outCount |= 1 << 15
 		}
-		ot = objw.Uint16(lsym, ot, uint16(inCount))
-		ot = objw.Uint16(lsym, ot, uint16(outCount))
-		if types.PtrSize == 8 {
-			ot += 4 // align for *rtype
-		}
 
-		dataAdd := (inCount + t.NumResults()) * types.PtrSize
-		ot = dextratype(lsym, ot, t, dataAdd)
+		c.Field("InCount").WriteUint16(uint16(inCount))
+		c.Field("OutCount").WriteUint16(uint16(outCount))
 
 		// Array of rtype pointers follows funcType.
-		for _, t1 := range t.RecvParamsResults() {
-			ot = objw.SymPtr(lsym, ot, writeType(t1.Type), 0)
+		typs := t.RecvParamsResults()
+		array := rttype.NewArrayCursor(lsym, C, types.Types[types.TUNSAFEPTR], len(typs))
+		for i, t1 := range typs {
+			array.Elem(i).WritePtr(writeType(t1.Type))
 		}
 
 	case types.TINTER:
+		// internal/abi.InterfaceType
 		m := imethods(t)
 		n := len(m)
 		for _, a := range m {
 			writeType(a.type_)
 		}
 
-		// ../../../../runtime/type.go:/interfaceType
-		ot = dcommontype(lsym, t)
-
 		var tpkg *types.Pkg
 		if t.Sym() != nil && t != types.Types[t.Kind()] && t != types.ErrorType {
 			tpkg = t.Sym().Pkg
 		}
-		ot = dgopkgpath(lsym, ot, tpkg)
+		dgopkgpath(c.Field("PkgPath"), tpkg)
+		c.Field("Methods").WriteSlice(lsym, C, int64(n), int64(n))
 
-		ot = objw.SymPtr(lsym, ot, lsym, ot+3*types.PtrSize+uncommonSize(t))
-		ot = objw.Uintptr(lsym, ot, uint64(n))
-		ot = objw.Uintptr(lsym, ot, uint64(n))
-		dataAdd := imethodSize() * n
-		ot = dextratype(lsym, ot, t, dataAdd)
-
-		for _, a := range m {
-			// ../../../../runtime/type.go:/imethod
+		array := rttype.NewArrayCursor(lsym, C, rttype.IMethod, n)
+		for i, a := range m {
 			exported := types.IsExported(a.name.Name)
 			var pkg *types.Pkg
 			if !exported && a.name.Pkg != tpkg {
@@ -1086,39 +1109,39 @@ func writeType(t *types.Type) *obj.LSym {
 			}
 			nsym := dname(a.name.Name, "", pkg, exported, false)
 
-			ot = objw.SymPtrOff(lsym, ot, nsym)
-			ot = objw.SymPtrOff(lsym, ot, writeType(a.type_))
+			e := array.Elem(i)
+			e.Field("Name").WriteSymPtrOff(nsym, false)
+			e.Field("Typ").WriteSymPtrOff(writeType(a.type_), false)
 		}
 
-	// ../../../../runtime/type.go:/mapType
 	case types.TMAP:
+		// internal/abi.MapType
 		s1 := writeType(t.Key())
 		s2 := writeType(t.Elem())
 		s3 := writeType(MapBucketType(t))
 		hasher := genhash(t.Key())
 
-		ot = dcommontype(lsym, t)
-		ot = objw.SymPtr(lsym, ot, s1, 0)
-		ot = objw.SymPtr(lsym, ot, s2, 0)
-		ot = objw.SymPtr(lsym, ot, s3, 0)
-		ot = objw.SymPtr(lsym, ot, hasher, 0)
+		c.Field("Key").WritePtr(s1)
+		c.Field("Elem").WritePtr(s2)
+		c.Field("Bucket").WritePtr(s3)
+		c.Field("Hasher").WritePtr(hasher)
 		var flags uint32
 		// Note: flags must match maptype accessors in ../../../../runtime/type.go
 		// and maptype builder in ../../../../reflect/type.go:MapOf.
 		if t.Key().Size() > MAXKEYSIZE {
-			ot = objw.Uint8(lsym, ot, uint8(types.PtrSize))
+			c.Field("KeySize").WriteUint8(uint8(types.PtrSize))
 			flags |= 1 // indirect key
 		} else {
-			ot = objw.Uint8(lsym, ot, uint8(t.Key().Size()))
+			c.Field("KeySize").WriteUint8(uint8(t.Key().Size()))
 		}
 
 		if t.Elem().Size() > MAXELEMSIZE {
-			ot = objw.Uint8(lsym, ot, uint8(types.PtrSize))
+			c.Field("ValueSize").WriteUint8(uint8(types.PtrSize))
 			flags |= 2 // indirect value
 		} else {
-			ot = objw.Uint8(lsym, ot, uint8(t.Elem().Size()))
+			c.Field("ValueSize").WriteUint8(uint8(t.Elem().Size()))
 		}
-		ot = objw.Uint16(lsym, ot, uint16(MapBucketType(t).Size()))
+		c.Field("BucketSize").WriteUint16(uint16(MapBucketType(t).Size()))
 		if types.IsReflexive(t.Key()) {
 			flags |= 4 // reflexive key
 		}
@@ -1128,8 +1151,8 @@ func writeType(t *types.Type) *obj.LSym {
 		if hashMightPanic(t.Key()) {
 			flags |= 16 // hash might panic
 		}
-		ot = objw.Uint32(lsym, ot, flags)
-		ot = dextratype(lsym, ot, t, 0)
+		c.Field("Flags").WriteUint32(flags)
+
 		if u := t.Underlying(); u != t {
 			// If t is a named map type, also keep the underlying map
 			// type live in the binary. This is important to make sure that
@@ -1141,24 +1164,16 @@ func writeType(t *types.Type) *obj.LSym {
 		}
 
 	case types.TPTR:
+		// internal/abi.PtrType
 		if t.Elem().Kind() == types.TANY {
-			// ../../../../runtime/type.go:/UnsafePointerType
-			ot = dcommontype(lsym, t)
-			ot = dextratype(lsym, ot, t, 0)
-
-			break
+			base.Fatalf("bad pointer base type")
 		}
 
-		// ../../../../runtime/type.go:/ptrType
 		s1 := writeType(t.Elem())
+		c.Field("Elem").WritePtr(s1)
 
-		ot = dcommontype(lsym, t)
-		ot = objw.SymPtr(lsym, ot, s1, 0)
-		ot = dextratype(lsym, ot, t, 0)
-
-	// ../../../../runtime/type.go:/structType
-	// for security, only the exported fields.
 	case types.TSTRUCT:
+		// internal/abi.StructType
 		fields := t.Fields()
 		for _, t1 := range fields {
 			writeType(t1.Type)
@@ -1177,21 +1192,21 @@ func writeType(t *types.Type) *obj.LSym {
 			}
 		}
 
-		ot = dcommontype(lsym, t)
-		ot = dgopkgpath(lsym, ot, spkg)
-		ot = objw.SymPtr(lsym, ot, lsym, ot+3*types.PtrSize+uncommonSize(t))
-		ot = objw.Uintptr(lsym, ot, uint64(len(fields)))
-		ot = objw.Uintptr(lsym, ot, uint64(len(fields)))
+		dgopkgpath(c.Field("PkgPath"), spkg)
+		c.Field("Fields").WriteSlice(lsym, C, int64(len(fields)), int64(len(fields)))
 
-		dataAdd := len(fields) * structfieldSize()
-		ot = dextratype(lsym, ot, t, dataAdd)
-
-		for _, f := range fields {
-			// ../../../../runtime/type.go:/structField
-			ot = dnameField(lsym, ot, spkg, f)
-			ot = objw.SymPtr(lsym, ot, writeType(f.Type), 0)
-			ot = objw.Uintptr(lsym, ot, uint64(f.Offset))
+		array := rttype.NewArrayCursor(lsym, C, rttype.StructField, len(fields))
+		for i, f := range fields {
+			e := array.Elem(i)
+			dnameField(e.Field("Name"), spkg, f)
+			e.Field("Typ").WritePtr(writeType(f.Type))
+			e.Field("Offset").WriteUintptr(uint64(f.Offset))
 		}
+	}
+
+	// Write the extra info, if any.
+	if extra {
+		dextratype(lsym, B, t, dataAdd)
 	}
 
 	// Note: DUPOK is required to ensure that we don't end up with more
@@ -1203,8 +1218,7 @@ func writeType(t *types.Type) *obj.LSym {
 		dupok = obj.DUPOK
 	}
 
-	ot = dextratypeData(lsym, ot, t)
-	objw.Global(lsym, int32(ot), int16(dupok|obj.RODATA))
+	objw.Global(lsym, int32(E), int16(dupok|obj.RODATA))
 
 	// The linker will leave a table of all the typelinks for
 	// types in the binary, so the runtime can find them.
@@ -1270,7 +1284,9 @@ func WriteRuntimeTypes() {
 		}
 		signatslice = signatslice[len(signats):]
 	}
+}
 
+func WriteGCSymbols() {
 	// Emit GC data symbols.
 	gcsyms := make([]typeAndStr, 0, len(gcsymset))
 	for t := range gcsymset {
@@ -1379,13 +1395,6 @@ func WritePluginTable() {
 	objw.Global(lsym, int32(ot), int16(obj.RODATA))
 }
 
-func WriteImportStrings() {
-	// generate import strings for imported packages
-	for _, p := range types.ImportedPkgList() {
-		dimportpath(p)
-	}
-}
-
 // writtenByWriteBasicTypes reports whether typ is written by WriteBasicTypes.
 // WriteBasicTypes always writes pointer types; any pointer has been stripped off typ already.
 func writtenByWriteBasicTypes(typ *types.Type) bool {
@@ -1422,45 +1431,32 @@ func WriteBasicTypes() {
 	// another possible choice would be package main,
 	// but using runtime means fewer copies in object files.
 	// The code here needs to be in sync with writtenByWriteBasicTypes above.
-	if base.Ctxt.Pkgpath == "runtime" {
-		// Note: always write NewPtr(t) because NeedEmit's caller strips the pointer.
-		var list []*types.Type
-		for i := types.Kind(1); i <= types.TBOOL; i++ {
-			list = append(list, types.Types[i])
-		}
-		list = append(list,
-			types.Types[types.TSTRING],
-			types.Types[types.TUNSAFEPTR],
-			types.AnyType,
-			types.ErrorType)
-		for _, t := range list {
-			writeType(types.NewPtr(t))
-			writeType(types.NewPtr(types.NewSlice(t)))
-		}
-
-		// emit type for func(error) string,
-		// which is the type of an auto-generated wrapper.
-		writeType(types.NewPtr(types.NewSignature(nil, []*types.Field{
-			types.NewField(base.Pos, nil, types.ErrorType),
-		}, []*types.Field{
-			types.NewField(base.Pos, nil, types.Types[types.TSTRING]),
-		})))
-
-		// add paths for runtime and main, which 6l imports implicitly.
-		dimportpath(ir.Pkgs.Runtime)
-
-		if base.Flag.Race {
-			dimportpath(types.NewPkg("runtime/race", ""))
-		}
-		if base.Flag.MSan {
-			dimportpath(types.NewPkg("runtime/msan", ""))
-		}
-		if base.Flag.ASan {
-			dimportpath(types.NewPkg("runtime/asan", ""))
-		}
-
-		dimportpath(types.NewPkg("main", ""))
+	if base.Ctxt.Pkgpath != "runtime" {
+		return
 	}
+
+	// Note: always write NewPtr(t) because NeedEmit's caller strips the pointer.
+	var list []*types.Type
+	for i := types.Kind(1); i <= types.TBOOL; i++ {
+		list = append(list, types.Types[i])
+	}
+	list = append(list,
+		types.Types[types.TSTRING],
+		types.Types[types.TUNSAFEPTR],
+		types.AnyType,
+		types.ErrorType)
+	for _, t := range list {
+		writeType(types.NewPtr(t))
+		writeType(types.NewPtr(types.NewSlice(t)))
+	}
+
+	// emit type for func(error) string,
+	// which is the type of an auto-generated wrapper.
+	writeType(types.NewPtr(types.NewSignature(nil, []*types.Field{
+		types.NewField(base.Pos, nil, types.ErrorType),
+	}, []*types.Field{
+		types.NewField(base.Pos, nil, types.Types[types.TSTRING]),
+	})))
 }
 
 type typeAndStr struct {
@@ -1860,7 +1856,7 @@ func MarkUsedIfaceMethod(n *ir.CallExpr) {
 	if ir.CurFunc.LSym == nil {
 		return
 	}
-	dot := n.X.(*ir.SelectorExpr)
+	dot := n.Fun.(*ir.SelectorExpr)
 	ityp := dot.X.Type()
 	if ityp.HasShape() {
 		// Here we're calling a method on a generic interface. Something like:
@@ -1883,17 +1879,8 @@ func MarkUsedIfaceMethod(n *ir.CallExpr) {
 		// some sort of fuzzy shape matching. For now, only use the name
 		// of the method for matching.
 		r := obj.Addrel(ir.CurFunc.LSym)
-		// We use a separate symbol just to tell the linker the method name.
-		// (The symbol itself is not needed in the final binary. Do not use
-		// staticdata.StringSym, which creates a content addessable symbol,
-		// which may have trailing zero bytes. This symbol doesn't need to
-		// be deduplicated anyway.)
-		name := dot.Sel.Name
-		var nameSym obj.LSym
-		nameSym.WriteString(base.Ctxt, 0, len(name), name)
-		objw.Global(&nameSym, int32(len(name)), obj.RODATA)
-		r.Sym = &nameSym
-		r.Type = objabi.R_USEGENERICIFACEMETHOD
+		r.Sym = staticdata.StringSymNoCommon(dot.Sel.Name)
+		r.Type = objabi.R_USENAMEDMETHOD
 		return
 	}
 

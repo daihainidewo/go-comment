@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build unix || (js && wasm) || wasip1 || windows
+//go:build unix || js || wasip1 || windows
 
 package net
 
@@ -47,13 +47,20 @@ func (a *TCPAddr) toLocal(net string) sockaddr {
 // readFrom 尝试使用系统调用从内核态复制数据实现零拷贝
 // 如果失败就使用简单的读写复制
 func (c *TCPConn) readFrom(r io.Reader) (int64, error) {
-	if n, err, handled := splice(c.fd, r); handled {
+	if n, err, handled := spliceFrom(c.fd, r); handled {
 		return n, err
 	}
 	if n, err, handled := sendFile(c.fd, r); handled {
 		return n, err
 	}
 	return genericReadFrom(c, r)
+}
+
+func (c *TCPConn) writeTo(w io.Writer) (int64, error) {
+	if n, err, handled := spliceTo(w, c.fd); handled {
+		return n, err
+	}
+	return genericWriteTo(c, w)
 }
 
 func (sd *sysDialer) dialTCP(ctx context.Context, laddr, raddr *TCPAddr) (*TCPConn, error) {

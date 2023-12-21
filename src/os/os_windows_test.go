@@ -281,7 +281,7 @@ func TestDirectoryJunction(t *testing.T) {
 			},
 		},
 		{
-			// Do as junction utility https://technet.microsoft.com/en-au/sysinternals/bb896768.aspx does - set PrintNameLength to 0.
+			// Do as junction utility https://learn.microsoft.com/en-us/sysinternals/downloads/junction does - set PrintNameLength to 0.
 			name: "have_blank_print_name",
 			mklink: func(link, target string) error {
 				var t reparseData
@@ -581,7 +581,7 @@ func TestStatLxSymLink(t *testing.T) {
 	}
 	if m := fi.Mode(); m&fs.ModeSymlink != 0 {
 		// This can happen depending on newer WSL versions when running as admin or in developer mode.
-		t.Skip("skipping: WSL created reparse tag IO_REPARSE_TAG_SYMLINK instead of a IO_REPARSE_TAG_LX_SYMLINK")
+		t.Skip("skipping: WSL created reparse tag IO_REPARSE_TAG_SYMLINK instead of an IO_REPARSE_TAG_LX_SYMLINK")
 	}
 	// Stat'ing a IO_REPARSE_TAG_LX_SYMLINK from outside WSL always return ERROR_CANT_ACCESS_FILE.
 	// We check this condition to validate that os.Stat has tried to follow the link.
@@ -885,7 +885,7 @@ func main() {
 		` \\\\\""x"""y z`,
 		"\tb\t\"x\ty\"",
 		` "Брад" d e`,
-		// examples from https://msdn.microsoft.com/en-us/library/17w5ykft.aspx
+		// examples from https://learn.microsoft.com/en-us/cpp/cpp/main-function-command-line-args
 		` "abc" d e`,
 		` a\\b d"e f"g h`,
 		` a\\\"b c d`,
@@ -1228,7 +1228,7 @@ func TestRootDirAsTemp(t *testing.T) {
 		t.Skip(err)
 	}
 
-	cmd := testenv.Command(t, exe, "-test.run=TestRootDirAsTemp")
+	cmd := testenv.Command(t, exe, "-test.run=^TestRootDirAsTemp$")
 	cmd.Env = cmd.Environ()
 	cmd.Env = append(cmd.Env, "GO_WANT_HELPER_PROCESS=1")
 	cmd.Env = append(cmd.Env, "TMP="+newtmp)

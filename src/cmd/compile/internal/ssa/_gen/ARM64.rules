@@ -485,8 +485,8 @@
 			(STP [16] dst (Select0 <typ.UInt64> (LDP [16] src mem)) (Select1 <typ.UInt64> (LDP [16] src mem))
 				(STP dst (Select0 <typ.UInt64> (LDP src mem)) (Select1 <typ.UInt64> (LDP src mem)) mem))))
 
-(MOVDstorezero {s} [i] ptr x:(MOVDstorezero {s} [i+8] ptr mem)) && x.Uses == 1 && clobber(x) => (MOVQstorezero {s} [i] ptr mem)
-(MOVDstorezero {s} [i] ptr x:(MOVDstorezero {s} [i-8] ptr mem)) && x.Uses == 1 && clobber(x) => (MOVQstorezero {s} [i-8] ptr mem)
+(MOVDstorezero {s} [i] ptr x:(MOVDstorezero {s} [i+8] ptr mem)) && x.Uses == 1 && setPos(v, x.Pos) && clobber(x) => (MOVQstorezero {s} [i] ptr mem)
+(MOVDstorezero {s} [i] ptr x:(MOVDstorezero {s} [i-8] ptr mem)) && x.Uses == 1 && setPos(v, x.Pos) && clobber(x) => (MOVQstorezero {s} [i-8] ptr mem)
 
 // strip off fractional word move
 (Move [s] dst src mem) && s%16 != 0 && s%16 <= 8 && s > 16 =>
@@ -1555,20 +1555,22 @@
 (GreaterEqualU (FlagConstant [fc])) => (MOVDconst [b2i(fc.uge())])
 
 // absorb InvertFlags into boolean values
-(Equal         (InvertFlags x)) => (Equal x)
-(NotEqual      (InvertFlags x)) => (NotEqual x)
-(LessThan      (InvertFlags x)) => (GreaterThan x)
-(LessThanU     (InvertFlags x)) => (GreaterThanU x)
-(GreaterThan   (InvertFlags x)) => (LessThan x)
-(GreaterThanU  (InvertFlags x)) => (LessThanU x)
-(LessEqual     (InvertFlags x)) => (GreaterEqual x)
-(LessEqualU    (InvertFlags x)) => (GreaterEqualU x)
-(GreaterEqual  (InvertFlags x)) => (LessEqual x)
-(GreaterEqualU (InvertFlags x)) => (LessEqualU x)
-(LessThanF     (InvertFlags x)) => (GreaterThanF x)
-(LessEqualF    (InvertFlags x)) => (GreaterEqualF x)
-(GreaterThanF  (InvertFlags x)) => (LessThanF x)
-(GreaterEqualF (InvertFlags x)) => (LessEqualF x)
+(Equal            (InvertFlags x)) => (Equal x)
+(NotEqual         (InvertFlags x)) => (NotEqual x)
+(LessThan         (InvertFlags x)) => (GreaterThan x)
+(LessThanU        (InvertFlags x)) => (GreaterThanU x)
+(GreaterThan      (InvertFlags x)) => (LessThan x)
+(GreaterThanU     (InvertFlags x)) => (LessThanU x)
+(LessEqual        (InvertFlags x)) => (GreaterEqual x)
+(LessEqualU       (InvertFlags x)) => (GreaterEqualU x)
+(GreaterEqual     (InvertFlags x)) => (LessEqual x)
+(GreaterEqualU    (InvertFlags x)) => (LessEqualU x)
+(LessThanF        (InvertFlags x)) => (GreaterThanF x)
+(LessEqualF       (InvertFlags x)) => (GreaterEqualF x)
+(GreaterThanF     (InvertFlags x)) => (LessThanF x)
+(GreaterEqualF    (InvertFlags x)) => (LessEqualF x)
+(LessThanNoov     (InvertFlags x)) => (CSEL0 [OpARM64NotEqual] (GreaterEqualNoov <typ.Bool> x) x)
+(GreaterEqualNoov (InvertFlags x)) => (CSINC [OpARM64NotEqual] (LessThanNoov <typ.Bool> x) (MOVDconst [0]) x)
 
 // Boolean-generating instructions (NOTE: NOT all boolean Values) always
 // zero upper bit of the register; no need to zero-extend

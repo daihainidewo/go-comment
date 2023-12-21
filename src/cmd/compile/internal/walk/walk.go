@@ -18,7 +18,6 @@ import (
 
 // The constant is known to runtime.
 const tmpstringbufsize = 32
-const zeroValSize = 1024 // must match value of runtime/map.go:maxZero
 
 func Walk(fn *ir.Func) {
 	ir.CurFunc = fn
@@ -43,10 +42,6 @@ func Walk(fn *ir.Func) {
 	if base.Flag.W != 0 {
 		s := fmt.Sprintf("after walk %v", ir.CurFunc.Sym())
 		ir.DumpList(s, ir.CurFunc.Body)
-	}
-
-	if base.Flag.Cfg.Instrumenting {
-		instrument(fn)
 	}
 
 	// Eagerly compute sizes of all variables for SSA.
@@ -333,7 +328,7 @@ func mayCall(n ir.Node) bool {
 			return n.Type().IsString() || n.Type().IsFloat()
 
 		case ir.OLITERAL, ir.ONIL, ir.ONAME, ir.OLINKSYMOFFSET, ir.OMETHEXPR,
-			ir.OAND, ir.OANDNOT, ir.OLSH, ir.OOR, ir.ORSH, ir.OXOR, ir.OCOMPLEX, ir.OEFACE,
+			ir.OAND, ir.OANDNOT, ir.OLSH, ir.OOR, ir.ORSH, ir.OXOR, ir.OCOMPLEX, ir.OMAKEFACE,
 			ir.OADDR, ir.OBITNOT, ir.ONOT, ir.OPLUS,
 			ir.OCAP, ir.OIMAG, ir.OLEN, ir.OREAL,
 			ir.OCONVNOP, ir.ODOT,

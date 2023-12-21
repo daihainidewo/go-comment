@@ -414,7 +414,7 @@ func Init() {
 	// Disable any ssh connection pooling by Git.
 	// If a Git subprocess forks a child into the background to cache a new connection,
 	// that child keeps stdout/stderr open. After the Git subprocess exits,
-	// os /exec expects to be able to read from the stdout/stderr pipe
+	// os/exec expects to be able to read from the stdout/stderr pipe
 	// until EOF to get all the data that the Git subprocess wrote before exiting.
 	// The EOF doesn't come until the child exits too, because the child
 	// is holding the write end of the pipe.
@@ -485,7 +485,13 @@ func Init() {
 	if len(list) > 0 && list[0] != "" {
 		gopath = list[0]
 		if _, err := fsys.Stat(filepath.Join(gopath, "go.mod")); err == nil {
-			base.Fatalf("$GOPATH/go.mod exists but should not")
+			fmt.Fprintf(os.Stderr, "go: warning: ignoring go.mod in $GOPATH %v\n", gopath)
+			if RootMode == NeedRoot {
+				base.Fatal(ErrNoModRoot)
+			}
+			if !mustUseModules {
+				return
+			}
 		}
 	}
 }

@@ -91,6 +91,7 @@ func TestCrashDumpsAllThreads(t *testing.T) {
 
 	cmd := testenv.Command(t, exe, "CrashDumpsAllThreads")
 	cmd = testenv.CleanCmdEnv(cmd)
+	cmd.Dir = t.TempDir() // put any core file in tempdir
 	cmd.Env = append(cmd.Env,
 		"GOTRACEBACK=crash",
 		// Set GOGC=off. Because of golang.org/issue/10958, the tight
@@ -164,6 +165,7 @@ func TestPanicSystemstack(t *testing.T) {
 	t.Parallel()
 	cmd := exec.Command(os.Args[0], "testPanicSystemstackInternal")
 	cmd = testenv.CleanCmdEnv(cmd)
+	cmd.Dir = t.TempDir() // put any core file in tempdir
 	cmd.Env = append(cmd.Env, "GOTRACEBACK=crash")
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -213,6 +215,12 @@ func TestPanicSystemstack(t *testing.T) {
 	nSys := bytes.Count(tb, []byte(sysFunc))
 	if nUser != 2 || nSys != 2 {
 		t.Fatalf("want %d user stack frames in %s and %d system stack frames in %s, got %d and %d:\n%s", 2, userFunc, 2, sysFunc, nUser, nSys, string(tb))
+	}
+
+	// Traceback should not contain "unexpected SPWRITE" when
+	// unwinding the system stacks.
+	if bytes.Contains(tb, []byte("unexpected SPWRITE")) {
+		t.Errorf("unexpected \"unexpected SPWRITE\" in traceback:\n%s", tb)
 	}
 }
 

@@ -111,10 +111,6 @@ var reqWriteExcludeHeader = map[string]bool{
 type Request struct {
 	// Method specifies the HTTP method (GET, POST, PUT, etc.).
 	// For client requests, an empty string means GET.
-	//
-	// Go's HTTP client does not support sending a request with
-	// the CONNECT method. See the documentation on Transport for
-	// details.
 	Method string
 
 	// URL specifies either the URI being requested (for server
@@ -329,6 +325,11 @@ type Request struct {
 	// It is unexported to prevent people from using Context wrong
 	// and mutating the contexts held by callers of the same request.
 	ctx context.Context
+
+	// The following fields are for requests matched by ServeMux.
+	pat         *pattern          // the pattern that matched
+	matches     []string          // values for the matching wildcards in pat
+	otherValues map[string]string // for calls to SetPathValue that don't match a wildcard
 }
 
 // Context returns the request's context. To change the context, use
@@ -851,8 +852,9 @@ func NewRequest(method, url string, body io.Reader) (*Request, error) {
 // optional body.
 //
 // If the provided body is also an io.Closer, the returned
-// Request.Body is set to body and will be closed by the Client
-// methods Do, Post, and PostForm, and Transport.RoundTrip.
+// Request.Body is set to body and will be closed (possibly
+// asynchronously) by the Client methods Do, Post, and PostForm,
+// and Transport.RoundTrip.
 //
 // NewRequestWithContext returns a Request suitable for use with
 // Client.Do or Transport.RoundTrip. To create a request for use with
@@ -1418,6 +1420,48 @@ func (r *Request) FormFile(key string) (multipart.File, *multipart.FileHeader, e
 		}
 	}
 	return nil, nil, ErrMissingFile
+}
+
+// PathValue returns the value for the named path wildcard in the ServeMux pattern
+// that matched the request.
+// It returns the empty string if the request was not matched against a pattern
+// or there is no such wildcard in the pattern.
+func (r *Request) PathValue(name string) string {
+	if i := r.patIndex(name); i >= 0 {
+		return r.matches[i]
+	}
+	return r.otherValues[name]
+}
+
+func (r *Request) SetPathValue(name, value string) {
+	if i := r.patIndex(name); i >= 0 {
+		r.matches[i] = value
+	} else {
+		if r.otherValues == nil {
+			r.otherValues = map[string]string{}
+		}
+		r.otherValues[name] = value
+	}
+}
+
+// patIndex returns the index of name in the list of named wildcards of the
+// request's pattern, or -1 if there is no such name.
+func (r *Request) patIndex(name string) int {
+	// The linear search seems expensive compared to a map, but just creating the map
+	// takes a lot of time, and most patterns will just have a couple of wildcards.
+	if r.pat == nil {
+		return -1
+	}
+	i := 0
+	for _, seg := range r.pat.segments {
+		if seg.wild && seg.s != "" {
+			if name == seg.s {
+				return i
+			}
+			i++
+		}
+	}
+	return -1
 }
 
 func (r *Request) expectsContinue() bool {

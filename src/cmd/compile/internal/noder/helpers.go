@@ -40,11 +40,6 @@ func typed(typ *types.Type, n ir.Node) ir.Node {
 
 // Values
 
-func OrigConst(pos src.XPos, typ *types.Type, val constant.Value, op ir.Op, raw string) ir.Node {
-	orig := ir.NewRawOrigExpr(pos, op, raw)
-	return ir.NewConstExpr(val, typed(typ, orig))
-}
-
 // FixValue returns val after converting and truncating it as
 // appropriate for typ.
 func FixValue(typ *types.Type, val constant.Value) constant.Value {
@@ -58,14 +53,10 @@ func FixValue(typ *types.Type, val constant.Value) constant.Value {
 		val = constant.ToComplex(val)
 	}
 	if !typ.IsUntyped() {
-		val = typecheck.DefaultLit(ir.NewBasicLit(src.NoXPos, val), typ).Val()
+		val = typecheck.ConvertVal(val, typ, false)
 	}
 	ir.AssertValidTypeForConst(typ, val)
 	return val
-}
-
-func Nil(pos src.XPos, typ *types.Type) ir.Node {
-	return ir.NewNilExpr(pos, typ)
 }
 
 // Expressions
@@ -84,8 +75,6 @@ func Deref(pos src.XPos, typ *types.Type, x ir.Node) *ir.StarExpr {
 
 // Statements
 
-var one = constant.MakeInt64(1)
-
 func idealType(tv syntax.TypeAndValue) types2.Type {
 	// The gc backend expects all expressions to have a concrete type, and
 	// types2 mostly satisfies this expectation already. But there are a few
@@ -98,17 +87,20 @@ func idealType(tv syntax.TypeAndValue) types2.Type {
 			// ok; can appear in type switch case clauses
 			// TODO(mdempsky): Handle as part of type switches instead?
 		case types2.UntypedInt, types2.UntypedFloat, types2.UntypedComplex:
-			// Untyped rhs of non-constant shift, e.g. x << 1.0.
-			// If we have a constant value, it must be an int >= 0.
+			typ = types2.Typ[types2.Uint]
 			if tv.Value != nil {
 				s := constant.ToInt(tv.Value)
-				assert(s.Kind() == constant.Int && constant.Sign(s) >= 0)
+				assert(s.Kind() == constant.Int)
+				if constant.Sign(s) < 0 {
+					typ = types2.Typ[types2.Int]
+				}
 			}
-			typ = types2.Typ[types2.Uint]
 		case types2.UntypedBool:
 			typ = types2.Typ[types2.Bool] // expression in "if" or "for" condition
 		case types2.UntypedString:
 			typ = types2.Typ[types2.String] // argument to "append" or "copy" calls
+		case types2.UntypedRune:
+			typ = types2.Typ[types2.Int32] // range over rune
 		default:
 			return nil
 		}

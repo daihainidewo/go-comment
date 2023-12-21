@@ -320,6 +320,13 @@ func deferproc(fn func()) {
 	// been set and must not be clobbered.
 }
 
+var rangeExitError = error(errorString("range function continued iteration after exit"))
+
+//go:noinline
+func panicrangeexit() {
+	panic(rangeExitError)
+}
+
 // 为循环语句添加 defer
 // deferrangefunc is called by functions that are about to
 // execute a range-over-function loop in which the loop body
@@ -338,10 +345,10 @@ func deferproc(fn func()) {
 // The g._defer list is now a linked list of deferred calls,
 // but an atomic list hanging off:
 //
-//	g._defer => d4 -> d3 -> drangefunc -> d2 -> d1 -> nil
-//                              | .head
-//                              |
-//                              +--> dY -> dX -> nil
+//		g._defer => d4 -> d3 -> drangefunc -> d2 -> d1 -> nil
+//	                             | .head
+//	                             |
+//	                             +--> dY -> dX -> nil
 //
 // with each -> indicating a d.link pointer, and where drangefunc
 // has the d.rangefunc = true bit set.
@@ -365,10 +372,10 @@ func deferproc(fn func()) {
 //
 // That is, deferconvert changes this list:
 //
-//	g._defer => drangefunc -> d2 -> d1 -> nil
-//                  | .head
-//                  |
-//                  +--> dY -> dX -> nil
+//		g._defer => drangefunc -> d2 -> d1 -> nil
+//	                 | .head
+//	                 |
+//	                 +--> dY -> dX -> nil
 //
 // into this list:
 //
@@ -729,20 +736,19 @@ func printpanics(p *_panic) {
 // readvarintUnsafe reads the uint32 in varint format starting at fd, and returns the
 // uint32 and a pointer to the byte following the varint.
 //
-// There is a similar function runtime.readvarint, which takes a slice of bytes,
-// rather than an unsafe pointer. These functions are duplicated, because one of
-// the two use cases for the functions would get slower if the functions were
-// combined.
+// The implementation is the same with runtime.readvarint, except that this function
+// uses unsafe.Pointer for speed.
 func readvarintUnsafe(fd unsafe.Pointer) (uint32, unsafe.Pointer) {
 	var r uint32
 	var shift int
 	for {
-		b := *(*uint8)((unsafe.Pointer(fd)))
+		b := *(*uint8)(fd)
 		fd = add(fd, unsafe.Sizeof(b))
 		if b < 128 {
 			return r + uint32(b)<<shift, fd
 		}
 		// 小端
+		r += uint32(b&0x7F) << (shift & 31)
 		r += ((uint32(b) &^ 128) << shift)
 		shift += 7
 		if shift > 28 {
@@ -971,7 +977,7 @@ func (p *_panic) nextFrame() (ok bool) {
 	systemstack(func() {
 		var limit uintptr
 		if d := gp._defer; d != nil {
-			limit = uintptr(d.sp)
+			limit = d.sp
 		}
 
 		var u unwinder
@@ -1235,15 +1241,20 @@ func recovery(gp *g) {
 	gp.sched.sp = sp
 	gp.sched.pc = pc
 	gp.sched.lr = 0
-	// fp points to the stack pointer at the caller, which is the top of the
-	// stack frame. The frame pointer used for unwinding is the word
-	// immediately below it.
-	gp.sched.bp = fp - goarch.PtrSize
-	if !usesLR {
+	// Restore the bp on platforms that support frame pointers.
+	// N.B. It's fine to not set anything for platforms that don't
+	// support frame pointers, since nothing consumes them.
+	switch {
+	case goarch.IsAmd64 != 0:
 		// on x86, fp actually points one word higher than the top of
 		// the frame since the return address is saved on the stack by
 		// the caller
-		gp.sched.bp -= goarch.PtrSize
+		gp.sched.bp = fp - 2*goarch.PtrSize
+	case goarch.IsArm64 != 0:
+		// on arm64, the architectural bp points one word higher
+		// than the sp. fp is totally useless to us here, because it
+		// only gets us to the caller's fp.
+		gp.sched.bp = sp - goarch.PtrSize
 	}
 	gp.sched.ret = 1
 	gogo(&gp.sched)

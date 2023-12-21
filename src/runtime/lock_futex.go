@@ -47,6 +47,10 @@ func key32(p *uintptr) *uint32 {
 	return (*uint32)(unsafe.Pointer(p))
 }
 
+func mutexContended(l *mutex) bool {
+	return atomic.Load(key32(&l.key)) > mutex_locked
+}
+
 func lock(l *mutex) {
 	lockWithRank(l, getLockRank(l))
 }
@@ -77,6 +81,8 @@ func lock2(l *mutex) {
 	// its wakeup call.
 	wait := v
 
+	timer := &lockTimer{lock: l}
+	timer.begin()
 	// On uniprocessors, no point spinning.
 	// On multiprocessors, spin for ACTIVE_SPIN attempts.
 	spin := 0
@@ -91,6 +97,7 @@ func lock2(l *mutex) {
 			for l.key == mutex_unlocked {
 				// 未锁状态 尝试锁住
 				if atomic.Cas(key32(&l.key), mutex_unlocked, wait) {
+					timer.end()
 					return
 				}
 			}
@@ -103,6 +110,7 @@ func lock2(l *mutex) {
 		for i := 0; i < passive_spin; i++ {
 			for l.key == mutex_unlocked {
 				if atomic.Cas(key32(&l.key), mutex_unlocked, wait) {
+					timer.end()
 					return
 				}
 			}
@@ -114,6 +122,7 @@ func lock2(l *mutex) {
 		v = atomic.Xchg(key32(&l.key), mutex_sleeping)
 		if v == mutex_unlocked {
 			// 切换线程后 再次尝试获取锁
+			timer.end()
 			return
 		}
 		wait = mutex_sleeping
@@ -138,6 +147,7 @@ func unlock2(l *mutex) {
 	}
 
 	gp := getg()
+	gp.m.mLockProfile.recordUnlock(l)
 	gp.m.locks--
 	if gp.m.locks < 0 {
 		throw("runtime·unlock: lock count")

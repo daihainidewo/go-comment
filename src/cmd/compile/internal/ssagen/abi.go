@@ -41,12 +41,8 @@ func NewSymABIs() *SymABIs {
 // both to use the full path, which matches compiler-generated linker
 // symbol names.
 func (s *SymABIs) canonicalize(linksym string) string {
-	// If the symbol is already prefixed with "", rewrite it to start
-	// with LocalPkg.Prefix.
-	//
-	// TODO(mdempsky): Have cmd/asm stop writing out symbols like this.
 	if strings.HasPrefix(linksym, `"".`) {
-		return types.LocalPkg.Prefix + linksym[2:]
+		panic("non-canonical symbol name: " + linksym)
 	}
 	return linksym
 }
@@ -253,8 +249,8 @@ func makeABIWrapper(f *ir.Func, wrapperABI obj.ABI) {
 	// Reuse f's types.Sym to create a new ODCLFUNC/function.
 	// TODO(mdempsky): Means we can't set sym.Def in Declfunc, ugh.
 	fn := ir.NewFunc(pos, pos, f.Sym(), types.NewSignature(nil,
-		typecheck.NewFuncParams(ft.Params(), true),
-		typecheck.NewFuncParams(ft.Results(), false)))
+		typecheck.NewFuncParams(ft.Params()),
+		typecheck.NewFuncParams(ft.Results())))
 	fn.ABI = wrapperABI
 	typecheck.DeclFunc(fn)
 

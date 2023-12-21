@@ -6,6 +6,7 @@ package walk
 
 import (
 	"go/constant"
+	"internal/abi"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
@@ -103,7 +104,7 @@ func walkAssign(init *ir.Nodes, n ir.Node) ir.Node {
 			// Left in place for back end.
 			// Do not add a new write barrier.
 			// Set up address of type for back end.
-			r.X = reflectdata.AppendElemRType(base.Pos, r)
+			r.Fun = reflectdata.AppendElemRType(base.Pos, r)
 			return as
 		}
 		// Otherwise, lowered for race detector.
@@ -168,7 +169,7 @@ func walkAssignMapRead(init *ir.Nodes, n *ir.AssignListStmt) ir.Node {
 	a := n.Lhs[0]
 
 	var call *ir.CallExpr
-	if w := t.Elem().Size(); w <= zeroValSize {
+	if w := t.Elem().Size(); w <= abi.ZeroValSize {
 		fn := mapfn(mapaccess2[fast], t, false)
 		call = mkcall1(fn, fn.Type().ResultsTuple(), init, reflectdata.IndexMapRType(base.Pos, r), r.X, key)
 	} else {
@@ -392,7 +393,7 @@ func ascompatee(op ir.Op, nl, nr []ir.Node) []ir.Node {
 			continue
 		}
 
-		if sym := types.OrigSym(name.Sym()); sym == nil || sym.IsBlank() {
+		if ir.IsBlank(name) {
 			// We can ignore assignments to blank or anonymous result parameters.
 			// These can't appear in expressions anyway.
 			continue
@@ -432,7 +433,6 @@ func readsMemory(n ir.Node) bool {
 		ir.OBITNOT,
 		ir.OCONV,
 		ir.OCONVIFACE,
-		ir.OCONVIDATA,
 		ir.OCONVNOP,
 		ir.ODIV,
 		ir.ODOT,
@@ -513,11 +513,8 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 	slice.SetBounded(true)
 	nif.Body = []ir.Node{ir.NewAssignStmt(base.Pos, s, slice)}
 
-	// func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) []T
-	fn := typecheck.LookupRuntime("growslice", elemtype, elemtype)
-
 	// else { s = growslice(oldPtr, newLen, oldCap, num, T) }
-	call := mkcall1(fn, s.Type(), nif.PtrInit(), oldPtr, newLen, oldCap, num, reflectdata.TypePtrAt(base.Pos, elemtype))
+	call := walkGrowslice(s, nif.PtrInit(), oldPtr, newLen, oldCap, num)
 	nif.Else = []ir.Node{ir.NewAssignStmt(base.Pos, s, call)}
 
 	nodes.Append(nif)
@@ -691,17 +688,13 @@ func extendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 	nt.SetBounded(true)
 	nif.Body = []ir.Node{ir.NewAssignStmt(base.Pos, s, nt)}
 
-	// instantiate growslice(oldPtr *any, newLen, oldCap, num int, typ *type) []any
-	fn := typecheck.LookupRuntime("growslice", elemtype, elemtype)
-
 	// else { s = growslice(s.ptr, n, s.cap, l2, T) }
 	nif.Else = []ir.Node{
-		ir.NewAssignStmt(base.Pos, s, mkcall1(fn, s.Type(), nif.PtrInit(),
+		ir.NewAssignStmt(base.Pos, s, walkGrowslice(s, nif.PtrInit(),
 			ir.NewUnaryExpr(base.Pos, ir.OSPTR, s),
 			nn,
 			ir.NewUnaryExpr(base.Pos, ir.OCAP, s),
-			l2,
-			reflectdata.TypePtrAt(base.Pos, elemtype))),
+			l2)),
 	}
 
 	nodes = append(nodes, nif)

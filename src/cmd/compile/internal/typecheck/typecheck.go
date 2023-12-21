@@ -16,10 +16,6 @@ import (
 	"cmd/internal/src"
 )
 
-// Function collecting autotmps generated during typechecking,
-// to be included in the package-level init function.
-var InitTodoFunc = ir.NewFunc(base.Pos, base.Pos, Lookup("$InitTodo"), types.NewSignature(nil, nil, nil))
-
 func AssignExpr(n ir.Node) ir.Node { return typecheck(n, ctxExpr|ctxAssign) }
 func Expr(n ir.Node) ir.Node       { return typecheck(n, ctxExpr) }
 func Stmt(n ir.Node) ir.Node       { return typecheck(n, ctxStmt) }
@@ -350,10 +346,6 @@ func typecheck1(n ir.Node, top int) ir.Node {
 		return tcUnaryArith(n)
 
 	// exprs
-	case ir.OADDR:
-		n := n.(*ir.AddrExpr)
-		return tcAddr(n)
-
 	case ir.OCOMPLIT:
 		return tcCompLit(n.(*ir.CompLitExpr))
 
@@ -397,11 +389,6 @@ func typecheck1(n ir.Node, top int) ir.Node {
 	case ir.OCALL:
 		n := n.(*ir.CallExpr)
 		return tcCall(n, top)
-
-	case ir.OALIGNOF, ir.OOFFSETOF, ir.OSIZEOF:
-		n := n.(*ir.UnaryExpr)
-		n.SetType(types.Types[types.TUINTPTR])
-		return OrigInt(n, evalunsafe(n))
 
 	case ir.OCAP, ir.OLEN:
 		n := n.(*ir.UnaryExpr)
@@ -451,7 +438,7 @@ func typecheck1(n ir.Node, top int) ir.Node {
 		n := n.(*ir.UnaryExpr)
 		return tcNew(n)
 
-	case ir.OPRINT, ir.OPRINTN:
+	case ir.OPRINT, ir.OPRINTLN:
 		n := n.(*ir.CallExpr)
 		return tcPrint(n)
 
@@ -632,11 +619,6 @@ func typecheckargs(n ir.InitNode) {
 		return
 	}
 
-	// Save n as n.Orig for fmt.go.
-	if ir.Orig(n) == n {
-		n.(ir.OrigNode).SetOrig(ir.SepCopy(n))
-	}
-
 	// Rewrite f(g()) into t1, t2, ... = g(); f(t1, t2, ...).
 	RewriteMultiValueCall(n, list[0])
 }
@@ -644,7 +626,7 @@ func typecheckargs(n ir.InitNode) {
 // RewriteNonNameCall replaces non-Name call expressions with temps,
 // rewriting f()(...) to t0 := f(); t0(...).
 func RewriteNonNameCall(n *ir.CallExpr) {
-	np := &n.X
+	np := &n.Fun
 	if dot, ok := (*np).(*ir.SelectorExpr); ok && (dot.Op() == ir.ODOTMETH || dot.Op() == ir.ODOTINTER || dot.Op() == ir.OMETHVALUE) {
 		np = &dot.X // peel away method selector
 	}
@@ -656,20 +638,10 @@ func RewriteNonNameCall(n *ir.CallExpr) {
 		return
 	}
 
-	// See comment (1) in RewriteMultiValueCall.
-	static := ir.CurFunc == nil
-	if static {
-		ir.CurFunc = InitTodoFunc
-	}
-
 	tmp := TempAt(base.Pos, ir.CurFunc, (*np).Type())
 	as := ir.NewAssignStmt(base.Pos, tmp, *np)
 	as.PtrInit().Append(Stmt(ir.NewDecl(n.Pos(), ir.ODCL, tmp)))
 	*np = tmp
-
-	if static {
-		ir.CurFunc = nil
-	}
 
 	n.PtrInit().Append(Stmt(as))
 }
@@ -677,16 +649,6 @@ func RewriteNonNameCall(n *ir.CallExpr) {
 // RewriteMultiValueCall rewrites multi-valued f() to use temporaries,
 // so the backend wouldn't need to worry about tuple-valued expressions.
 func RewriteMultiValueCall(n ir.InitNode, call ir.Node) {
-	// If we're outside of function context, then this call will
-	// be executed during the generated init function. However,
-	// init.go hasn't yet created it. Instead, associate the
-	// temporary variables with  InitTodoFunc for now, and init.go
-	// will reassociate them later when it's appropriate. (1)
-	static := ir.CurFunc == nil
-	if static {
-		ir.CurFunc = InitTodoFunc
-	}
-
 	as := ir.NewAssignListStmt(base.Pos, ir.OAS2, nil, []ir.Node{call})
 	results := call.Type().Fields()
 	list := make([]ir.Node, len(results))
@@ -695,9 +657,6 @@ func RewriteMultiValueCall(n ir.InitNode, call ir.Node) {
 		as.PtrInit().Append(ir.NewDecl(base.Pos, ir.ODCL, tmp))
 		as.Lhs.Append(tmp)
 		list[i] = tmp
-	}
-	if static {
-		ir.CurFunc = nil
 	}
 
 	n.PtrInit().Append(Stmt(as))
@@ -1250,7 +1209,7 @@ func checkassignto(src *types.Type, dst ir.Node) {
 		return
 	}
 
-	if op, why := Assignop(src, dst.Type()); op == ir.OXXX {
+	if op, why := assignOp(src, dst.Type()); op == ir.OXXX {
 		base.Errorf("cannot assign %v to %L in multiple assignment%s", src, dst, why)
 		return
 	}

@@ -548,7 +548,8 @@ func (m *Map) Range(f func(key, value any) bool) {
 		if read.amended {
 			// 切换 升级 dirty 为 read
 			read = readOnly{m: m.dirty}
-			m.read.Store(&read)
+			copyRead := read
+			m.read.Store(&copyRead)
 			m.dirty = nil
 			m.misses = 0
 		}
