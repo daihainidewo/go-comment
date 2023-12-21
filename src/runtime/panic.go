@@ -308,6 +308,7 @@ func deferproc(fn func()) {
 	d.sp = getcallersp()
 
 	// 编译器生成的代码总会检测函数返回值，如果不为0直接跳转到函数末尾
+	// return0 不会触发延迟调用 避免递归
 	// deferproc returns 0 normally.
 	// a deferred func that stops a panic
 	// makes the deferproc return 1.
@@ -319,6 +320,7 @@ func deferproc(fn func()) {
 	// been set and must not be clobbered.
 }
 
+// 为循环语句添加 defer
 // deferrangefunc is called by functions that are about to
 // execute a range-over-function loop in which the loop body
 // may execute a defer statement. That defer needs to add to
@@ -413,6 +415,7 @@ func badDefer() *_defer {
 	return (*_defer)(unsafe.Pointer(uintptr(1)))
 }
 
+// deferprocat 原子添加进 list 头节点
 // deferprocat is like deferproc but adds to the atomic list represented by frame.
 // See the doc comment for deferrangefunc for details.
 func deferprocat(fn func(), frame any) {
@@ -436,6 +439,7 @@ func deferprocat(fn func(), frame any) {
 	return0()
 }
 
+// 将 range defer 转为普通的 defer 列表
 // deferconvert converts a rangefunc defer list into an ordinary list.
 // See the doc comment for deferrangefunc for details.
 func deferconvert(d *_defer) *_defer {
@@ -472,6 +476,7 @@ func deferconvert(d *_defer) *_defer {
 // 将d标志为栈上的对象
 // 直接在栈申请defer对象
 // 减少堆上的defer对象
+// 将 defer 插入到队列中
 // deferprocStack queues a new deferred function with a defer record on the stack.
 // The defer record must have its fn field initialized.
 // All other fields can contain junk.
@@ -528,6 +533,8 @@ func newdefer() *_defer {
 	pp := mp.p.ptr()
 	if len(pp.deferpool) == 0 && sched.deferpool != nil {
 		// 如果当前p池中没有defer结构，则从sched的池中拿取当前p池容量的一半
+		// 本地缓存为空 全局有缓存
+		// 则尝试从全局填充本地容量的一半
 		lock(&sched.deferlock)
 		for len(pp.deferpool) < cap(pp.deferpool)/2 && sched.deferpool != nil {
 			d := sched.deferpool
@@ -538,6 +545,7 @@ func newdefer() *_defer {
 		unlock(&sched.deferlock)
 	}
 	// 弹出队尾的defer结构
+	// 尝试从本地中获取一个 _defer
 	if n := len(pp.deferpool); n > 0 {
 		d = pp.deferpool[n-1]
 		pp.deferpool[n-1] = nil
@@ -546,6 +554,7 @@ func newdefer() *_defer {
 	releasem(mp)
 	mp, pp = nil, nil
 
+	// 没有找到 则从堆上初始化一个新 _defer
 	if d == nil {
 		// Allocate new defer.
 		d = new(_defer)
@@ -637,6 +646,12 @@ func deferreturn() {
 
 // Goexit 主动终止调用它的 goroutine，在终止前执行所有的 defer 函数
 // 因为没有 panic 发生，需要给那些在 defer 的 recover 的调用者返回 nil
+// Goexit 退出当前协程
+// 使用 panic 机制快速退出
+// 调用 recover 函数会返回 nil
+// 其他 goroutine 不受影响
+// 主 goroutine 可以调用 会直接返回但不会退出进程
+// 等所有 goroutine 都退出后进程会崩溃 fatal error: no goroutines (main called runtime.Goexit) - deadlock!
 // Goexit terminates the goroutine that calls it. No other goroutine is affected.
 // Goexit runs all deferred calls before terminating the goroutine. Because Goexit
 // is not a panic, any recover calls in those deferred functions will return nil.
@@ -822,6 +837,8 @@ func gopanic(e any) {
 	*(*int)(nil) = 0 // not reached
 }
 
+// start 初始化栈上的panic
+// 如果是 Goexit 触发的则可能返回多次
 // start initializes a panic to start unwinding the stack.
 //
 // If p.goexit is true, then start may return multiple times.
@@ -866,6 +883,7 @@ func (p *_panic) start(pc uintptr, sp unsafe.Pointer) {
 	p.nextFrame()
 }
 
+// nextDefer 调用下一个 defer 函数
 // nextDefer returns the next deferred function to invoke, if any.
 //
 // Note: The "ok bool" result is necessary to correctly handle when

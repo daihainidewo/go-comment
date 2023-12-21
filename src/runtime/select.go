@@ -13,6 +13,7 @@ import (
 
 const debugSelect = false
 
+// 描述 select case 用于编译器
 // Select case descriptor.
 // Known to compiler.
 // Changes here must also be made in src/cmd/compile/internal/walk/select.go's scasetype.
@@ -30,6 +31,7 @@ func selectsetpc(pc *uintptr) {
 	*pc = getcallerpc()
 }
 
+// 锁定相关 scase
 func sellock(scases []scase, lockorder []uint16) {
 	var c *hchan
 	for _, o := range lockorder {
@@ -41,6 +43,7 @@ func sellock(scases []scase, lockorder []uint16) {
 	}
 }
 
+// 解锁相关 scase
 func selunlock(scases []scase, lockorder []uint16) {
 	// We must be very careful here to not touch sel after we have unlocked
 	// the last lock, because sel can be freed right after the last unlock.
@@ -99,6 +102,7 @@ func selparkcommit(gp *g, _ unsafe.Pointer) bool {
 	return true
 }
 
+// 用于空 select{} 的情况
 func block() {
 	gopark(nil, nil, waitReasonSelectNoCases, traceBlockForever, 1) // forever
 }
@@ -515,6 +519,7 @@ sclose:
 	panic(plainError("send on closed channel"))
 }
 
+// 返回按照地址排序 key
 func (c *hchan) sortkey() uintptr {
 	return uintptr(unsafe.Pointer(c))
 }
