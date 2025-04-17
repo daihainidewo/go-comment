@@ -5,7 +5,8 @@
 // This program generates Go code that applies rewrite rules to a Value.
 // The generated code implements a function of type func (v *Value) bool
 // which reports whether if did something.
-// Ideas stolen from Swift: http://www.hpl.hp.com/techreports/Compaq-DEC/WRL-2000-2.html
+// Ideas stolen from the Swift Java compiler:
+// https://bitsavers.org/pdf/dec/tech_reports/WRL-2000-2.pdf
 
 package main
 
@@ -582,6 +583,7 @@ func fprint(w io.Writer, n Node) {
 			"fmt",
 			"internal/buildcfg",
 			"math",
+			"math/bits",
 			"cmd/internal/obj",
 			"cmd/compile/internal/base",
 			"cmd/compile/internal/types",
@@ -1621,11 +1623,11 @@ func varCount1(loc, m string, cnt map[string]int) {
 // normalizeWhitespace replaces 2+ whitespace sequences with a single space.
 func normalizeWhitespace(x string) string {
 	x = strings.Join(strings.Fields(x), " ")
-	x = strings.Replace(x, "( ", "(", -1)
-	x = strings.Replace(x, " )", ")", -1)
-	x = strings.Replace(x, "[ ", "[", -1)
-	x = strings.Replace(x, " ]", "]", -1)
-	x = strings.Replace(x, ")=>", ") =>", -1)
+	x = strings.ReplaceAll(x, "( ", "(")
+	x = strings.ReplaceAll(x, " )", ")")
+	x = strings.ReplaceAll(x, "[ ", "[")
+	x = strings.ReplaceAll(x, " ]", "]")
+	x = strings.ReplaceAll(x, ")=>", ") =>")
 	return x
 }
 
@@ -1769,7 +1771,7 @@ func (op opData) auxType() string {
 	case "String":
 		return "string"
 	case "Sym":
-		// Note: a Sym can be an *obj.LSym, a *gc.Node, or nil.
+		// Note: a Sym can be an *obj.LSym, a *ir.Name, or nil.
 		return "Sym"
 	case "SymOff":
 		return "Sym"

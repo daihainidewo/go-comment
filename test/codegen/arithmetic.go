@@ -23,6 +23,32 @@ func AddLargeConst(a uint64, out []uint64) {
 	// ppc64x/power9:"MOVD\t[$]-1", "SLD\t[$]33" "ADD\tR[0-9]*"
 	// ppc64x/power8:"MOVD\t[$]-1", "SLD\t[$]33" "ADD\tR[0-9]*"
 	out[1] = a + 0xFFFFFFFE00000000
+	// ppc64x/power10:"ADD\t[$]1234567,"
+	// ppc64x/power9:"ADDIS\t[$]19,", "ADD\t[$]-10617,"
+	// ppc64x/power8:"ADDIS\t[$]19,", "ADD\t[$]-10617,"
+	out[2] = a + 1234567
+	// ppc64x/power10:"ADD\t[$]-1234567,"
+	// ppc64x/power9:"ADDIS\t[$]-19,", "ADD\t[$]10617,"
+	// ppc64x/power8:"ADDIS\t[$]-19,", "ADD\t[$]10617,"
+	out[3] = a - 1234567
+	// ppc64x/power10:"ADD\t[$]2147450879,"
+	// ppc64x/power9:"ADDIS\t[$]32767,", "ADD\t[$]32767,"
+	// ppc64x/power8:"ADDIS\t[$]32767,", "ADD\t[$]32767,"
+	out[4] = a + 0x7FFF7FFF
+	// ppc64x/power10:"ADD\t[$]-2147483647,"
+	// ppc64x/power9:"ADDIS\t[$]-32768,", "ADD\t[$]1,"
+	// ppc64x/power8:"ADDIS\t[$]-32768,", "ADD\t[$]1,"
+	out[5] = a - 2147483647
+	// ppc64x:"ADDIS\t[$]-32768,", ^"ADD\t"
+	out[6] = a - 2147483648
+	// ppc64x:"ADD\t[$]2147450880,", ^"ADDIS\t"
+	out[7] = a + 0x7FFF8000
+	// ppc64x:"ADD\t[$]-32768,", ^"ADDIS\t"
+	out[8] = a - 32768
+	// ppc64x/power10:"ADD\t[$]-32769,"
+	// ppc64x/power9:"ADDIS\t[$]-1,", "ADD\t[$]32767,"
+	// ppc64x/power8:"ADDIS\t[$]-1,", "ADD\t[$]32767,"
+	out[9] = a - 32769
 }
 
 // ----------------- //
@@ -59,36 +85,42 @@ func SubMem(arr []int, b, c, d int) int {
 
 func SubFromConst(a int) int {
 	// ppc64x: `SUBC\tR[0-9]+,\s[$]40,\sR`
+	// riscv64: "ADDI\t\\$-40","NEG"
 	b := 40 - a
 	return b
 }
 
 func SubFromConstNeg(a int) int {
 	// ppc64x: `ADD\t[$]40,\sR[0-9]+,\sR`
+	// riscv64: "ADDI\t\\$40",-"NEG"
 	c := 40 - (-a)
 	return c
 }
 
 func SubSubFromConst(a int) int {
 	// ppc64x: `ADD\t[$]20,\sR[0-9]+,\sR`
+	// riscv64: "ADDI\t\\$20",-"NEG"
 	c := 40 - (20 - a)
 	return c
 }
 
 func AddSubFromConst(a int) int {
 	// ppc64x: `SUBC\tR[0-9]+,\s[$]60,\sR`
+	// riscv64: "ADDI\t\\$-60","NEG"
 	c := 40 + (20 - a)
 	return c
 }
 
 func NegSubFromConst(a int) int {
 	// ppc64x: `ADD\t[$]-20,\sR[0-9]+,\sR`
+	// riscv64: "ADDI\t\\$-20"
 	c := -(20 - a)
 	return c
 }
 
 func NegAddFromConstNeg(a int) int {
 	// ppc64x: `SUBC\tR[0-9]+,\s[$]40,\sR`
+	// riscv64: "ADDI\t\\$-40","NEG"
 	c := -(-40 + a)
 	return c
 }
@@ -96,6 +128,7 @@ func NegAddFromConstNeg(a int) int {
 func SubSubNegSimplify(a, b int) int {
 	// amd64:"NEGQ"
 	// ppc64x:"NEG"
+	// riscv64:"NEG",-"SUB"
 	r := (a - b) - a
 	return r
 }
@@ -103,6 +136,7 @@ func SubSubNegSimplify(a, b int) int {
 func SubAddSimplify(a, b int) int {
 	// amd64:-"SUBQ",-"ADDQ"
 	// ppc64x:-"SUB",-"ADD"
+	// riscv64:-"SUB",-"ADD"
 	r := a + (b - a)
 	return r
 }
@@ -126,6 +160,7 @@ func SubAddSimplify2(a, b, c int) (int, int, int, int, int, int) {
 func SubAddNegSimplify(a, b int) int {
 	// amd64:"NEGQ",-"ADDQ",-"SUBQ"
 	// ppc64x:"NEG",-"ADD",-"SUB"
+	// riscv64:"NEG",-"ADD",-"SUB"
 	r := a - (b + a)
 	return r
 }
@@ -133,7 +168,14 @@ func SubAddNegSimplify(a, b int) int {
 func AddAddSubSimplify(a, b, c int) int {
 	// amd64:-"SUBQ"
 	// ppc64x:-"SUB"
+	// riscv64:"ADD","ADD",-"SUB"
 	r := a + (b + (c - a))
+	return r
+}
+
+func NegToInt32(a int) int {
+	// riscv64: "NEGW",-"MOVW"
+	r := int(int32(-a))
 	return r
 }
 
@@ -155,6 +197,15 @@ func Pow2Muls(n1, n2 int) (int, int) {
 	// arm64:`NEG\sR[0-9]+<<6,\sR[0-9]+`,-`LSL`,-`MUL`
 	// ppc64x:"SLD\t[$]6","NEG\\sR[0-9]+,\\sR[0-9]+",-"MUL"
 	b := -64 * n2
+
+	return a, b
+}
+
+func Mul_2(n1 int32, n2 int64) (int32, int64) {
+	// amd64:"ADDL", -"SHLL"
+	a := n1 * 2
+	// amd64:"ADDQ", -"SHLQ"
+	b := n2 * 2
 
 	return a, b
 }
@@ -294,14 +345,14 @@ func Pow2DivisibleSigned(n1, n2 int) (bool, bool) {
 	// amd64:"TESTQ\t[$]63",-"DIVQ",-"SHRQ"
 	// arm:"AND\t[$]63",-".*udiv",-"SRA"
 	// arm64:"TST\t[$]63",-"UDIV",-"ASR",-"AND"
-	// ppc64x:"RLDICL",-"SRAD"
+	// ppc64x:"ANDCC",-"RLDICL",-"SRAD",-"CMP"
 	a := n1%64 == 0 // signed divisible
 
 	// 386:"TESTL\t[$]63",-"DIVL",-"SHRL"
 	// amd64:"TESTQ\t[$]63",-"DIVQ",-"SHRQ"
 	// arm:"AND\t[$]63",-".*udiv",-"SRA"
 	// arm64:"TST\t[$]63",-"UDIV",-"ASR",-"AND"
-	// ppc64x:"RLDICL",-"SRAD"
+	// ppc64x:"ANDCC",-"RLDICL",-"SRAD",-"CMP"
 	b := n2%64 != 0 // signed indivisible
 
 	return a, b
@@ -602,4 +653,40 @@ func constantFold3(i, j int) int {
 	// ppc64x:"MULLD\t[$]30","MULLD"
 	r := (5 * i) * (6 * j)
 	return r
+}
+
+// ----------------- //
+//  Integer Min/Max  //
+// ----------------- //
+
+func Int64Min(a, b int64) int64 {
+	// amd64: "CMPQ","CMOVQLT"
+	// arm64: "CMP","CSEL"
+	// riscv64/rva20u64:"BLT\t"
+	// riscv64/rva22u64,riscv64/rva23u64:"MIN\t"
+	return min(a, b)
+}
+
+func Int64Max(a, b int64) int64 {
+	// amd64: "CMPQ","CMOVQGT"
+	// arm64: "CMP","CSEL"
+	// riscv64/rva20u64:"BLT\t"
+	// riscv64/rva22u64,riscv64/rva23u64:"MAX\t"
+	return max(a, b)
+}
+
+func Uint64Min(a, b uint64) uint64 {
+	// amd64: "CMPQ","CMOVQCS"
+	// arm64: "CMP","CSEL"
+	// riscv64/rva20u64:"BLTU"
+	// riscv64/rva22u64,riscv64/rva23u64:"MINU"
+	return min(a, b)
+}
+
+func Uint64Max(a, b uint64) uint64 {
+	// amd64: "CMPQ","CMOVQHI"
+	// arm64: "CMP","CSEL"
+	// riscv64/rva20u64:"BLTU"
+	// riscv64/rva22u64,riscv64/rva23u64:"MAXU"
+	return max(a, b)
 }

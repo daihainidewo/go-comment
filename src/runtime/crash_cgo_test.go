@@ -8,7 +8,6 @@ package runtime_test
 
 import (
 	"fmt"
-	"internal/goexperiment"
 	"internal/goos"
 	"internal/platform"
 	"internal/testenv"
@@ -66,13 +65,25 @@ func TestCgoCallbackGC(t *testing.T) {
 			t.Skip("too slow for mips64x builders")
 		}
 	}
-	if testenv.Builder() == "darwin-amd64-10_14" {
-		// TODO(#23011): When the 10.14 builders are gone, remove this skip.
-		t.Skip("skipping due to platform bug on macOS 10.14; see https://golang.org/issue/43926")
-	}
 	got := runTestProg(t, "testprogcgo", "CgoCallbackGC")
 	want := "OK\n"
 	if got != want {
+		t.Fatalf("expected %q, but got:\n%s", want, got)
+	}
+}
+
+func TestCgoCallbackPprof(t *testing.T) {
+	t.Parallel()
+	switch runtime.GOOS {
+	case "plan9", "windows":
+		t.Skipf("no pthreads on %s", runtime.GOOS)
+	}
+	if testenv.CPUProfilingBroken() {
+		t.Skip("skipping on platform with broken profiling")
+	}
+
+	got := runTestProg(t, "testprogcgo", "CgoCallbackPprof")
+	if want := "OK\n"; got != want {
 		t.Fatalf("expected %q, but got:\n%s", want, got)
 	}
 }
@@ -243,6 +254,7 @@ func TestCgoCrashTraceback(t *testing.T) {
 	case "darwin/amd64":
 	case "linux/amd64":
 	case "linux/arm64":
+	case "linux/loong64":
 	case "linux/ppc64le":
 	default:
 		t.Skipf("not yet supported on %s", platform)
@@ -261,6 +273,7 @@ func TestCgoCrashTracebackGo(t *testing.T) {
 	case "darwin/amd64":
 	case "linux/amd64":
 	case "linux/arm64":
+	case "linux/loong64":
 	case "linux/ppc64le":
 	default:
 		t.Skipf("not yet supported on %s", platform)
@@ -294,7 +307,7 @@ func TestCgoTracebackContextPreemption(t *testing.T) {
 
 func testCgoPprof(t *testing.T, buildArg, runArg, top, bottom string) {
 	t.Parallel()
-	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "ppc64le" && runtime.GOARCH != "arm64") {
+	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "ppc64le" && runtime.GOARCH != "arm64" && runtime.GOARCH != "loong64") {
 		t.Skipf("not yet supported on %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	testenv.MustHaveGoRun(t)
@@ -755,7 +768,6 @@ func TestNeedmDeadlock(t *testing.T) {
 }
 
 func TestCgoNoCallback(t *testing.T) {
-	t.Skip("TODO(#56378): enable in Go 1.23")
 	got := runTestProg(t, "testprogcgo", "CgoNoCallback")
 	want := "function marked with #cgo nocallback called back into Go"
 	if !strings.Contains(got, want) {
@@ -764,11 +776,19 @@ func TestCgoNoCallback(t *testing.T) {
 }
 
 func TestCgoNoEscape(t *testing.T) {
-	t.Skip("TODO(#56378): enable in Go 1.23")
 	got := runTestProg(t, "testprogcgo", "CgoNoEscape")
 	want := "OK\n"
 	if got != want {
 		t.Fatalf("want %s, got %s\n", want, got)
+	}
+}
+
+// Issue #63739.
+func TestCgoEscapeWithMultiplePointers(t *testing.T) {
+	got := runTestProg(t, "testprogcgo", "CgoEscapeWithMultiplePointers")
+	want := "OK\n"
+	if got != want {
+		t.Fatalf("output is %s; want %s", got, want)
 	}
 }
 
@@ -777,44 +797,6 @@ func TestCgoTracebackGoroutineProfile(t *testing.T) {
 	want := "OK\n"
 	if output != want {
 		t.Fatalf("want %s, got %s\n", want, output)
-	}
-}
-
-func TestCgoTraceParser(t *testing.T) {
-	// Test issue 29707.
-	switch runtime.GOOS {
-	case "plan9", "windows":
-		t.Skipf("no pthreads on %s", runtime.GOOS)
-	}
-	if goexperiment.ExecTracer2 {
-		t.Skip("skipping test that is covered elsewhere for the new execution tracer")
-	}
-	output := runTestProg(t, "testprogcgo", "CgoTraceParser")
-	want := "OK\n"
-	ErrTimeOrder := "ErrTimeOrder\n"
-	if output == ErrTimeOrder {
-		t.Skipf("skipping due to golang.org/issue/16755: %v", output)
-	} else if output != want {
-		t.Fatalf("want %s, got %s\n", want, output)
-	}
-}
-
-func TestCgoTraceParserWithOneProc(t *testing.T) {
-	// Test issue 29707.
-	switch runtime.GOOS {
-	case "plan9", "windows":
-		t.Skipf("no pthreads on %s", runtime.GOOS)
-	}
-	if goexperiment.ExecTracer2 {
-		t.Skip("skipping test that is covered elsewhere for the new execution tracer")
-	}
-	output := runTestProg(t, "testprogcgo", "CgoTraceParser", "GOMAXPROCS=1")
-	want := "OK\n"
-	ErrTimeOrder := "ErrTimeOrder\n"
-	if output == ErrTimeOrder {
-		t.Skipf("skipping due to golang.org/issue/16755: %v", output)
-	} else if output != want {
-		t.Fatalf("GOMAXPROCS=1, want %s, got %s\n", want, output)
 	}
 }
 
@@ -893,5 +875,15 @@ func TestStackSwitchCallback(t *testing.T) {
 	want := "OK\n"
 	if got != want {
 		t.Errorf("expected %q, got %v", want, got)
+	}
+}
+
+func TestCgoToGoCallGoexit(t *testing.T) {
+	if runtime.GOOS == "plan9" || runtime.GOOS == "windows" {
+		t.Skipf("no pthreads on %s", runtime.GOOS)
+	}
+	output := runTestProg(t, "testprogcgo", "CgoToGoCallGoexit")
+	if !strings.Contains(output, "runtime.Goexit called in a thread that was not created by the Go runtime") {
+		t.Fatalf("output should contain %s, got %s", "runtime.Goexit called in a thread that was not created by the Go runtime", output)
 	}
 }

@@ -15,6 +15,9 @@ const (
 	offsetX86HasAVX2   = unsafe.Offsetof(cpu.X86.HasAVX2)
 	offsetX86HasPOPCNT = unsafe.Offsetof(cpu.X86.HasPOPCNT)
 
+	offsetLOONG64HasLSX  = unsafe.Offsetof(cpu.Loong64.HasLSX)
+	offsetLOONG64HasLASX = unsafe.Offsetof(cpu.Loong64.HasLASX)
+
 	offsetS390xHasVX = unsafe.Offsetof(cpu.S390X.HasVX)
 
 	offsetPPC64HasPOWER9 = unsafe.Offsetof(cpu.PPC64.IsPOWER9)
@@ -111,7 +114,8 @@ func LastIndexRabinKarp[T string | []byte](s, sep T) int {
 	return -1
 }
 
-// MakeNoZero makes a slice of length and capacity n without zeroing the bytes.
+// MakeNoZero makes a slice of length n and capacity of at least n Bytes
+// without zeroing the bytes (including the bytes between len and cap).
 // It is the caller's responsibility to ensure uninitialized bytes
 // do not leak to the end user.
 func MakeNoZero(n int) []byte

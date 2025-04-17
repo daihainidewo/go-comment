@@ -255,3 +255,8 @@ func (fd *FD) writeUnlock() {
 		fd.destroy()
 	}
 }
+
+// closing returns true if fd is closing.
+func (fd *FD) closing() bool {
+	return atomic.LoadUint64(&fd.fdmu.state)&mutexClosed != 0
+}

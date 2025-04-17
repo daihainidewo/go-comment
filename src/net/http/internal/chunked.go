@@ -23,7 +23,7 @@ var ErrLineTooLong = errors.New("header line too long")
 // NewChunkedReader 新建读取chunk的读者
 // NewChunkedReader returns a new chunkedReader that translates the data read from r
 // out of HTTP "chunked" format before returning it.
-// The chunkedReader returns io.EOF when the final 0-length chunk is read.
+// The chunkedReader returns [io.EOF] when the final 0-length chunk is read.
 //
 // NewChunkedReader is not needed by normal applications. The http package
 // automatically decodes chunking when reading response bodies.
@@ -165,6 +165,19 @@ func readChunkLine(b *bufio.Reader) ([]byte, error) {
 		}
 		return nil, err
 	}
+
+	// RFC 9112 permits parsers to accept a bare \n as a line ending in headers,
+	// but not in chunked encoding lines. See https://www.rfc-editor.org/errata/eid7633,
+	// which explicitly rejects a clarification permitting \n as a chunk terminator.
+	//
+	// Verify that the line ends in a CRLF, and that no CRs appear before the end.
+	if idx := bytes.IndexByte(p, '\r'); idx == -1 {
+		return nil, errors.New("chunked line ends with bare LF")
+	} else if idx != len(p)-2 {
+		return nil, errors.New("invalid CR in chunked line")
+	}
+	p = p[:len(p)-2] // trim CRLF
+
 	if len(p) >= maxLineLength {
 		return nil, ErrLineTooLong
 	}
@@ -172,14 +185,14 @@ func readChunkLine(b *bufio.Reader) ([]byte, error) {
 }
 
 func trimTrailingWhitespace(b []byte) []byte {
-	for len(b) > 0 && isASCIISpace(b[len(b)-1]) {
+	for len(b) > 0 && isOWS(b[len(b)-1]) {
 		b = b[:len(b)-1]
 	}
 	return b
 }
 
-func isASCIISpace(b byte) bool {
-	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+func isOWS(b byte) bool {
+	return b == ' ' || b == '\t'
 }
 
 var semi = []byte(";")
@@ -222,7 +235,7 @@ type chunkedWriter struct {
 
 // Write the contents of data as one chunk to Wire.
 // NOTE: Note that the corresponding chunk-writing procedure in Conn.Write has
-// a bug since it does not check for success of io.WriteString
+// a bug since it does not check for success of [io.WriteString]
 func (cw *chunkedWriter) Write(data []byte) (n int, err error) {
 
 	// Don't send 0-length data. It looks like EOF for chunked encoding.
@@ -254,9 +267,9 @@ func (cw *chunkedWriter) Close() error {
 	return err
 }
 
-// FlushAfterChunkWriter signals from the caller of NewChunkedWriter
+// FlushAfterChunkWriter signals from the caller of [NewChunkedWriter]
 // that each chunk should be followed by a flush. It is used by the
-// http.Transport code to keep the buffering behavior for headers and
+// [net/http.Transport] code to keep the buffering behavior for headers and
 // trailers, but flush out chunks aggressively in the middle for
 // request bodies which may be generated slowly. See Issue 6574.
 type FlushAfterChunkWriter struct {
@@ -264,6 +277,9 @@ type FlushAfterChunkWriter struct {
 }
 
 func parseHexUint(v []byte) (n uint64, err error) {
+	if len(v) == 0 {
+		return 0, errors.New("empty hex number for chunk length")
+	}
 	for i, b := range v {
 		switch {
 		case '0' <= b && b <= '9':

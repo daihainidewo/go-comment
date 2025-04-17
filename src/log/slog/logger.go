@@ -5,6 +5,7 @@
 package slog
 
 import (
+	"bytes"
 	"context"
 	"log"
 	loginternal "log/internal"
@@ -53,7 +54,8 @@ func init() {
 // Default returns the default [Logger].
 func Default() *Logger { return defaultLogger.Load() }
 
-// SetDefault makes l the default [Logger].
+// SetDefault makes l the default [Logger], which is used by
+// the top-level functions [Info], [Debug] and so on.
 // After this call, output from the log package's default Logger
 // (as with [log.Print], etc.) will be logged using l's Handler,
 // at a level controlled by [SetLogLoggerLevel].
@@ -95,9 +97,7 @@ func (w *handlerWriter) Write(buf []byte) (int, error) {
 
 	// Remove final newline.
 	origLen := len(buf) // Report that the entire buf was written.
-	if len(buf) > 0 && buf[len(buf)-1] == '\n' {
-		buf = buf[:len(buf)-1]
-	}
+	buf = bytes.TrimSuffix(buf, []byte{'\n'})
 	r := NewRecord(time.Now(), level, string(buf), pc)
 	return origLen, w.h.Handle(context.Background(), r)
 }
@@ -238,6 +238,9 @@ func (l *Logger) ErrorContext(ctx context.Context, msg string, args ...any) {
 // It must always be called directly by an exported logging method
 // or function, because it uses a fixed call depth to obtain the pc.
 func (l *Logger) log(ctx context.Context, level Level, msg string, args ...any) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if !l.Enabled(ctx, level) {
 		return
 	}
@@ -250,14 +253,14 @@ func (l *Logger) log(ctx context.Context, level Level, msg string, args ...any) 
 	}
 	r := NewRecord(time.Now(), level, msg, pc)
 	r.Add(args...)
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	_ = l.Handler().Handle(ctx, r)
 }
 
 // logAttrs is like [Logger.log], but for methods that take ...Attr.
 func (l *Logger) logAttrs(ctx context.Context, level Level, msg string, attrs ...Attr) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if !l.Enabled(ctx, level) {
 		return
 	}
@@ -270,9 +273,6 @@ func (l *Logger) logAttrs(ctx context.Context, level Level, msg string, attrs ..
 	}
 	r := NewRecord(time.Now(), level, msg, pc)
 	r.AddAttrs(attrs...)
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	_ = l.Handler().Handle(ctx, r)
 }
 

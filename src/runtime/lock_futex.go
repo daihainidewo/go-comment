@@ -7,157 +7,15 @@
 package runtime
 
 import (
-	"runtime/internal/atomic"
+	"internal/runtime/atomic"
 	"unsafe"
 )
-
-// This implementation depends on OS-specific implementations of
-//
-//	futexsleep(addr *uint32, val uint32, ns int64)
-//		Atomically,
-//			if *addr == val { sleep }
-//		Might be woken up spuriously; that's allowed.
-//		Don't sleep longer than ns; ns < 0 means forever.
-//
-//	futexwakeup(addr *uint32, cnt uint32)
-//		If any procs are sleeping on addr, wake up at most cnt.
-
-const (
-	mutex_unlocked = 0
-	// 内存原子锁
-	mutex_locked = 1
-	// futex 锁
-	mutex_sleeping = 2
-
-	active_spin     = 4
-	active_spin_cnt = 30
-	passive_spin    = 1
-)
-
-// key32 将 *uintptr 强转成 *uint32
-// Possible lock states are mutex_unlocked, mutex_locked and mutex_sleeping.
-// mutex_sleeping means that there is presumably at least one sleeping thread.
-// Note that there can be spinning threads during all states - they do not
-// affect mutex's state.
 
 // We use the uintptr mutex.key and note.key as a uint32.
 //
 //go:nosplit
 func key32(p *uintptr) *uint32 {
 	return (*uint32)(unsafe.Pointer(p))
-}
-
-func mutexContended(l *mutex) bool {
-	return atomic.Load(key32(&l.key)) > mutex_locked
-}
-
-func lock(l *mutex) {
-	lockWithRank(l, getLockRank(l))
-}
-
-// lock2 锁住l
-func lock2(l *mutex) {
-	gp := getg()
-
-	if gp.m.locks < 0 {
-		throw("runtime·lock: lock count")
-	}
-	gp.m.locks++
-
-	// 尝试锁住锁
-	// Speculative grab for lock.
-	v := atomic.Xchg(key32(&l.key), mutex_locked)
-	if v == mutex_unlocked {
-		// 从unlock变lock 表示获得锁
-		return
-	}
-
-	// wait is either MUTEX_LOCKED or MUTEX_SLEEPING
-	// depending on whether there is a thread sleeping
-	// on this mutex. If we ever change l->key from
-	// MUTEX_SLEEPING to some other value, we must be
-	// careful to change it back to MUTEX_SLEEPING before
-	// returning, to ensure that the sleeping thread gets
-	// its wakeup call.
-	wait := v
-
-	timer := &lockTimer{lock: l}
-	timer.begin()
-	// On uniprocessors, no point spinning.
-	// On multiprocessors, spin for ACTIVE_SPIN attempts.
-	spin := 0
-	if ncpu > 1 {
-		// 多核 启动自旋
-		spin = active_spin
-	}
-	for {
-		// 尝试锁spin次
-		// Try for lock, spinning.
-		for i := 0; i < spin; i++ {
-			for l.key == mutex_unlocked {
-				// 未锁状态 尝试锁住
-				if atomic.Cas(key32(&l.key), mutex_unlocked, wait) {
-					timer.end()
-					return
-				}
-			}
-			// 调用 PAUSE
-			procyield(active_spin_cnt)
-		}
-
-		// 获取不到锁 就让出CPU
-		// Try for lock, rescheduling.
-		for i := 0; i < passive_spin; i++ {
-			for l.key == mutex_unlocked {
-				if atomic.Cas(key32(&l.key), mutex_unlocked, wait) {
-					timer.end()
-					return
-				}
-			}
-			// 拿不到锁 就切换线程
-			osyield()
-		}
-
-		// Sleep.
-		v = atomic.Xchg(key32(&l.key), mutex_sleeping)
-		if v == mutex_unlocked {
-			// 切换线程后 再次尝试获取锁
-			timer.end()
-			return
-		}
-		wait = mutex_sleeping
-		futexsleep(key32(&l.key), mutex_sleeping, -1)
-	}
-}
-
-func unlock(l *mutex) {
-	unlockWithRank(l)
-}
-
-// unlock2 解锁 l
-func unlock2(l *mutex) {
-	v := atomic.Xchg(key32(&l.key), mutex_unlocked)
-	if v == mutex_unlocked {
-		// 已经解锁 panic
-		throw("unlock of unlocked lock")
-	}
-	if v == mutex_sleeping {
-		// 解锁 futex
-		futexwakeup(key32(&l.key), 1)
-	}
-
-	gp := getg()
-	gp.m.mLockProfile.recordUnlock(l)
-	gp.m.locks--
-	if gp.m.locks < 0 {
-		throw("runtime·unlock: lock count")
-	}
-	if gp.m.locks == 0 && gp.preempt { // restore the preemption request in case we've cleared it in newstack
-		// m没有锁定的g 且 g可被抢占
-		// 则标记g可抢占
-		// 防止在 newstack 中清理掉
-		gp.stackguard0 = stackPreempt
-	}
 }
 
 // One-time notifications.
@@ -285,3 +143,33 @@ func beforeIdle(int64, int64) (*g, bool) {
 }
 
 func checkTimeouts() {}
+
+//go:nosplit
+func semacreate(mp *m) {}
+
+//go:nosplit
+func semasleep(ns int64) int32 {
+	mp := getg().m
+
+	for v := atomic.Xadd(&mp.waitsema, -1); ; v = atomic.Load(&mp.waitsema) {
+		if int32(v) >= 0 {
+			return 0
+		}
+		futexsleep(&mp.waitsema, v, ns)
+		if ns >= 0 {
+			if int32(v) >= 0 {
+				return 0
+			} else {
+				return -1
+			}
+		}
+	}
+}
+
+//go:nosplit
+func semawakeup(mp *m) {
+	v := atomic.Xadd(&mp.waitsema, 1)
+	if v == 0 {
+		futexwakeup(&mp.waitsema, 1)
+	}
+}

@@ -7,6 +7,7 @@
 package poll
 
 import (
+	"internal/itoa"
 	"internal/syscall/unix"
 	"io"
 	"sync/atomic"
@@ -48,6 +49,10 @@ type FD struct {
 	// 是否是文件流
 	// Whether this is a file rather than a network socket.
 	isFile bool
+}
+
+func (fd *FD) initIO() error {
+	return nil
 }
 
 // Init 初始化FD，FD.Sysfd 必须已经设置，可以重复设置
@@ -191,16 +196,9 @@ func (fd *FD) Pread(p []byte, off int64) (int, error) {
 	if fd.IsStream && len(p) > maxRW {
 		p = p[:maxRW]
 	}
-	var (
-		n   int
-		err error
-	)
-	for {
-		n, err = syscall.Pread(fd.Sysfd, p, off)
-		if err != syscall.EINTR {
-			break
-		}
-	}
+	n, err := ignoringEINTR2(func() (int, error) {
+		return syscall.Pread(fd.Sysfd, p, off)
+	})
 	if err != nil {
 		n = 0
 	}
@@ -388,6 +386,14 @@ func (fd *FD) Write(p []byte) (int, error) {
 		}
 		n, err := ignoringEINTRIO(syscall.Write, fd.Sysfd, p[nn:max])
 		if n > 0 {
+			if n > max-nn {
+				// This can reportedly happen when using
+				// some VPN software. Issue #61060.
+				// If we don't check this we will panic
+				// with slice bounds out of range.
+				// Use a more informative panic.
+				panic("invalid return from write: got " + itoa.Itoa(n) + " from a write of " + itoa.Itoa(max-nn))
+			}
 			nn += n
 		}
 		if nn == len(p) {
@@ -687,7 +693,7 @@ func (fd *FD) Dup() (int, string, error) {
 
 // On Unix variants only, expose the IO event for the net code.
 
-// WaitWrite waits until data can be read from fd.
+// WaitWrite waits until data can be written to fd.
 func (fd *FD) WaitWrite() error {
 	return fd.pd.waitWrite(fd.isFile)
 }

@@ -6,8 +6,10 @@ package poll
 
 import (
 	"errors"
+	"internal/stringslite"
 	"io"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -32,6 +34,10 @@ type FD struct {
 	// so this is always false, but the field is present because
 	// shared code in fd_mutex.go checks it.
 	isFile bool
+}
+
+func (fd *FD) initIO() error {
+	return nil
 }
 
 // We need this to close out a file descriptor when it is unlocked,
@@ -202,11 +208,11 @@ func (fd *FD) ReadUnlock() {
 }
 
 func isHangup(err error) bool {
-	return err != nil && stringsHasSuffix(err.Error(), "Hangup")
+	return err != nil && stringslite.HasSuffix(err.Error(), "Hangup")
 }
 
 func isInterrupted(err error) bool {
-	return err != nil && stringsHasSuffix(err.Error(), "interrupted")
+	return err != nil && stringslite.HasSuffix(err.Error(), "interrupted")
 }
 
 // IsPollDescriptor reports whether fd is the descriptor being used by the poller.
@@ -229,4 +235,15 @@ func (fd *FD) RawRead(f func(uintptr) bool) error {
 // RawWrite invokes the user-defined function f for a write operation.
 func (fd *FD) RawWrite(f func(uintptr) bool) error {
 	return errors.New("not implemented")
+}
+
+func DupCloseOnExec(fd int) (int, string, error) {
+	nfd, err := syscall.Dup(int(fd), -1)
+	if err != nil {
+		return 0, "dup", err
+	}
+	// Plan9 has no syscall.CloseOnExec but
+	// its forkAndExecInChild closes all fds
+	// not related to the fork+exec.
+	return nfd, "", nil
 }

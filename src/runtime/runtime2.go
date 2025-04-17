@@ -8,8 +8,9 @@ import (
 	"internal/abi"
 	"internal/chacha8rand"
 	"internal/goarch"
-	"runtime/internal/atomic"
-	"runtime/internal/sys"
+	"internal/goexperiment"
+	"internal/runtime/atomic"
+	"internal/runtime/sys"
 	"unsafe"
 )
 
@@ -176,42 +177,6 @@ type mutex struct {
 	key uintptr
 }
 
-// note 标记一次wakeup和sleep事件，
-// notesleep 需要 wakeup 唤醒
-// notetsleep 是只休眠指定纳秒后返回，但不能立即调用 noteclear
-// notesleep / notetsleep 通常在g0上调用
-// notetsleepg 和 notetsleep 类似，在用户g上调用
-// 锁住的是 m
-// note 设计为 os 锁
-// sleep and wakeup on one-time events.
-// before any calls to notesleep or notewakeup,
-// must call noteclear to initialize the Note.
-// then, exactly one thread can call notesleep
-// and exactly one thread can call notewakeup (once).
-// once notewakeup has been called, the notesleep
-// will return.  future notesleep will return immediately.
-// subsequent noteclear must be called only after
-// previous notesleep has returned, e.g. it's disallowed
-// to call noteclear straight after notewakeup.
-//
-// notetsleep is like notesleep but wakes up after
-// a given number of nanoseconds even if the event
-// has not yet happened.  if a goroutine uses notetsleep to
-// wake up early, it must wait to call noteclear until it
-// can be sure that no other goroutine is calling
-// notewakeup.
-//
-// notesleep/notetsleep are generally called on g0,
-// notetsleepg is similar to notetsleep but is called on user g.
-type note struct {
-	// 采用 futex （共享内存） 实现则是 uint32
-	// 采用 sema （信号量） 实现则是 *m waitm
-	// Futex-based impl treats it as uint32 key,
-	// while sema-based impl as M* waitm.
-	// Used to be a union, but unions break precise GC.
-	key uintptr
-}
-
 // 函数描述符
 type funcval struct {
 	fn uintptr
@@ -358,7 +323,6 @@ type gobuf struct {
 	pc   uintptr  // 程序计数器
 	g    guintptr // 反向关联 g 对象
 	ctxt unsafe.Pointer
-	ret  uintptr // 系统调用返回值
 	lr   uintptr // 某些架构用于暂存pc
 	bp   uintptr // for framepointer-enabled architectures
 }
@@ -473,6 +437,7 @@ type g struct {
 	sched     gobuf   // 调度信息
 	syscallsp uintptr // if status==Gsyscall, syscallsp = sched.sp to use during gc
 	syscallpc uintptr // if status==Gsyscall, syscallpc = sched.pc to use during gc
+	syscallbp uintptr // if status==Gsyscall, syscallbp = sched.bp to use in fpTraceback
 	stktopsp  uintptr // 栈顶预期的sp expected sp at top of stack, to check in traceback
 	// param 是一个通用指针参数字段
 	// 用于在难以找到其他参数存储的特定上下文中传递值
@@ -549,6 +514,7 @@ type g struct {
 	trackingStamp int64 // timestamp of when the G last started being tracked
 	runnableTime  int64 // the amount of time spent runnable, cleared when running, only used when tracking
 	lockedm       muintptr
+	fipsIndicator uint8
 	sig           uint32
 	writebuf      []byte
 	sigcode0      uintptr
@@ -563,13 +529,15 @@ type g struct {
 	cgoCtxt       []uintptr      // cgo traceback context
 	labels        unsafe.Pointer // profiler labels
 	timer         *timer         // cached timer for time.Sleep
+	sleepWhen     int64          // when to sleep until
 	selectDone    atomic.Uint32  // are we participating in a select and did someone win the race?
-
-	coroarg *coro // argument during coroutine transfers
 
 	// goroutineProfiled indicates the status of this goroutine's stack for the
 	// current in-progress goroutine profile
 	goroutineProfiled goroutineProfileStateHolder
+
+	coroarg   *coro // argument during coroutine transfers
+	syncGroup *synctestGroup
 
 	// Per-G tracer state.
 	trace gTraceState
@@ -609,62 +577,63 @@ const (
 
 type m struct {
 	g0      *g     // goroutine with scheduling stack
-	morebuf gobuf  // 保存着morestack的调用者相关信息// gobuf arg to morestack
-	divmod  uint32 // div/mod denominator for arm - known to liblink
-	_       uint32 // align next field to 8 bytes
+	morebuf gobuf  // gobuf arg to morestack
+	divmod  uint32 // div/mod denominator for arm - known to liblink (cmd/internal/obj/arm/obj5.go)
 
 	// Fields not known to debuggers.
-	procid        uint64            // for debuggers, but offset not hard-coded
-	gsignal       *g                // signal-handling g
-	goSigStack    gsignalStack      // Go-allocated signal handling stack
-	sigmask       sigset            // storage for saved signal mask
-	tls           [tlsSlots]uintptr // thread-local storage (for x86 extern register)
-	mstartfn      func()            // m 开始时调用的函数
-	curg          *g                // current running goroutine
-	caughtsig     guintptr          // goroutine running during fatal signal
-	p             puintptr          // attached p for executing go code (nil if not executing go code)
-	nextp         puintptr
-	oldp          puintptr // the p that was attached before executing a syscall
-	id            int64
-	mallocing     int32 // 标记申请内存中
-	throwing      throwType // 抛出异常等级
-	preemptoff    string // if != "", keep curg running on this m
-	locks         int32  // 引用计数，非零表示禁止抢占当前g
-	dying         int32 // 标记 m 的濒死状态， 1： 2： 3：
-	profilehz     int32 // cpu 采样率
-	spinning      bool  // 是否自旋 等待 g 去执行 m is out of work and is actively looking for work
-	blocked       bool  // 是否被note阻塞 m is blocked on a note
-	newSigstack   bool  // minit on C thread called sigaltstack
-	printlock     int8
-	incgo         bool          // 是否执行cgo调用 m is executing a cgo call
-	isextra       bool          // 为0表示可以释放当前 m is an extra m
-	isExtraInC    bool          // m is an extra m that is not executing Go code
-	isExtraInSig  bool          // m is an extra m in a signal handler
-	freeWait      atomic.Uint32 // Whether it is safe to free g0 and delete m (one of freeMRef, freeMStack, freeMWait)
-	needextram    bool
-	traceback     uint8 // traceback 等级 在 gotraceback 中使用
-	ncgocall      uint64        // number of cgo calls in total
-	ncgo          int32         // number of cgo calls currently in progress
-	cgoCallersUse atomic.Uint32 // if non-zero, cgoCallers in use temporarily
-	cgoCallers    *cgoCallers   // cgo traceback if crashing in cgo call
-	park          note
-	alllink       *m // on allm
-	schedlink     muintptr
-	lockedg       guintptr
-	createstack   [32]uintptr // stack that created this thread, it's used for StackRecord.Stack0, so it must align with it.
-	lockedExt     uint32      // tracking for external LockOSThread
-	lockedInt     uint32      // tracking for internal lockOSThread
-	nextwaitm     muintptr    // next m waiting for lock
+	procid          uint64            // for debuggers, but offset not hard-coded
+	gsignal         *g                // signal-handling g
+	goSigStack      gsignalStack      // Go-allocated signal handling stack
+	sigmask         sigset            // storage for saved signal mask
+	tls             [tlsSlots]uintptr // thread-local storage (for x86 extern register)
+	mstartfn        func() // m 开始时调用的函数
+	curg            *g       // current running goroutine
+	caughtsig       guintptr // goroutine running during fatal signal
+	p               puintptr // attached p for executing go code (nil if not executing go code)
+	nextp           puintptr
+	oldp            puintptr // the p that was attached before executing a syscall
+	id              int64
+	mallocing       int32 // 标记申请内存中
+	throwing        throwType // 抛出异常等级
+	preemptoff      string // if != "", keep curg running on this m
+	locks           int32  // 引用计数，非零表示禁止抢占当前g
+	dying           int32 // 标记 m 的濒死状态， 1： 2： 3：
+	profilehz       int32 // cpu 采样率
+	spinning        bool // 是否自旋 等待 g 去执行 m is out of work and is actively looking for work
+	blocked         bool // 是否被note阻塞 m is blocked on a note
+	newSigstack     bool // minit on C thread called sigaltstack
+	printlock       int8
+	incgo           bool          // 是否执行cgo调用 m is executing a cgo call
+	isextra         bool          // 为0表示可以释放当前 m is an extra m
+	isExtraInC      bool          // m is an extra m that does not have any Go frames
+	isExtraInSig    bool          // m is an extra m in a signal handler
+	freeWait        atomic.Uint32 // Whether it is safe to free g0 and delete m (one of freeMRef, freeMStack, freeMWait)
+	needextram      bool
+	g0StackAccurate bool // whether the g0 stack has accurate bounds
+	traceback       uint8// traceback 等级 在 gotraceback 中使用
+	ncgocall        uint64        // number of cgo calls in total
+	ncgo            int32         // number of cgo calls currently in progress
+	cgoCallersUse   atomic.Uint32 // if non-zero, cgoCallers in use temporarily
+	cgoCallers      *cgoCallers   // cgo traceback if crashing in cgo call
+	park            note
+	alllink         *m // on allm
+	schedlink       muintptr
+	lockedg         guintptr
+	createstack     [32]uintptr // stack that created this thread, it's used for StackRecord.Stack0, so it must align with it.
+	lockedExt       uint32      // tracking for external LockOSThread
+	lockedInt       uint32      // tracking for internal lockOSThread
+	mWaitList       mWaitList   // list of runtime lock waiters
 
 	mLockProfile mLockProfile // fields relating to runtime.lock contention
+	profStack    []uintptr    // used for memory/block/mutex stack traces
 
 	// 锁相关 解锁函数 锁地址 事件 跳数
 	// wait* are used to carry arguments from gopark into park_m, because
 	// there's no stack to put them on. That is their sole purpose.
 	waitunlockf          func(*g, unsafe.Pointer) bool
 	waitlock             unsafe.Pointer
-	waitTraceBlockReason traceBlockReason
 	waitTraceSkip        int
+	waitTraceBlockReason traceBlockReason
 
 	syscalltick uint32
 	freelink    *m // on sched.freem
@@ -676,7 +645,7 @@ type m struct {
 	libcallpc uintptr  // for cpu profiler
 	libcallsp uintptr  // libcall 的sp
 	libcallg  guintptr // libcall 的g
-	syscall   libcall  // stores syscall parameters on windows
+	winsyscall winlibcall // stores syscall parameters on windows
 
 	vdsoSP uintptr // SP for traceback while in VDSO call (0 if not in call)
 	vdsoPC uintptr // PC for traceback while in VDSO call
@@ -704,6 +673,18 @@ type m struct {
 	// Up to 10 locks held by this m, maintained by the lock ranking code.
 	locksHeldLen int
 	locksHeld    [10]heldLockInfo
+}
+
+const mRedZoneSize = (16 << 3) * asanenabledBit // redZoneSize(2048)
+
+type mPadded struct {
+	m
+
+	// Size the runtime.m structure so it fits in the 2048-byte size class, and
+	// not in the next-smallest (1792-byte) size class. That leaves the 11 low
+	// bits of muintptr values available for flags, as required for
+	// GOEXPERIMENT=spinbitmutex.
+	_ [goexperiment.SpinbitMutexInt * (2048 - mallocHeaderSize - mRedZoneSize - unsafe.Sizeof(m{}))]byte
 }
 
 type p struct {
@@ -746,10 +727,7 @@ type p struct {
 
 	// 空闲G列表
 	// Available G's (status == Gdead)
-	gFree struct {
-		gList       // 列表元素
-		n     int32 // 列表个数
-	}
+	gFree gList
 
 	sudogcache []*sudog    // sudog 缓存
 	sudogbuf   [128]*sudog // sudog 列表
@@ -774,16 +752,6 @@ type p struct {
 
 	// 持久化小块内存分配器
 	palloc persistentAlloc // per-P to avoid mutex
-
-	// The when field of the first entry on the timer heap.
-	// This is 0 if the timer heap is empty.
-	timer0When atomic.Int64
-
-	// The earliest known nextwhen field of a timer with
-	// timerModifiedEarlier status. Because the timer may have been
-	// modified again, there need not be any timer with this value.
-	// This is 0 if there are no timerModifiedEarlier timers.
-	timerModifiedEarliest atomic.Int64
 
 	// Per-P GC state
 	gcAssistTime         int64 // Nanoseconds in assistAlloc
@@ -821,23 +789,8 @@ type p struct {
 	// writing any stats. Its value is even when not, odd when it is.
 	statsSeq atomic.Uint32
 
-	// Lock for timers. We normally access the timers while running
-	// on this P, but the scheduler can also do it from a different P.
-	timersLock mutex
-
-	// Actions to take at some time. This is used to implement the
-	// standard library's time package.
-	// Must hold timersLock to access.
-	timers []*timer
-
-	// Number of timers in P's heap.
-	numTimers atomic.Uint32
-
-	// Number of timerDeleted timers in P's heap.
-	deletedTimers atomic.Uint32
-
-	// Race context used while executing timer functions.
-	timerRaceCtx uintptr
+	// Timer heap.
+	timers timers
 
 	// maxStackScanDelta accumulates the amount of stack space held by
 	// live goroutines (i.e. those eligible for stack scanning).
@@ -858,10 +811,8 @@ type p struct {
 	// scheduler ASAP (regardless of what G is running on it).
 	preempt bool
 
-	// pageTraceBuf is a buffer for writing out page allocation/free/scavenge traces.
-	//
-	// Used only if GOEXPERIMENT=pagetrace.
-	pageTraceBuf pageTraceBuf
+	// gcStopTime is the nanotime timestamp that this P last entered _Pgcstop.
+	gcStopTime int64
 
 	// Padding is no longer needed. False sharing is now not a worry because p is large enough
 	// that its size class is an integer multiple of the cache line size (for any of our architectures).
@@ -893,8 +844,7 @@ type schedt struct {
 	needspinning atomic.Uint32 // See "Delicate dance" comment in proc.go. Boolean. Must hold sched.lock to set to 1.
 
 	// Global runnable queue.
-	runq     gQueue // 等待执行g的队列
-	runqsize int32  // 等待执行g个数
+	runq gQueue
 
 	// disable controls selective disabling of the scheduler.
 	//
@@ -905,7 +855,6 @@ type schedt struct {
 		// user disables scheduling of user goroutines.
 		user     bool
 		runnable gQueue // pending runnable Gs
-		n        int32  // length of runnable
 	}
 
 	// 全局缓存释放的G
@@ -914,7 +863,6 @@ type schedt struct {
 		lock    mutex // 全局锁
 		stack   gList // Gs with stacks
 		noStack gList // Gs without stacks
-		n       int32
 	}
 
 	// Central cache of sudog structs.
@@ -1081,17 +1029,7 @@ type funcinl struct {
 	startLine int32
 }
 
-// layout of Itab known to compilers
-// allocated in non-garbage-collected memory
-// Needs to be in sync with
-// ../cmd/compile/internal/reflectdata/reflect.go:/^func.WritePluginTable.
-type itab struct {
-	inter *interfacetype
-	_type *_type
-	hash  uint32 // copy of _type.hash. Used for type switches.
-	_     [4]byte
-	fun   [1]uintptr // variable sized. fun[0]==0 means _type does not implement inter.
-}
+type itab = abi.ITab
 
 // lfnode 无锁栈节点
 // Lock-free stack node.
@@ -1167,6 +1105,7 @@ type _panic struct {
 	slotsPtr     unsafe.Pointer
 
 	recovered   bool // whether this panic has been recovered
+	reraised    bool // whether this panic was reraised
 	goexit      bool
 	deferreturn bool
 }
@@ -1217,6 +1156,7 @@ const (
 	waitReasonSyncMutexLock                           // "sync.Mutex.Lock"
 	waitReasonSyncRWMutexRLock                        // "sync.RWMutex.RLock"
 	waitReasonSyncRWMutexLock                         // "sync.RWMutex.Lock"
+	waitReasonSyncWaitGroupWait                       // "sync.WaitGroup.Wait"
 	waitReasonTraceReaderBlocked                      // "trace reader (blocked)"
 	waitReasonWaitForGCCycle                          // "wait for GC cycle"
 	waitReasonGCWorkerIdle                            // "GC worker (idle)"
@@ -1228,7 +1168,14 @@ const (
 	waitReasonFlushProcCaches                         // "flushing proc caches"
 	waitReasonTraceGoroutineStatus                    // "trace goroutine status"
 	waitReasonTraceProcStatus                         // "trace proc status"
+	waitReasonPageTraceFlush                          // "page trace flush"
 	waitReasonCoroutine                               // "coroutine"
+	waitReasonGCWeakToStrongWait                      // "GC weak to strong wait"
+	waitReasonSynctestRun                             // "synctest.Run"
+	waitReasonSynctestWait                            // "synctest.Wait"
+	waitReasonSynctestChanReceive                     // "chan receive (synctest)"
+	waitReasonSynctestChanSend                        // "chan send (synctest)"
+	waitReasonSynctestSelect                          // "select (synctest)"
 )
 
 var waitReasonStrings = [...]string{
@@ -1256,6 +1203,7 @@ var waitReasonStrings = [...]string{
 	waitReasonSyncMutexLock:         "sync.Mutex.Lock",
 	waitReasonSyncRWMutexRLock:      "sync.RWMutex.RLock",
 	waitReasonSyncRWMutexLock:       "sync.RWMutex.Lock",
+	waitReasonSyncWaitGroupWait:     "sync.WaitGroup.Wait",
 	waitReasonTraceReaderBlocked:    "trace reader (blocked)",
 	waitReasonWaitForGCCycle:        "wait for GC cycle",
 	waitReasonGCWorkerIdle:          "GC worker (idle)",
@@ -1267,7 +1215,14 @@ var waitReasonStrings = [...]string{
 	waitReasonFlushProcCaches:       "flushing proc caches",
 	waitReasonTraceGoroutineStatus:  "trace goroutine status",
 	waitReasonTraceProcStatus:       "trace proc status",
+	waitReasonPageTraceFlush:        "page trace flush",
 	waitReasonCoroutine:             "coroutine",
+	waitReasonGCWeakToStrongWait:    "GC weak to strong wait",
+	waitReasonSynctestRun:           "synctest.Run",
+	waitReasonSynctestWait:          "synctest.Wait",
+	waitReasonSynctestChanReceive:   "chan receive (synctest)",
+	waitReasonSynctestChanSend:      "chan send (synctest)",
+	waitReasonSynctestSelect:        "select (synctest)",
 }
 
 func (w waitReason) String() string {
@@ -1283,6 +1238,49 @@ func (w waitReason) isMutexWait() bool {
 		w == waitReasonSyncRWMutexLock
 }
 
+func (w waitReason) isWaitingForGC() bool {
+	return isWaitingForGC[w]
+}
+
+// isWaitingForGC indicates that a goroutine is only entering _Gwaiting and
+// setting a waitReason because it needs to be able to let the GC take ownership
+// of its stack. The G is always actually executing on the system stack, in
+// these cases.
+//
+// TODO(mknyszek): Consider replacing this with a new dedicated G status.
+var isWaitingForGC = [len(waitReasonStrings)]bool{
+	waitReasonStoppingTheWorld:      true,
+	waitReasonGCMarkTermination:     true,
+	waitReasonGarbageCollection:     true,
+	waitReasonGarbageCollectionScan: true,
+	waitReasonTraceGoroutineStatus:  true,
+	waitReasonTraceProcStatus:       true,
+	waitReasonPageTraceFlush:        true,
+	waitReasonGCAssistMarking:       true,
+	waitReasonGCWorkerActive:        true,
+	waitReasonFlushProcCaches:       true,
+}
+
+func (w waitReason) isIdleInSynctest() bool {
+	return isIdleInSynctest[w]
+}
+
+// isIdleInSynctest indicates that a goroutine is considered idle by synctest.Wait.
+var isIdleInSynctest = [len(waitReasonStrings)]bool{
+	waitReasonChanReceiveNilChan:  true,
+	waitReasonChanSendNilChan:     true,
+	waitReasonSelectNoCases:       true,
+	waitReasonSleep:               true,
+	waitReasonSyncCondWait:        true,
+	waitReasonSyncWaitGroupWait:   true,
+	waitReasonCoroutine:           true,
+	waitReasonSynctestRun:         true,
+	waitReasonSynctestWait:        true,
+	waitReasonSynctestChanReceive: true,
+	waitReasonSynctestChanSend:    true,
+	waitReasonSynctestSelect:      true,
+}
+
 var (
 	allm       *m    // 所有m的链表
 	gomaxprocs int32 // 最大proc个数
@@ -1290,13 +1288,21 @@ var (
 	forcegc    forcegcstate
 	sched      schedt // 全局资源管理器
 	newprocs   int32  // 当前proc个数
+	sched      schedt
+	newprocs   int32
+)
 
+var (
 	// allpLock protects P-less reads and size changes of allp, idlepMask,
 	// and timerpMask, and all writes to allp.
 	allpLock mutex // 保护 allp idlepMask timerpMask
+	allpLock mutex
+
 	// len(allp) == gomaxprocs; may change at safe points, otherwise
 	// immutable.
 	allp []*p // 所有的p
+	allp []*p
+
 	// Bitmask of Ps in _Pidle list, one bit per P. Reads and writes must
 	// be atomic. Length may change at safe points.
 	//
@@ -1308,10 +1314,40 @@ var (
 	//
 	// N.B., procresize takes ownership of all Ps in stopTheWorldWithSema.
 	idlepMask pMask // 空闲p的位图
-	// Bitmask of Ps that may have a timer, one bit per P. Reads and writes
-	// must be atomic. Length may change at safe points.
-	timerpMask pMask // timer的位图
 
+	// timer的位图
+	//
+	// Ideally, the timer mask would be kept immediately consistent on any timer
+	// operations. Unfortunately, updating a shared global data structure in the
+	// timer hot path adds too much overhead in applications frequently switching
+	// between no timers and some timers.
+	//
+	// As a compromise, the timer mask is updated only on pidleget / pidleput. A
+	// running P (returned by pidleget) may add a timer at any time, so its mask
+	// must be set. An idle P (passed to pidleput) cannot add new timers while
+	// idle, so if it has no timers at that time, its mask may be cleared.
+	//
+	// Thus, we get the following effects on timer-stealing in findrunnable:
+	//
+	//   - Idle Ps with no timers when they go idle are never checked in findrunnable
+	//     (for work- or timer-stealing; this is the ideal case).
+	//   - Running Ps must always be checked.
+	//   - Idle Ps whose timers are stolen must continue to be checked until they run
+	//     again, even after timer expiration.
+	//
+	// When the P starts running again, the mask should be set, as a timer may be
+	// added at any time.
+	//
+	// TODO(prattmic): Additional targeted updates may improve the above cases.
+	// e.g., updating the mask when stealing a timer.
+	timerpMask pMask
+)
+
+// goarmsoftfp is used by runtime/cgo assembly.
+//
+//go:linkname goarmsoftfp
+
+var (
 	// Pool of GC parked background workers. Entries are type
 	// *gcBgMarkWorkerNode.
 	gcBgMarkWorkerPool lfstack
@@ -1325,8 +1361,21 @@ var (
 	// Set on startup in asm_{386,amd64}.s
 	processorVersionInfo uint32
 	isIntel              bool
+)
 
-	// set by cmd/link on arm systems
+// set by cmd/link on arm systems
+// accessed using linkname by internal/runtime/atomic.
+//
+// goarm should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/creativeprojects/go-selfupdate
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname goarm
+var (
 	goarm       uint8
 	goarmsoftfp uint8
 )
@@ -1339,3 +1388,17 @@ var (
 
 // Must agree with internal/buildcfg.FramePointerEnabled.
 const framepointer_enabled = GOARCH == "amd64" || GOARCH == "arm64"
+
+// getcallerfp returns the frame pointer of the caller of the caller
+// of this function.
+//
+//go:nosplit
+//go:noinline
+func getcallerfp() uintptr {
+	fp := getfp() // This frame's FP.
+	if fp != 0 {
+		fp = *(*uintptr)(unsafe.Pointer(fp)) // The caller's FP.
+		fp = *(*uintptr)(unsafe.Pointer(fp)) // The caller's caller's FP.
+	}
+	return fp
+}

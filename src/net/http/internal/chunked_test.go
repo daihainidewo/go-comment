@@ -153,6 +153,7 @@ func TestParseHexUint(t *testing.T) {
 		{"00000000000000000", 0, "http chunk length too large"}, // could accept if we wanted
 		{"10000000000000000", 0, "http chunk length too large"},
 		{"00000000000000001", 0, "http chunk length too large"}, // could accept if we wanted
+		{"", 0, "empty hex number for chunk length"},
 	}
 	for i := uint64(0); i <= 1234; i++ {
 		tests = append(tests, testCase{in: fmt.Sprintf("%x", i), want: i})
@@ -276,6 +277,33 @@ func TestChunkReaderByteAtATime(t *testing.T) {
 	}
 	if len(got) != bodylen {
 		t.Errorf("read %v bytes, want %v", len(got), bodylen)
+	}
+}
+
+func TestChunkInvalidInputs(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		b    string
+	}{{
+		name: "bare LF in chunk size",
+		b:    "1\na\r\n0\r\n",
+	}, {
+		name: "extra LF in chunk size",
+		b:    "1\r\r\na\r\n0\r\n",
+	}, {
+		name: "bare LF in chunk data",
+		b:    "1\r\na\n0\r\n",
+	}, {
+		name: "bare LF in chunk extension",
+		b:    "1;\na\r\n0\r\n",
+	}} {
+		t.Run(test.name, func(t *testing.T) {
+			r := NewChunkedReader(strings.NewReader(test.b))
+			got, err := io.ReadAll(r)
+			if err == nil {
+				t.Fatalf("unexpectedly parsed invalid chunked data:\n%q", got)
+			}
+		})
 	}
 }
 

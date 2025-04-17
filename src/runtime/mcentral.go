@@ -13,8 +13,8 @@
 package runtime
 
 import (
-	"runtime/internal/atomic"
-	"runtime/internal/sys"
+	"internal/runtime/atomic"
+	"internal/runtime/sys"
 )
 
 // mentral 给定大小的空闲对象链表
@@ -275,6 +275,6 @@ func (c *mcentral) grow() *mspan {
 	// n := (npages << _PageShift) / size
 	n := s.divideByElemSize(npages << _PageShift)
 	s.limit = s.base() + size*n
-	s.initHeapBits(false)
+	s.initHeapBits()
 	return s
 }

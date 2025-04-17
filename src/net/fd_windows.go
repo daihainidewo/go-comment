@@ -23,6 +23,10 @@ const (
 	writeMsgSyscallName = "wsasendmsg"
 )
 
+func init() {
+	poll.InitWSA()
+}
+
 // canUseConnectEx reports whether we can use the ConnectEx Windows API call
 // for the given network type.
 func canUseConnectEx(net string) bool {
@@ -49,11 +53,31 @@ func newFD(sysfd syscall.Handle, family, sotype int, net string) (*netFD, error)
 }
 
 func (fd *netFD) init() error {
-	errcall, err := fd.pfd.Init(fd.net, true)
-	if errcall != "" {
-		err = wrapSyscallError(errcall, err)
+	if err := fd.pfd.Init(fd.net, true); err != nil {
+		return err
 	}
-	return err
+	switch fd.net {
+	case "udp", "udp4", "udp6":
+		// Disable reporting of PORT_UNREACHABLE errors.
+		// See https://go.dev/issue/5834.
+		ret := uint32(0)
+		flag := uint32(0)
+		size := uint32(unsafe.Sizeof(flag))
+		err := syscall.WSAIoctl(fd.pfd.Sysfd, syscall.SIO_UDP_CONNRESET, (*byte)(unsafe.Pointer(&flag)), size, nil, 0, &ret, nil, 0)
+		if err != nil {
+			return wrapSyscallError("wsaioctl", err)
+		}
+		// Disable reporting of NET_UNREACHABLE errors.
+		// See https://go.dev/issue/68614.
+		ret = 0
+		flag = 0
+		size = uint32(unsafe.Sizeof(flag))
+		err = syscall.WSAIoctl(fd.pfd.Sysfd, windows.SIO_UDP_NETRESET, (*byte)(unsafe.Pointer(&flag)), size, nil, 0, &ret, nil, 0)
+		if err != nil {
+			return wrapSyscallError("wsaioctl", err)
+		}
+	}
+	return nil
 }
 
 // Always returns nil for connected peer address result.
@@ -131,7 +155,7 @@ func (fd *netFD) connect(ctx context.Context, la, ra syscall.Sockaddr) (syscall.
 			Rtt:                   windows.TCP_INITIAL_RTO_UNSPECIFIED_RTT, // use the default or overridden by the Administrator
 			MaxSynRetransmissions: 1,                                       // minimum possible value before Windows 10.0.16299
 		}
-		if windows.Support_TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS() {
+		if windows.SupportTCPInitialRTONoSYNRetransmissions() {
 			// In Windows 10.0.16299 TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS makes ConnectEx() fails instantly.
 			params.MaxSynRetransmissions = windows.TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS
 		}
@@ -212,6 +236,6 @@ func (fd *netFD) accept() (*netFD, error) {
 // Unimplemented functions.
 
 func (fd *netFD) dup() (*os.File, error) {
-	// TODO: Implement this
+	// TODO: Implement this, perhaps using internal/poll.DupCloseOnExec.
 	return nil, syscall.EWINDOWS
 }

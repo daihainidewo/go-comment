@@ -18,7 +18,7 @@ TEXT ·addVV(SB), NOSPLIT, $0
 	MOVD  z+0(FP), R10      // R10 = z[]
 
 	// If z_len = 0, we are done
-	CMP   R0, R7
+	CMP   R7, $0
 	MOVD  R0, R4
 	BEQ   done
 
@@ -28,12 +28,12 @@ TEXT ·addVV(SB), NOSPLIT, $0
 	MOVD  0(R9), R12      // R12 = y[i]
 	ADD   $-1, R7         // R7 = z_len - 1
 	ADDC  R12, R11, R15   // R15 = x[i] + y[i], set CA
-	CMP   R0, R7
+	CMP   R7, $0
 	MOVD  R15, 0(R10)     // z[i]
 	BEQ   final          // If z_len was 1, we are done
 
 	SRD   $2, R7, R5      // R5 = z_len/4
-	CMP   R0, R5
+	CMP   R5, $0
 	MOVD  R5, CTR         // Set up loop counter
 	BEQ   tail            // If R5 = 0, we can't use the loop
 
@@ -62,10 +62,10 @@ loop:
 	MOVD  R22, 24(R10)    // z[i+2]
 	MOVDU R23, 32(R10)    // z[i+3]
 	ADD   $-4, R7         // R7 = z_len - 4
-	BC  16, 0, loop       // bdnz
+	BDNZ  loop
 
 	// We may have more elements to read
-	CMP   R0, R7
+	CMP   R7, $0
 	BEQ   final
 
 	// Process the remaining elements, one at a time
@@ -74,7 +74,7 @@ tail:
 	MOVDU 8(R9), R16      // R16 = y[i]
 	ADD   $-1, R7         // R7 = z_len - 1
 	ADDE  R11, R16, R20   // R20 = x[i] + y[i] + CA
-	CMP   R0, R7
+	CMP   R7, $0
 	MOVDU R20, 8(R10)     // z[i]
 	BEQ   final           // If R7 = 0, we are done
 
@@ -82,7 +82,7 @@ tail:
 	MOVDU 8(R9), R16
 	ADD   $-1, R7
 	ADDE  R11, R16, R20
-	CMP   R0, R7
+	CMP   R7, $0
 	MOVDU R20, 8(R10)
 	BEQ   final
 
@@ -107,7 +107,7 @@ TEXT ·subVV(SB), NOSPLIT, $0
 	MOVD  z+0(FP), R10    // R10 = z[]
 
 	// If z_len = 0, we are done
-	CMP   R0, R7
+	CMP   R7, $0
 	MOVD  R0, R4
 	BEQ   done
 
@@ -117,12 +117,12 @@ TEXT ·subVV(SB), NOSPLIT, $0
 	MOVD  0(R9), R12      // R12 = y[i]
 	ADD   $-1, R7         // R7 = z_len - 1
 	SUBC  R12, R11, R15   // R15 = x[i] - y[i], set CA
-	CMP   R0, R7
+	CMP   R7, $0
 	MOVD  R15, 0(R10)     // z[i]
 	BEQ   final           // If z_len was 1, we are done
 
 	SRD   $2, R7, R5      // R5 = z_len/4
-	CMP   R0, R5
+	CMP   R5, $0
 	MOVD  R5, CTR         // Set up loop counter
 	BEQ   tail            // If R5 = 0, we can't use the loop
 
@@ -151,10 +151,10 @@ loop:
 	MOVD  R22, 24(R10)    // z[i+2]
 	MOVDU R23, 32(R10)    // z[i+3]
 	ADD   $-4, R7         // R7 = z_len - 4
-	BC  16, 0, loop       // bdnz
+	BDNZ  loop
 
 	// We may have more elements to read
-	CMP   R0, R7
+	CMP   R7, $0
 	BEQ   final
 
 	// Process the remaining elements, one at a time
@@ -163,7 +163,7 @@ tail:
 	MOVDU 8(R9), R16      // R16 = y[i]
 	ADD   $-1, R7         // R7 = z_len - 1
 	SUBE  R16, R11, R20   // R20 = x[i] - y[i] + CA
-	CMP   R0, R7
+	CMP   R7, $0
 	MOVDU R20, 8(R10)     // z[i]
 	BEQ   final           // If R7 = 0, we are done
 
@@ -171,7 +171,7 @@ tail:
 	MOVDU 8(R9), R16
 	ADD   $-1, R7
 	SUBE  R16, R11, R20
-	CMP   R0, R7
+	CMP   R7, $0
 	MOVDU R20, 8(R10)
 	BEQ   final
 
@@ -195,7 +195,7 @@ TEXT ·addVW(SB), NOSPLIT, $0
 	MOVD y+48(FP), R4	// R4 = y = c
 	MOVD z_len+8(FP), R11	// R11 = z_len
 
-	CMP   R0, R11		// If z_len is zero, return
+	CMP   R11, $0		// If z_len is zero, return
 	BEQ   done
 
 	// We will process the first iteration out of the loop so we capture
@@ -204,14 +204,13 @@ TEXT ·addVW(SB), NOSPLIT, $0
 	MOVD  0(R8), R20	// R20 = x[i]
 	ADD   $-1, R11		// R11 = z_len - 1
 	ADDC  R20, R4, R6	// R6 = x[i] + c
-	CMP   R0, R11		// If z_len was 1, we are done
+	CMP   R11, $0		// If z_len was 1, we are done
 	MOVD  R6, 0(R10)	// z[i]
 	BEQ   final
 
 	// We will read 4 elements per iteration
-	SRD   $2, R11, R9	// R9 = z_len/4
+	SRDCC $2, R11, R9	// R9 = z_len/4
 	DCBT  (R8)
-	CMP   R0, R9
 	MOVD  R9, CTR		// Set up the loop counter
 	BEQ   tail		// If R9 = 0, we can't use the loop
 	PCALIGN $16
@@ -230,10 +229,10 @@ loop:
 	MOVD  R26, 24(R10)	// z[i+2]
 	MOVDU R27, 32(R10)	// z[i+3]
 	ADD   $-4, R11		// R11 = z_len - 4
-	BC    16, 0, loop	// bdnz
+	BDNZ  loop
 
 	// We may have some elements to read
-	CMP R0, R11
+	CMP R11, $0
 	BEQ final
 
 tail:
@@ -241,14 +240,14 @@ tail:
 	ADDZE R20, R24
 	ADD $-1, R11
 	MOVDU R24, 8(R10)
-	CMP R0, R11
+	CMP R11, $0
 	BEQ final
 
 	MOVDU 8(R8), R20
 	ADDZE R20, R24
 	ADD $-1, R11
 	MOVDU R24, 8(R10)
-	CMP R0, R11
+	CMP R11, $0
 	BEQ final
 
 	MOVD 8(R8), R20
@@ -268,7 +267,7 @@ TEXT ·subVW(SB), NOSPLIT, $0
 	MOVD  y+48(FP), R4	// R4 = y = c
 	MOVD  z_len+8(FP), R11	// R11 = z_len
 
-	CMP   R0, R11		// If z_len is zero, return
+	CMP   R11, $0		// If z_len is zero, return
 	BEQ   done
 
 	// We will process the first iteration out of the loop so we capture
@@ -277,14 +276,13 @@ TEXT ·subVW(SB), NOSPLIT, $0
 	MOVD  0(R8), R20	// R20 = x[i]
 	ADD   $-1, R11		// R11 = z_len - 1
 	SUBC  R4, R20, R6	// R6 = x[i] - c
-	CMP   R0, R11		// If z_len was 1, we are done
+	CMP   R11, $0		// If z_len was 1, we are done
 	MOVD  R6, 0(R10)	// z[i]
 	BEQ   final
 
 	// We will read 4 elements per iteration
-	SRD   $2, R11, R9	// R9 = z_len/4
+	SRDCC $2, R11, R9	// R9 = z_len/4
 	DCBT  (R8)
-	CMP   R0, R9
 	MOVD  R9, CTR		// Set up the loop counter
 	BEQ   tail		// If R9 = 0, we can't use the loop
 
@@ -307,10 +305,10 @@ loop:
 	MOVD  R22, 24(R10)
 	MOVDU R23, 32(R10)
 	ADD   $-4, R11
-	BC    16, 0, loop	// bdnz
+	BDNZ  loop
 
 	// We may have some elements to read
-	CMP   R0, R11
+	CMP   R11, $0
 	BEQ   final
 
 tail:
@@ -318,14 +316,14 @@ tail:
 	SUBE  R0, R20
 	ADD   $-1, R11
 	MOVDU R20, 8(R10)
-	CMP   R0, R11
+	CMP   R11, $0
 	BEQ   final
 
 	MOVDU 8(R8), R20
 	SUBE  R0, R20
 	ADD   $-1, R11
 	MOVDU R20, 8(R10)
-	CMP   R0, R11
+	CMP   R11, $0
 	BEQ   final
 
 	MOVD  8(R8), R20
@@ -341,16 +339,14 @@ done:
 	MOVD  R4, c+56(FP)
 	RET
 
-//func shlVU(z, x []Word, s uint) (c Word)
-TEXT ·shlVU(SB), NOSPLIT, $0
+//func lshVU(z, x []Word, s uint) (c Word)
+TEXT ·lshVU(SB), NOSPLIT, $0
 	MOVD    z+0(FP), R3
 	MOVD    x+24(FP), R6
 	MOVD    s+48(FP), R9
 	MOVD    z_len+8(FP), R4
 	MOVD    x_len+32(FP), R7
-	CMP     R9, R0          // s==0 copy(z,x)
-	BEQ     zeroshift
-	CMP     R4, R0          // len(z)==0 return
+	CMP     R4, $0          // len(z)==0 return
 	BEQ     done
 
 	ADD     $-1, R4, R5     // len(z)-1
@@ -360,7 +356,7 @@ TEXT ·shlVU(SB), NOSPLIT, $0
 	ADD     R3, R7, R16     // save starting address &z[len(z)-1]
 	MOVD    (R6)(R7), R14
 	SRD     R4, R14, R7     // compute x[len(z)-1]>>ŝ into R7
-	CMP     R5, R0          // iterate from i=len(z)-1 to 0
+	CMP     R5, $0          // iterate from i=len(z)-1 to 0
 	BEQ     loopexit        // Already at end?
 	MOVD	0(R15),R10	// x[i]
 	PCALIGN $16
@@ -380,52 +376,19 @@ loopexit:
 	MOVD    R4, 0(R3)       // z[0]=x[0]<<s
 	MOVD    R7, c+56(FP)    // store pre-computed x[len(z)-1]>>ŝ into c
 	RET
-
-zeroshift:
-	CMP     R6, R0          // x is null, nothing to copy
-	BEQ     done
-	CMP     R6, R3          // if x is same as z, nothing to copy
-	BEQ     done
-	CMP     R7, R4
-	ISEL    $0, R7, R4, R7  // Take the lower bound of lengths of x,z
-	SLD     $3, R7, R7
-	SUB     R6, R3, R11     // dest - src
-	CMPU    R11, R7, CR2    // < len?
-	BLT     CR2, backward   // there is overlap, copy backwards
-	MOVD    $0, R14
-	// shlVU processes backwards, but added a forward copy option 
-	// since its faster on POWER
-repeat:
-	MOVD    (R6)(R14), R15  // Copy 8 bytes at a time
-	MOVD    R15, (R3)(R14)
-	ADD     $8, R14
-	CMP     R14, R7         // More 8 bytes left?
-	BLT     repeat
-	BR      done
-backward:
-	ADD     $-8,R7, R14
-repeatback:
-	MOVD    (R6)(R14), R15  // copy x into z backwards
-	MOVD    R15, (R3)(R14)  // copy 8 bytes at a time
-	SUB     $8, R14
-	CMP     R14, $-8        // More 8 bytes left?
-	BGT     repeatback
-
 done:
 	MOVD    R0, c+56(FP)    // c=0
 	RET
 
-//func shrVU(z, x []Word, s uint) (c Word)
-TEXT ·shrVU(SB), NOSPLIT, $0
+//func rshVU(z, x []Word, s uint) (c Word)
+TEXT ·rshVU(SB), NOSPLIT, $0
 	MOVD    z+0(FP), R3
 	MOVD    x+24(FP), R6
 	MOVD    s+48(FP), R9
 	MOVD    z_len+8(FP), R4
 	MOVD    x_len+32(FP), R7
 
-	CMP     R9, R0          // s==0, copy(z,x)
-	BEQ     zeroshift
-	CMP     R4, R0          // len(z)==0 return
+	CMP     R4, $0          // len(z)==0 return
 	BEQ     done
 	SUBC    R9, $64, R5     // ŝ=_W-s, we skip & by _W-1 as the caller ensures s < _W(64)
 
@@ -460,7 +423,7 @@ loopback:
 	BLE     loopback
 	CMP     R8, R4          // Are we at the last element?
 	BEQ     loopexit
-scalar:	
+scalar:
 	ADD     $-1, R8, R10
 	SLD     $3, R10
 	MOVD    (R6)(R10),R11
@@ -478,35 +441,19 @@ loopexit:
 	MOVD    R5, (R3)(R4)    // z[len(z)-1]=x[len(z)-1]>>s
 	MOVD    R7, c+56(FP)    // store pre-computed x[0]<<ŝ into c
 	RET
-
-zeroshift:
-	CMP     R6, R0          // x is null, nothing to copy
-	BEQ     done
-	CMP     R6, R3          // if x is same as z, nothing to copy
-	BEQ     done
-	CMP     R7, R4
-	ISEL    $0, R7, R4, R7  // Take the lower bounds of lengths of x, z
-	SLD     $3, R7, R7
-	MOVD    $0, R14
-repeat:
-	MOVD    (R6)(R14), R15  // copy 8 bytes at a time
-	MOVD    R15, (R3)(R14)  // shrVU processes bytes only forwards
-	ADD     $8, R14
-	CMP     R14, R7         // More 8 bytes left?
-	BLT     repeat
 done:
 	MOVD    R0, c+56(FP)
 	RET
 
-// func mulAddVWW(z, x []Word, y, r Word) (c Word)
+// func mulAddVWW(z, x []Word, m, a Word) (c Word)
 TEXT ·mulAddVWW(SB), NOSPLIT, $0
 	MOVD    z+0(FP), R10      // R10 = z[]
 	MOVD    x+24(FP), R8      // R8 = x[]
-	MOVD    y+48(FP), R9      // R9 = y
-	MOVD    r+56(FP), R4      // R4 = r = c
+	MOVD    m+48(FP), R9      // R9 = m
+	MOVD    a+56(FP), R4      // R4 = a = c
 	MOVD    z_len+8(FP), R11  // R11 = z_len
 
-	CMP     R0, R11
+	CMP     R11, $0
 	BEQ     done
 
 	MOVD    0(R8), R20
@@ -514,16 +461,14 @@ TEXT ·mulAddVWW(SB), NOSPLIT, $0
 	MULLD   R9, R20, R6       // R6 = z0 = Low-order(x[i]*y)
 	MULHDU  R9, R20, R7       // R7 = z1 = High-order(x[i]*y)
 	ADDC    R4, R6            // R6 = z0 + r
-	ADDZE   R7                // R7 = z1 + CA
-	CMP     R0, R11
-	MOVD    R7, R4            // R4 = c
+	ADDZE   R7, R4            // R4 = z1 + CA
+	CMP     R11, $0
 	MOVD    R6, 0(R10)        // z[i]
 	BEQ     done
 
 	// We will read 4 elements per iteration
-	SRD     $2, R11, R14      // R14 = z_len/4
+	SRDCC   $2, R11, R14      // R14 = z_len/4
 	DCBT    (R8)
-	CMP     R0, R14
 	MOVD    R14, CTR          // Set up the loop counter
 	BEQ     tail              // If R9 = 0, we can't use the loop
 	PCALIGN $16
@@ -536,28 +481,25 @@ loop:
 	MULLD   R9, R20, R24      // R24 = z0[i]
 	MULHDU  R9, R20, R20      // R20 = z1[i]
 	ADDC    R4, R24           // R24 = z0[i] + c
-	ADDZE   R20               // R7 = z1[i] + CA
 	MULLD   R9, R21, R25
 	MULHDU  R9, R21, R21
-	ADDC    R20, R25
-	ADDZE   R21
+	ADDE    R20, R25
 	MULLD   R9, R22, R26
 	MULHDU  R9, R22, R22
 	MULLD   R9, R23, R27
 	MULHDU  R9, R23, R23
-	ADDC    R21, R26
-	ADDZE   R22
+	ADDE    R21, R26
 	MOVD    R24, 8(R10)       // z[i]
 	MOVD    R25, 16(R10)      // z[i+1]
-	ADDC    R22, R27
+	ADDE    R22, R27
 	ADDZE   R23,R4		  // update carry
 	MOVD    R26, 24(R10)      // z[i+2]
 	MOVDU   R27, 32(R10)      // z[i+3]
 	ADD     $-4, R11          // R11 = z_len - 4
-	BC      16, 0, loop       // bdnz
+	BDNZ    loop
 
 	// We may have some elements to read
-	CMP   R0, R11
+	CMP   R11, $0
 	BEQ   done
 
 	// Process the remaining elements, one at a time
@@ -567,10 +509,9 @@ tail:
 	MULHDU  R9, R20, R25      // R25 = z1[i]
 	ADD     $-1, R11          // R11 = z_len - 1
 	ADDC    R4, R24
-	ADDZE   R25
+	ADDZE   R25, R4
 	MOVDU   R24, 8(R10)       // z[i]
-	CMP     R0, R11
-	MOVD    R25, R4           // R4 = c
+	CMP     R11, $0
 	BEQ     done              // If R11 = 0, we are done
 
 	MOVDU   8(R8), R20
@@ -578,10 +519,9 @@ tail:
 	MULHDU  R9, R20, R25
 	ADD     $-1, R11
 	ADDC    R4, R24
-	ADDZE   R25
+	ADDZE   R25, R4
 	MOVDU   R24, 8(R10)
-	CMP     R0, R11
-	MOVD    R25, R4
+	CMP     R11, $0
 	BEQ     done
 
 	MOVD    8(R8), R20
@@ -589,43 +529,92 @@ tail:
 	MULHDU  R9, R20, R25
 	ADD     $-1, R11
 	ADDC    R4, R24
-	ADDZE   R25
+	ADDZE   R25,R4
 	MOVD    R24, 8(R10)
-	MOVD    R25, R4
 
 done:
 	MOVD    R4, c+64(FP)
 	RET
 
-// func addMulVVW(z, x []Word, y Word) (c Word)
-TEXT ·addMulVVW(SB), NOSPLIT, $0
-	MOVD z+0(FP), R10	// R10 = z[]
-	MOVD x+24(FP), R8	// R8 = x[]
-	MOVD y+48(FP), R9	// R9 = y
-	MOVD z_len+8(FP), R22	// R22 = z_len
+// func addMulVVWW(z, x, y []Word, m, a Word) (c Word)
+TEXT ·addMulVVWW(SB), NOSPLIT, $0
+	MOVD	z+0(FP), R22	// R22 = z[]
+	MOVD	x+24(FP), R3	// R3 = x[]
+	MOVD	y+48(FP), R4	// R4 = y[]
+	MOVD	m+72(FP), R5	// R5 = m
+	MOVD	z_len+8(FP), R6	// R6 = z_len
 
-	MOVD R0, R3		// R3 will be the index register
-	CMP  R0, R22
-	MOVD R0, R4		// R4 = c = 0
-	MOVD R22, CTR		// Initialize loop counter
-	BEQ  done
-	PCALIGN $16
+	CMP	R6, $4
+	MOVD	a+80(FP), R9		// R9 = c = a
+	BLT	tail
+	SRD	$2, R6, R7
+	MOVD	R7, CTR		// Initialize loop counter
+	PCALIGN	$16
 
 loop:
-	MOVD  (R8)(R3), R20	// Load x[i]
-	MOVD  (R10)(R3), R21	// Load z[i]
-	MULLD  R9, R20, R6	// R6 = Low-order(x[i]*y)
-	MULHDU R9, R20, R7	// R7 = High-order(x[i]*y)
-	ADDC   R21, R6		// R6 = z0
-	ADDZE  R7		// R7 = z1
-	ADDC   R4, R6		// R6 = z0 + c + 0
-	ADDZE  R7, R4           // c += z1
-	MOVD   R6, (R10)(R3)	// Store z[i]
-	ADD    $8, R3
-	BC  16, 0, loop		// bdnz
+	MOVD	0(R4), R14	// y[i]
+	MOVD	8(R4), R16	// y[i+1]
+	MOVD	16(R4), R18	// y[i+2]
+	MOVD	24(R4), R20	// y[i+3]
+	MOVD	0(R3), R15	// x[i]
+	MOVD	8(R3), R17	// x[i+1]
+	MOVD	16(R3), R19	// x[i+2]
+	MOVD	24(R3), R21	// x[i+3]
+	MULLD	R5, R14, R10	// low y[i]*m
+	MULHDU	R5, R14, R11	// high y[i]*m
+	ADDC	R15, R10
+	ADDZE	R11
+	ADDC	R9, R10
+	ADDZE	R11, R9
+	MULLD	R5, R16, R14	// low y[i+1]*m
+	MULHDU	R5, R16, R15	// high y[i+1]*m
+	ADDC	R17, R14
+	ADDZE	R15
+	ADDC	R9, R14
+	ADDZE	R15, R9
+	MULLD	R5, R18, R16    // low y[i+2]*m
+	MULHDU	R5, R18, R17    // high y[i+2]*m
+	ADDC	R19, R16
+	ADDZE	R17
+	ADDC	R9, R16
+	ADDZE	R17, R9
+	MULLD	R5, R20, R18    // low y[i+3]*m
+	MULHDU	R5, R20, R19    // high y[i+3]*m
+	ADDC	R21, R18
+	ADDZE	R19
+	ADDC	R9, R18
+	ADDZE	R19, R9
+	MOVD	R10, 0(R22)	// z[i]
+	MOVD	R14, 8(R22)	// z[i+1]
+	MOVD	R16, 16(R22)	// z[i+2]
+	MOVD	R18, 24(R22)	// z[i+3]
+	ADD	$32, R3
+	ADD	$32, R4
+	ADD	$32, R22
+	BDNZ	loop
+
+	ANDCC	$3, R6
+tail:
+	CMP	R6, $0
+	BEQ	done
+	MOVD	R6, CTR
+	PCALIGN $16
+tailloop:
+	MOVD	0(R4), R14
+	MOVD	0(R3), R15
+	MULLD	R5, R14, R10
+	MULHDU	R5, R14, R11
+	ADDC	R15, R10
+	ADDZE	R11
+	ADDC	R9, R10
+	ADDZE	R11, R9
+	MOVD	R10, 0(R22)
+	ADD	$8, R3
+	ADD	$8, R4
+	ADD	$8, R22
+	BDNZ	tailloop
 
 done:
-	MOVD R4, c+56(FP)
+	MOVD	R9, c+88(FP)
 	RET
-
 

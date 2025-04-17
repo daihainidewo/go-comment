@@ -20,7 +20,7 @@ import (
 type clientEventContextKey struct{}
 
 // ContextClientTrace 返回与ctx相关联的 ClientTrace
-// ContextClientTrace returns the ClientTrace associated with the
+// ContextClientTrace returns the [ClientTrace] associated with the
 // provided context. If none, it returns nil.
 func ContextClientTrace(ctx context.Context) *ClientTrace {
 	trace, _ := ctx.Value(clientEventContextKey{}).(*ClientTrace)
@@ -267,7 +267,7 @@ func (t *ClientTrace) hasNetHooks() bool {
 }
 
 // GotConnInfo 作为 ClientTrace.GotConn 的参数 包含连接的一些信息
-// GotConnInfo is the argument to the ClientTrace.GotConn function and
+// GotConnInfo is the argument to the [ClientTrace.GotConn] function and
 // contains information about the obtained connection.
 type GotConnInfo struct {
 	// Conn http.Transport 的连接 这里不应对连接进行读写关闭操作

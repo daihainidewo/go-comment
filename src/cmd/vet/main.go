@@ -6,6 +6,8 @@ package main
 
 import (
 	"cmd/internal/objabi"
+	"cmd/internal/telemetry/counter"
+	"flag"
 
 	"golang.org/x/tools/go/analysis/unitchecker"
 
@@ -32,6 +34,7 @@ import (
 	"golang.org/x/tools/go/analysis/passes/sigchanyzer"
 	"golang.org/x/tools/go/analysis/passes/slog"
 	"golang.org/x/tools/go/analysis/passes/stdmethods"
+	"golang.org/x/tools/go/analysis/passes/stdversion"
 	"golang.org/x/tools/go/analysis/passes/stringintconv"
 	"golang.org/x/tools/go/analysis/passes/structtag"
 	"golang.org/x/tools/go/analysis/passes/testinggoroutine"
@@ -41,11 +44,14 @@ import (
 	"golang.org/x/tools/go/analysis/passes/unreachable"
 	"golang.org/x/tools/go/analysis/passes/unsafeptr"
 	"golang.org/x/tools/go/analysis/passes/unusedresult"
+	"golang.org/x/tools/go/analysis/passes/waitgroup"
 )
 
 func main() {
+	counter.Open()
 	objabi.AddVersionFlag()
 
+	counter.Inc("vet/invocations")
 	unitchecker.Main(
 		appends.Analyzer,
 		asmdecl.Analyzer,
@@ -70,6 +76,7 @@ func main() {
 		sigchanyzer.Analyzer,
 		slog.Analyzer,
 		stdmethods.Analyzer,
+		stdversion.Analyzer,
 		stringintconv.Analyzer,
 		structtag.Analyzer,
 		tests.Analyzer,
@@ -79,5 +86,10 @@ func main() {
 		unreachable.Analyzer,
 		unsafeptr.Analyzer,
 		unusedresult.Analyzer,
+		waitgroup.Analyzer,
 	)
+
+	// It's possible that unitchecker will exit early. In
+	// those cases the flags won't be counted.
+	counter.CountFlags("vet/flag:", *flag.CommandLine)
 }
