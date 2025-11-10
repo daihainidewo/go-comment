@@ -32,13 +32,16 @@ func UTF16PtrToString(p *uint16) string {
 }
 
 const (
+	ERROR_INVALID_HANDLE         syscall.Errno = 6
 	ERROR_BAD_LENGTH             syscall.Errno = 24
 	ERROR_SHARING_VIOLATION      syscall.Errno = 32
 	ERROR_LOCK_VIOLATION         syscall.Errno = 33
 	ERROR_NOT_SUPPORTED          syscall.Errno = 50
 	ERROR_CALL_NOT_IMPLEMENTED   syscall.Errno = 120
 	ERROR_INVALID_NAME           syscall.Errno = 123
+	ERROR_NEGATIVE_SEEK          syscall.Errno = 131
 	ERROR_LOCK_FAILED            syscall.Errno = 167
+	ERROR_IO_INCOMPLETE          syscall.Errno = 996
 	ERROR_NO_TOKEN               syscall.Errno = 1008
 	ERROR_NO_UNICODE_TRANSLATION syscall.Errno = 1113
 	ERROR_CANT_ACCESS_FILE       syscall.Errno = 1920
@@ -193,6 +196,7 @@ const (
 //sys	SetFileInformationByHandle(handle syscall.Handle, fileInformationClass uint32, buf unsafe.Pointer, bufsize uint32) (err error) = kernel32.SetFileInformationByHandle
 //sys	VirtualQuery(address uintptr, buffer *MemoryBasicInformation, length uintptr) (err error) = kernel32.VirtualQuery
 //sys	GetTempPath2(buflen uint32, buf *uint16) (n uint32, err error) = GetTempPath2W
+//sys	GetFileSizeEx(handle syscall.Handle, size *int64) (err error) = kernel32.GetFileSizeEx
 
 const (
 	// flags for CreateToolhelp32Snapshot
@@ -257,7 +261,7 @@ var sendRecvMsgFunc struct {
 }
 
 type WSAMsg struct {
-	Name        syscall.Pointer
+	Name        *syscall.RawSockaddrAny
 	Namelen     int32
 	Buffers     *syscall.WSABuf
 	BufferCount uint32
@@ -266,6 +270,7 @@ type WSAMsg struct {
 }
 
 //sys	WSASocket(af int32, typ int32, protocol int32, protinfo *syscall.WSAProtocolInfo, group uint32, flags uint32) (handle syscall.Handle, err error) [failretval==syscall.InvalidHandle] = ws2_32.WSASocketW
+//sys	WSADuplicateSocket(s syscall.Handle, processID uint32, info *syscall.WSAProtocolInfo) (err error) [failretval!=0] = ws2_32.WSADuplicateSocketW
 //sys	WSAGetOverlappedResult(h syscall.Handle, o *syscall.Overlapped, bytes *uint32, wait bool, flags *uint32) (err error) = ws2_32.WSAGetOverlappedResult
 
 func loadWSASendRecvMsg() error {
@@ -526,6 +531,8 @@ const (
 //sys	GetOverlappedResult(handle syscall.Handle, overlapped *syscall.Overlapped, done *uint32, wait bool) (err error)
 //sys	CreateNamedPipe(name *uint16, flags uint32, pipeMode uint32, maxInstances uint32, outSize uint32, inSize uint32, defaultTimeout uint32, sa *syscall.SecurityAttributes) (handle syscall.Handle, err error)  [failretval==syscall.InvalidHandle] = CreateNamedPipeW
 
+//sys	ReOpenFile(filehandle syscall.Handle, desiredAccess uint32, shareMode uint32, flagAndAttributes uint32) (handle syscall.Handle, err error) [failretval==syscall.InvalidHandle]
+
 // NTStatus corresponds with NTSTATUS, error values returned by ntdll.dll and
 // other native functions.
 type NTStatus uint32
@@ -545,11 +552,15 @@ func (s NTStatus) Error() string {
 // At the moment, we only need a couple, so just put them here manually.
 // If this list starts getting long, we should consider generating the full set.
 const (
+	STATUS_OBJECT_NAME_COLLISION     NTStatus = 0xC0000035
 	STATUS_FILE_IS_A_DIRECTORY       NTStatus = 0xC00000BA
 	STATUS_DIRECTORY_NOT_EMPTY       NTStatus = 0xC0000101
 	STATUS_NOT_A_DIRECTORY           NTStatus = 0xC0000103
 	STATUS_CANNOT_DELETE             NTStatus = 0xC0000121
 	STATUS_REPARSE_POINT_ENCOUNTERED NTStatus = 0xC000050B
+	STATUS_NOT_SUPPORTED             NTStatus = 0xC00000BB
+	STATUS_INVALID_PARAMETER         NTStatus = 0xC000000D
+	STATUS_INVALID_INFO_CLASS        NTStatus = 0xC0000003
 )
 
 const (

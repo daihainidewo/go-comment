@@ -46,7 +46,9 @@ func TestIssue21703(t *testing.T) {
 	t.Parallel()
 
 	testenv.MustHaveGoBuild(t)
-	testenv.MustInternalLink(t, false)
+	// N.B. the build below explictly doesn't pass through
+	// -asan/-msan/-race, so we don't care about those.
+	testenv.MustInternalLink(t, testenv.NoSpecialBuildTypes)
 
 	const source = `
 package main
@@ -91,7 +93,9 @@ func TestIssue28429(t *testing.T) {
 	t.Parallel()
 
 	testenv.MustHaveGoBuild(t)
-	testenv.MustInternalLink(t, false)
+	// N.B. go build below explictly doesn't pass through
+	// -asan/-msan/-race, so we don't care about those.
+	testenv.MustInternalLink(t, testenv.NoSpecialBuildTypes)
 
 	tmpdir := t.TempDir()
 
@@ -189,7 +193,9 @@ main.x: relocation target main.zero not defined
 func TestIssue33979(t *testing.T) {
 	testenv.MustHaveGoBuild(t)
 	testenv.MustHaveCGO(t)
-	testenv.MustInternalLink(t, true)
+	// N.B. go build below explictly doesn't pass through
+	// -asan/-msan/-race, so we don't care about those.
+	testenv.MustInternalLink(t, testenv.SpecialBuildTypes{Cgo: true})
 
 	t.Parallel()
 
@@ -274,7 +280,7 @@ func TestBuildForTvOS(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("skipping on non-darwin platform")
 	}
-	if testing.Short() && os.Getenv("GO_BUILDER_NAME") == "" {
+	if testing.Short() && testenv.Builder() == "" {
 		t.Skip("skipping in -short mode with $GO_BUILDER_NAME empty")
 	}
 	if err := testenv.Command(t, "xcrun", "--help").Run(); err != nil {
@@ -391,8 +397,8 @@ func TestMachOBuildVersion(t *testing.T) {
 	found := false
 	checkMin := func(ver uint32) {
 		major, minor, patch := (ver>>16)&0xff, (ver>>8)&0xff, (ver>>0)&0xff
-		if major < 11 {
-			t.Errorf("LC_BUILD_VERSION version %d.%d.%d < 11.0.0", major, minor, patch)
+		if major < 12 {
+			t.Errorf("LC_BUILD_VERSION version %d.%d.%d < 12.0.0", major, minor, patch)
 		}
 	}
 	for _, cmd := range exem.Loads {
@@ -953,7 +959,9 @@ func TestIndexMismatch(t *testing.T) {
 	// This shouldn't happen with "go build". We invoke the compiler and the linker
 	// manually, and try to "trick" the linker with an inconsistent object file.
 	testenv.MustHaveGoBuild(t)
-	testenv.MustInternalLink(t, false)
+	// N.B. the build below explictly doesn't pass through
+	// -asan/-msan/-race, so we don't care about those.
+	testenv.MustInternalLink(t, testenv.NoSpecialBuildTypes)
 
 	t.Parallel()
 
@@ -1524,11 +1532,13 @@ func TestFlagS(t *testing.T) {
 		}
 		cmd = testenv.Command(t, testenv.GoToolPath(t), "tool", "nm", exe)
 		out, err = cmd.CombinedOutput()
-		if err != nil && !errors.As(err, new(*exec.ExitError)) {
-			// Error exit is fine as it may have no symbols.
-			// On darwin we need to emit dynamic symbol references so it
-			// actually has some symbols, and nm succeeds.
-			t.Errorf("(mode=%s) go tool nm failed: %v\n%s", mode, err, out)
+		if err != nil {
+			if _, ok := errors.AsType[*exec.ExitError](err); !ok {
+				// Error exit is fine as it may have no symbols.
+				// On darwin we need to emit dynamic symbol references so it
+				// actually has some symbols, and nm succeeds.
+				t.Errorf("(mode=%s) go tool nm failed: %v\n%s", mode, err, out)
+			}
 		}
 		for _, s := range syms {
 			if bytes.Contains(out, []byte(s)) {
@@ -1593,6 +1603,9 @@ func TestCheckLinkname(t *testing.T) {
 		{"ok.go", true},
 		// push linkname is ok
 		{"push.go", true},
+		// using a linknamed variable to reference an assembly
+		// function in the same package is ok
+		{"textvar", true},
 		// pull linkname of blocked symbol is not ok
 		{"coro.go", false},
 		{"coro_var.go", false},
@@ -1602,6 +1615,7 @@ func TestCheckLinkname(t *testing.T) {
 		{"coro2.go", false},
 		// pull linkname of a builtin symbol is not ok
 		{"builtin.go", false},
+		{"addmoduledata.go", false},
 		// legacy bad linkname is ok, for now
 		{"fastrand.go", true},
 		{"badlinkname.go", true},
@@ -1610,7 +1624,7 @@ func TestCheckLinkname(t *testing.T) {
 		test := test
 		t.Run(test.src, func(t *testing.T) {
 			t.Parallel()
-			src := filepath.Join("testdata", "linkname", test.src)
+			src := "./testdata/linkname/" + test.src
 			exe := filepath.Join(tmpdir, test.src+".exe")
 			cmd := testenv.Command(t, testenv.GoToolPath(t), "build", "-o", exe, src)
 			out, err := cmd.CombinedOutput()

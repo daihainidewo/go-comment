@@ -50,6 +50,7 @@ import (
 // special rules: trailing ellipsis "..." (in the outermost sexpr?) must match on both sides of a rule.
 //                trailing three underscore "___" in the outermost match sexpr indicate the presence of
 //                   extra ignored args that need not appear in the replacement
+//                if the right-hand side is in {}, then it is code used to generate the result.
 
 // extra conditions is just a chunk of Go that evaluates to a boolean. It may use
 // variables declared in the matching tsexpr. The variable "v" is predefined to be
@@ -321,7 +322,7 @@ func genRulesSuffix(arch arch, suff string) {
 	file = astutil.Apply(file, pre, post).(*ast.File)
 
 	// Write the well-formatted source to file
-	f, err := os.Create("../rewrite" + arch.name + suff + ".go")
+	f, err := os.Create(outFile("rewrite" + arch.name + suff + ".go"))
 	if err != nil {
 		log.Fatalf("can't write output: %v", err)
 	}
@@ -539,6 +540,13 @@ func (u *unusedInspector) node(node ast.Node) {
 			}
 		}
 	case *ast.BasicLit:
+	case *ast.CompositeLit:
+		for _, e := range node.Elts {
+			u.node(e)
+		}
+	case *ast.KeyValueExpr:
+		u.node(node.Key)
+		u.node(node.Value)
 	case *ast.ValueSpec:
 		u.exprs(node.Values)
 	default:
@@ -1182,6 +1190,11 @@ func genResult(rr *RuleRewrite, arch arch, result, pos string) {
 		rr.add(stmtf("b = %s", s[0]))
 		result = s[1]
 	}
+	if result[0] == '{' {
+		// Arbitrary code used to make the result
+		rr.add(stmtf("v.copyOf(%s)", result[1:len(result)-1]))
+		return
+	}
 	cse := make(map[string]string)
 	genResult0(rr, arch, result, true, move, pos, cse)
 }
@@ -1258,8 +1271,10 @@ func genResult0(rr *RuleRewrite, arch arch, result string, top, move bool, pos s
 	case 0:
 	case 1:
 		rr.add(stmtf("%s.AddArg(%s)", v, all.String()))
-	default:
+	case 2, 3, 4, 5, 6:
 		rr.add(stmtf("%s.AddArg%d(%s)", v, len(args), all.String()))
+	default:
+		rr.add(stmtf("%s.AddArgs(%s)", v, all.String()))
 	}
 
 	if cse != nil {
@@ -1300,6 +1315,12 @@ outer:
 				d++
 			case d > 0 && s[i] == close:
 				d--
+			case s[i] == ':':
+				// ignore spaces after colons
+				nonsp = true
+				for i+1 < len(s) && (s[i+1] == ' ' || s[i+1] == '\t') {
+					i++
+				}
 			default:
 				nonsp = true
 			}
@@ -1334,7 +1355,7 @@ func extract(val string) (op, typ, auxint, aux string, args []string) {
 	val = val[1 : len(val)-1] // remove ()
 
 	// Split val up into regions.
-	// Split by spaces/tabs, except those contained in (), {}, [], or <>.
+	// Split by spaces/tabs, except those contained in (), {}, [], or <> or after colon.
 	s := split(val)
 
 	// Extract restrictions and args.
@@ -1425,7 +1446,8 @@ func parseValue(val string, arch arch, loc string) (op opData, oparch, typ, auxi
 func opHasAuxInt(op opData) bool {
 	switch op.aux {
 	case "Bool", "Int8", "Int16", "Int32", "Int64", "Int128", "UInt8", "Float32", "Float64",
-		"SymOff", "CallOff", "SymValAndOff", "TypSize", "ARM64BitField", "FlagConstant", "CCop":
+		"SymOff", "CallOff", "SymValAndOff", "TypSize", "ARM64BitField", "FlagConstant", "CCop",
+		"PanicBoundsC", "PanicBoundsCC", "ARM64ConditionalParams":
 		return true
 	}
 	return false
@@ -1434,7 +1456,7 @@ func opHasAuxInt(op opData) bool {
 func opHasAux(op opData) bool {
 	switch op.aux {
 	case "String", "Sym", "SymOff", "Call", "CallOff", "SymValAndOff", "Typ", "TypSize",
-		"S390XCCMask", "S390XRotateParams":
+		"S390XCCMask", "S390XRotateParams", "PanicBoundsC", "PanicBoundsCC":
 		return true
 	}
 	return false
@@ -1457,7 +1479,7 @@ func splitNameExpr(arg string) (name, expr string) {
 		// colon is inside the parens, such as in "(Foo x:(Bar))".
 		return "", arg
 	}
-	return arg[:colon], arg[colon+1:]
+	return arg[:colon], strings.TrimSpace(arg[colon+1:])
 }
 
 func getBlockInfo(op string, arch arch) (name string, data blockData) {
@@ -1789,6 +1811,10 @@ func (op opData) auxType() string {
 		return "s390x.CCMask"
 	case "S390XRotateParams":
 		return "s390x.RotateParams"
+	case "PanicBoundsC":
+		return "PanicBoundsC"
+	case "PanicBoundsCC":
+		return "PanicBoundsCC"
 	default:
 		return "invalid"
 	}
@@ -1829,6 +1855,10 @@ func (op opData) auxIntType() string {
 		return "flagConstant"
 	case "ARM64BitField":
 		return "arm64BitField"
+	case "ARM64ConditionalParams":
+		return "arm64ConditionalParams"
+	case "PanicBoundsC", "PanicBoundsCC":
+		return "int64"
 	default:
 		return "invalid"
 	}

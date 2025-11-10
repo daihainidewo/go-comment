@@ -247,7 +247,6 @@ func TestUnixConnLocalAndRemoteNames(t *testing.T) {
 
 	handler := func(ls *localServer, ln Listener) {}
 	for _, laddr := range []string{"", testUnixAddr(t)} {
-		laddr := laddr
 		taddr := testUnixAddr(t)
 		ta, err := ResolveUnixAddr("unix", taddr)
 		if err != nil {
@@ -306,7 +305,6 @@ func TestUnixgramConnLocalAndRemoteNames(t *testing.T) {
 	}
 
 	for _, laddr := range []string{"", testUnixAddr(t)} {
-		laddr := laddr
 		taddr := testUnixAddr(t)
 		ta, err := ResolveUnixAddr("unixgram", taddr)
 		if err != nil {
@@ -398,9 +396,6 @@ func TestUnixUnlink(t *testing.T) {
 
 	// FileListener should not.
 	t.Run("FileListener", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("skipping: FileListener not implemented on windows")
-		}
 		l := listen(t)
 		f, _ := l.File()
 		l1, _ := FileListener(f)
@@ -448,9 +443,6 @@ func TestUnixUnlink(t *testing.T) {
 	})
 
 	t.Run("FileListener/SetUnlinkOnClose(true)", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("skipping: FileListener not implemented on windows")
-		}
 		l := listen(t)
 		f, _ := l.File()
 		l1, _ := FileListener(f)
@@ -464,9 +456,6 @@ func TestUnixUnlink(t *testing.T) {
 	})
 
 	t.Run("FileListener/SetUnlinkOnClose(false)", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("skipping: FileListener not implemented on windows")
-		}
 		l := listen(t)
 		f, _ := l.File()
 		l1, _ := FileListener(f)

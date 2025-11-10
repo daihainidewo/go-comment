@@ -10,6 +10,7 @@ import (
 	"internal/goarch"
 	"internal/goos"
 	"internal/runtime/atomic"
+	"internal/runtime/gc"
 	"internal/runtime/sys"
 	"unsafe"
 )
@@ -167,12 +168,12 @@ type stackpoolItem struct {
 // Global pool of large stack spans.
 var stackLarge struct {
 	lock mutex
-	free [heapAddrBits - pageShift]mSpanList // free lists by log_2(s.npages)
+	free [heapAddrBits - gc.PageShift]mSpanList // free lists by log_2(s.npages)
 }
 
 // stackinit 初始化去全局栈空闲池
 func stackinit() {
-	if _StackCacheSize&_PageMask != 0 {
+	if _StackCacheSize&pageMask != 0 {
 		throw("cache size must be a multiple of page size")
 	}
 	// 初始化锁和 mSpanList
@@ -208,8 +209,7 @@ func stackpoolalloc(order uint8) gclinkptr {
 	if s == nil {
 		// 没有 span 则从 mheap 中获取
 		// no free stacks. Allocate another span worth.
-		// 申请 _StackCacheSize>>_PageShift = 4 个 page 的 span
-		s = mheap_.allocManual(_StackCacheSize>>_PageShift, spanAllocStack)
+		s = mheap_.allocManual(_StackCacheSize>>gc.PageShift, spanAllocStack)
 		if s == nil {
 			throw("out of memory")
 		}
@@ -223,6 +223,13 @@ func stackpoolalloc(order uint8) gclinkptr {
 		s.elemsize = fixedStack << order
 		for i := uintptr(0); i < _StackCacheSize; i += s.elemsize {
 			x := gclinkptr(s.base() + i)
+			if valgrindenabled {
+				// The address of x.ptr() becomes the base of stacks. We need to
+				// mark it allocated here and in stackfree and stackpoolfree, and free'd in
+				// stackalloc in order to avoid overlapping allocations and
+				// uninitialized memory errors in valgrind.
+				valgrindMalloc(unsafe.Pointer(x.ptr()), unsafe.Sizeof(x.ptr()))
+			}
 			x.ptr().next = s.manualFreeList
 			s.manualFreeList = x
 		}
@@ -426,11 +433,17 @@ func stackalloc(n uint32) stack {
 			c.stackcache[order].list = x.ptr().next
 			c.stackcache[order].size -= uintptr(n)
 		}
+		if valgrindenabled {
+			// We're about to allocate the stack region starting at x.ptr().
+			// To prevent valgrind from complaining about overlapping allocations,
+			// we need to mark the (previously allocated) memory as free'd.
+			valgrindFree(unsafe.Pointer(x.ptr()))
+		}
 		v = unsafe.Pointer(x)
 	} else {
 		// 大栈 n > 32k
 		var s *mspan
-		npage := uintptr(n) >> _PageShift
+		npage := uintptr(n) >> gc.PageShift
 		log2npage := stacklog2(npage)
 
 		// 尝试从大栈缓存中获取
@@ -472,6 +485,9 @@ func stackalloc(n uint32) stack {
 	}
 	if asanenabled {
 		asanunpoison(v, uintptr(n))
+	}
+	if valgrindenabled {
+		valgrindMalloc(v, uintptr(n))
 	}
 	if stackDebug >= 1 {
 		print("  allocated ", v, "\n")
@@ -522,6 +538,9 @@ func stackfree(stk stack) {
 	if asanenabled {
 		asanpoison(v, n)
 	}
+	if valgrindenabled {
+		valgrindFree(v)
+	}
 	if n < fixedStack<<_NumStackOrders && n < _StackCacheSize {
 		order := uint8(0)
 		n2 := n
@@ -533,6 +552,11 @@ func stackfree(stk stack) {
 		if stackNoCache != 0 || gp.m.p == 0 || gp.m.preemptoff != "" {
 			// 归还给全局缓存池
 			lock(&stackpool[order].item.mu)
+			if valgrindenabled {
+				// x.ptr() is the head of the list of free stacks, and will be used
+				// when allocating a new stack, so it has to be marked allocated.
+				valgrindMalloc(unsafe.Pointer(x.ptr()), unsafe.Sizeof(x.ptr()))
+			}
 			stackpoolfree(x, order)
 			unlock(&stackpool[order].item.mu)
 		} else {
@@ -541,6 +565,12 @@ func stackfree(stk stack) {
 			if c.stackcache[order].size >= _StackCacheSize {
 				// 释放太多 归还给全局缓存池
 				stackcacherelease(c, order)
+			}
+			if valgrindenabled {
+				// x.ptr() is the head of the list of free stacks, and will
+				// be used when allocating a new stack, so it has to be
+				// marked allocated.
+				valgrindMalloc(unsafe.Pointer(x.ptr()), unsafe.Sizeof(x.ptr()))
 			}
 			x.ptr().next = c.stackcache[order].list
 			c.stackcache[order].list = x
@@ -640,6 +670,16 @@ func adjustpointer(adjinfo *adjustinfo, vpp unsafe.Pointer) {
 	p := *pp
 	if stackDebug >= 4 {
 		print("        ", pp, ":", hex(p), "\n")
+	}
+	if valgrindenabled {
+		// p is a pointer on a stack, it is inherently initialized, as
+		// everything on the stack is, but valgrind for _some unknown reason_
+		// sometimes thinks it's uninitialized, and flags operations on p below
+		// as uninitialized. We just initialize it if valgrind thinks its
+		// uninitialized.
+		//
+		// See go.dev/issues/73801.
+		valgrindMakeMemDefined(unsafe.Pointer(&p), unsafe.Sizeof(&p))
 	}
 	if adjinfo.old.lo <= p && p < adjinfo.old.hi {
 		*pp = p + adjinfo.delta
@@ -868,7 +908,8 @@ func adjustsudogs(gp *g, adjinfo *adjustinfo) {
 	// the data elements pointed to by a SudoG structure
 	// might be in the stack.
 	for s := gp.waiting; s != nil; s = s.waitlink {
-		adjustpointer(adjinfo, unsafe.Pointer(&s.elem))
+		adjustpointer(adjinfo, unsafe.Pointer(&s.elem.vu))
+		adjustpointer(adjinfo, unsafe.Pointer(&s.elem.vp))
 	}
 }
 
@@ -885,7 +926,7 @@ func findsghi(gp *g, stk stack) uintptr {
 	// 遍历所有的 sudog 链表
 	// 获取在栈中的地址的最高的 sghi 地址
 	for sg := gp.waiting; sg != nil; sg = sg.waitlink {
-		p := uintptr(sg.elem) + uintptr(sg.c.elemsize)
+		p := sg.elem.uintptr() + uintptr(sg.c.get().elemsize)
 		if stk.lo <= p && p < stk.hi && p > sghi {
 			sghi = p
 		}
@@ -906,8 +947,7 @@ func syncadjustsudogs(gp *g, used uintptr, adjinfo *adjustinfo) uintptr {
 	// Lock channels to prevent concurrent send/receive.
 	var lastc *hchan
 	for sg := gp.waiting; sg != nil; sg = sg.waitlink {
-		// 遍历锁住所有 sudog 的 channel
-		if sg.c != lastc {
+		if sg.c.get() != lastc {
 			// There is a ranking cycle here between gscan bit and
 			// hchan locks. Normally, we only allow acquiring hchan
 			// locks and then getting a gscan bit. In this case, we
@@ -917,9 +957,9 @@ func syncadjustsudogs(gp *g, used uintptr, adjinfo *adjustinfo) uintptr {
 			// suspended. So, we get a special hchan lock rank here
 			// that is lower than gscan, but doesn't allow acquiring
 			// any other locks other than hchan.
-			lockWithRank(&sg.c.lock, lockRankHchanLeaf)
+			lockWithRank(&sg.c.get().lock, lockRankHchanLeaf)
 		}
-		lastc = sg.c
+		lastc = sg.c.get()
 	}
 
 	// Adjust sudogs.
@@ -944,11 +984,10 @@ func syncadjustsudogs(gp *g, used uintptr, adjinfo *adjustinfo) uintptr {
 	// Unlock channels.
 	lastc = nil
 	for sg := gp.waiting; sg != nil; sg = sg.waitlink {
-		// 解锁
-		if sg.c != lastc {
-			unlock(&sg.c.lock)
+		if sg.c.get() != lastc {
+			unlock(&sg.c.get().lock)
 		}
-		lastc = sg.c
+		lastc = sg.c.get()
 	}
 
 	return sgsize
@@ -1048,6 +1087,14 @@ func copystack(gp *g, newsize uintptr) {
 	var u unwinder
 	for u.init(gp, 0); u.valid(); u.next() {
 		adjustframe(&u.frame, &adjinfo)
+	}
+
+	if valgrindenabled {
+		if gp.valgrindStackID == 0 {
+			gp.valgrindStackID = valgrindRegisterStack(unsafe.Pointer(new.lo), unsafe.Pointer(new.hi))
+		} else {
+			valgrindChangeStack(gp.valgrindStackID, unsafe.Pointer(new.lo), unsafe.Pointer(new.hi))
+		}
 	}
 
 	// free old stack
@@ -1197,6 +1244,9 @@ func newstack() {
 			shrinkstack(gp)
 		}
 
+		// Set a flag indicated that we've been synchronously preempted.
+		gp.syncSafePoint = true
+
 		if gp.preemptStop {
 			// 设置抢占标志 并开始下次调度
 			preemptPark(gp) // never returns
@@ -1306,15 +1356,18 @@ func isShrinkStackSafe(gp *g) bool {
 	if gp.parkingOnChan.Load() {
 		return false
 	}
-	// We also can't copy the stack while tracing is enabled, and
-	// gp is in _Gwaiting solely to make itself available to the GC.
+	// We also can't copy the stack while a gp is in _Gwaiting solely
+	// to make itself available to suspendG.
+	//
 	// In these cases, the G is actually executing on the system
-	// stack, and the execution tracer may want to take a stack trace
-	// of the G's stack. Note: it's safe to access gp.waitreason here.
-	// We're only checking if this is true if we took ownership of the
+	// stack, and the execution tracer, mutex profiler, etc. may want
+	// to take a stack trace of the G's stack.
+	//
+	// Note: it's safe to access gp.waitreason here.
+	// We're only calling isShrinkStackSafe if we took ownership of the
 	// G with the _Gscan bit. This prevents the goroutine from transitioning,
 	// which prevents gp.waitreason from changing.
-	if traceEnabled() && readgstatus(gp)&^_Gscan == _Gwaiting && gp.waitreason.isWaitingForGC() {
+	if readgstatus(gp)&^_Gscan == _Gwaiting && gp.waitreason.isWaitingForSuspendG() {
 		return false
 	}
 	return true
@@ -1354,15 +1407,6 @@ func shrinkstack(gp *g) {
 
 	if debug.gcshrinkstackoff > 0 {
 		// 没有开启缩容 就返回
-		return
-	}
-	// 获取函数指针
-	// 获取gp绑定函数信息
-	f := findfunc(gp.startpc)
-	if f.valid() && f.funcID == abi.FuncID_gcBgMarkWorker {
-		// 如果函数是 gcBgMarkWorker 则返回
-		// We're not allowed to shrink the gcBgMarkWorker
-		// stack (see gcBgMarkWorker for explanation).
 		return
 	}
 

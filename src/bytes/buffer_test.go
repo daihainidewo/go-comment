@@ -354,7 +354,7 @@ func TestWriteAppend(t *testing.T) {
 		got.Write(b)
 	}
 	if !Equal(got.Bytes(), want) {
-		t.Fatalf("Bytes() = %q, want %q", got, want)
+		t.Fatalf("Bytes() = %q, want %q", &got, want)
 	}
 
 	// With a sufficiently sized buffer, there should be no allocations.
@@ -527,6 +527,34 @@ func TestReadString(t *testing.T) {
 		}
 		if err != test.err {
 			t.Errorf("expected error %v, got %v", test.err, err)
+		}
+	}
+}
+
+var peekTests = []struct {
+	buffer   string
+	n        int
+	expected string
+	err      error
+}{
+	{"", 0, "", nil},
+	{"aaa", 3, "aaa", nil},
+	{"foobar", 2, "fo", nil},
+	{"a", 2, "a", io.EOF},
+}
+
+func TestPeek(t *testing.T) {
+	for _, test := range peekTests {
+		buf := NewBufferString(test.buffer)
+		bytes, err := buf.Peek(test.n)
+		if string(bytes) != test.expected {
+			t.Errorf("expected %q, got %q", test.expected, bytes)
+		}
+		if err != test.err {
+			t.Errorf("expected error %v, got %v", test.err, err)
+		}
+		if buf.Len() != len(test.buffer) {
+			t.Errorf("bad length after peek: %d, want %d", buf.Len(), len(test.buffer))
 		}
 	}
 }

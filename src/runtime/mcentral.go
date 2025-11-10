@@ -14,6 +14,7 @@ package runtime
 
 import (
 	"internal/runtime/atomic"
+	"internal/runtime/gc"
 	"internal/runtime/sys"
 )
 
@@ -95,7 +96,7 @@ func (c *mcentral) fullSwept(sweepgen uint32) *spanSet {
 func (c *mcentral) cacheSpan() *mspan {
 	// Deduct credit for this span allocation and sweep if necessary.
 	// 获取 span 大小
-	spanBytes := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) * _PageSize
+	spanBytes := uintptr(gc.SizeClassToNPages[c.spanclass.sizeclass()]) * pageSize
 	deductSweepCredit(spanBytes, 0)
 
 	traceDone := false
@@ -263,18 +264,11 @@ func (c *mcentral) uncacheSpan(s *mspan) {
 
 // grow allocates a new empty span from the heap and initializes it for c's size class.
 func (c *mcentral) grow() *mspan {
-	npages := uintptr(class_to_allocnpages[c.spanclass.sizeclass()])
-	size := uintptr(class_to_size[c.spanclass.sizeclass()])
-
+	npages := uintptr(gc.SizeClassToNPages[c.spanclass.sizeclass()])
 	s := mheap_.alloc(npages, c.spanclass)
 	if s == nil {
 		return nil
 	}
-
-	// Use division by multiplication and shifts to quickly compute:
-	// n := (npages << _PageShift) / size
-	n := s.divideByElemSize(npages << _PageShift)
-	s.limit = s.base() + size*n
 	s.initHeapBits()
 	return s
 }

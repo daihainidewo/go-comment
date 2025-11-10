@@ -649,13 +649,15 @@ func (p *Package) writeDefsFunc(fgo2 io.Writer, n *Name, callsMalloc *bool) {
 	if p.noEscapes[n.C] && p.noCallbacks[n.C] {
 		touchFunc = "_Cgo_keepalive"
 	}
-	fmt.Fprintf(fgo2, "\tif _Cgo_always_false {\n")
-	if d.Type.Params != nil {
+
+	if len(paramnames) > 0 {
+		fmt.Fprintf(fgo2, "\tif _Cgo_always_false {\n")
 		for _, name := range paramnames {
 			fmt.Fprintf(fgo2, "\t\t%s(%s)\n", touchFunc, name)
 		}
+		fmt.Fprintf(fgo2, "\t}\n")
 	}
-	fmt.Fprintf(fgo2, "\t}\n")
+
 	fmt.Fprintf(fgo2, "\treturn\n")
 	fmt.Fprintf(fgo2, "}\n")
 }
@@ -949,6 +951,8 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 		fmt.Fprintf(gotype, "struct {\n")
 		off := int64(0)
 		npad := 0
+		// the align is at least 1 (for char)
+		maxAlign := int64(1)
 		argField := func(typ ast.Expr, namePat string, args ...interface{}) {
 			name := fmt.Sprintf(namePat, args...)
 			t := p.cgoType(typ)
@@ -963,6 +967,11 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 			noSourceConf.Fprint(gotype, fset, typ)
 			fmt.Fprintf(gotype, "\n")
 			off += t.Size
+			// keep track of the maximum alignment among all fields
+			// so that we can align the struct correctly
+			if t.Align > maxAlign {
+				maxAlign = t.Align
+			}
 		}
 		if fn.Recv != nil {
 			argField(fn.Recv.List[0].Type, "recv")
@@ -1005,12 +1014,8 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 		}
 
 		// Build the wrapper function compiled by gcc.
-		gccExport := ""
-		if goos == "windows" {
-			gccExport = "__declspec(dllexport) "
-		}
 		var s strings.Builder
-		fmt.Fprintf(&s, "%s%s %s(", gccExport, gccResult, exp.ExpName)
+		fmt.Fprintf(&s, "%s %s(", gccResult, exp.ExpName)
 		if fn.Recv != nil {
 			s.WriteString(p.cgoType(fn.Recv.List[0].Type).C.String())
 			s.WriteString(" recv")
@@ -1051,7 +1056,11 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 		// string.h for memset, and is also robust to C++
 		// types with constructors. Both GCC and LLVM optimize
 		// this into just zeroing _cgo_a.
-		fmt.Fprintf(fgcc, "\ttypedef %s %v _cgo_argtype;\n", ctype.String(), p.packedAttribute())
+		//
+		// The struct should be aligned to the maximum alignment
+		// of any of its fields. This to avoid alignment
+		// issues.
+		fmt.Fprintf(fgcc, "\ttypedef %s %v __attribute__((aligned(%d))) _cgo_argtype;\n", ctype.String(), p.packedAttribute(), maxAlign)
 		fmt.Fprintf(fgcc, "\tstatic _cgo_argtype _cgo_zero;\n")
 		fmt.Fprintf(fgcc, "\t_cgo_argtype _cgo_a = _cgo_zero;\n")
 		if gccResult != "void" && (len(fntype.Results.List) > 1 || len(fntype.Results.List[0].Names) > 1) {
@@ -1137,6 +1146,10 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 					if !p.hasPointer(nil, atype, false) {
 						return
 					}
+
+					// Use the export'ed file/line in error messages.
+					pos := fset.Position(exp.Func.Pos())
+					fmt.Fprintf(fgo2, "//line %s:%d\n", pos.Filename, pos.Line)
 					fmt.Fprintf(fgo2, "\t_cgoCheckResult(a.r%d)\n", i)
 				})
 		}
@@ -1812,7 +1825,7 @@ void _cgoPREFIX_Cfunc__Cmalloc(void *v) {
 	void *ret;
 	_cgo_tsan_acquire();
 	ret = malloc(a->p0);
-	if (ret == 0 && a->p0 == 0) {
+	if (ret == NULL && a->p0 == 0) {
 		ret = malloc(1);
 	}
 	a->r1 = ret;

@@ -16,6 +16,11 @@ type mOS struct {
 	mutex       pthreadmutex
 	cond        pthreadcond
 	count       int
+
+	// address of errno variable for this thread.
+	// This is an optimization to avoid calling libc_error
+	// on every syscall_rawsyscalln.
+	errnoAddr *int32
 }
 
 func unimplemented(name string) {
@@ -146,7 +151,7 @@ func osinit() {
 	// pthread_create delayed until end of goenvs so that we
 	// can look at the environment first.
 
-	ncpu = getncpu()
+	numCPUStartup = getCPUCount()
 	physPageSize = getPageSize()
 
 	osinit_hack()
@@ -170,7 +175,7 @@ const (
 	_HW_PAGESIZE = 7
 )
 
-func getncpu() int32 {
+func getCPUCount() int32 {
 	// Use sysctl to fetch hw.ncpu.
 	mib := [2]uint32{_CTL_HW, _HW_NCPU}
 	out := uint32(0)
@@ -333,6 +338,7 @@ func minit() {
 	}
 	minitSignalMask()
 	getg().m.procid = uint64(pthread_self())
+	libc_error_addr(&getg().m.errnoAddr)
 }
 
 // Called from dropm to undo the effect of an minit.
@@ -351,6 +357,7 @@ func unminit() {
 // resources in minit, semacreate, or elsewhere. Do not take locks after calling this.
 //
 // This always runs without a P, so //go:nowritebarrierrec is required.
+//
 //go:nowritebarrierrec
 func mdestroy(mp *m) {
 }

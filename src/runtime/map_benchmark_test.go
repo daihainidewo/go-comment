@@ -493,7 +493,6 @@ func BenchmarkMapInterfacePtr(b *testing.B) {
 	m := map[any]bool{}
 
 	for i := 0; i < 100; i++ {
-		i := i
 		m[&i] = true
 	}
 
@@ -1190,4 +1189,40 @@ func BenchmarkMapSmallAccessMiss(b *testing.B) {
 	b.Run("Key=int64/Elem=int64", smallBenchSizes(benchmarkMapAccessMiss[int64, int64]))
 	b.Run("Key=string/Elem=string", smallBenchSizes(benchmarkMapAccessMiss[string, string]))
 	b.Run("Key=smallType/Elem=int32", smallBenchSizes(benchmarkMapAccessMiss[smallType, int32]))
+}
+
+func mapAccessZeroBenchmark[K comparable](b *testing.B) {
+	var m map[K]uint64
+	var key K
+	for i := 0; i < b.N; i++ {
+		sink = m[key]
+	}
+}
+
+func BenchmarkMapAccessZero(b *testing.B) {
+	b.Run("Key=int64", mapAccessZeroBenchmark[int64])
+	b.Run("Key=int32", mapAccessZeroBenchmark[int32])
+	b.Run("Key=string", mapAccessZeroBenchmark[string])
+	b.Run("Key=mediumType", mapAccessZeroBenchmark[mediumType])
+	b.Run("Key=bigType", mapAccessZeroBenchmark[bigType])
+}
+
+func mapAccessEmptyBenchmark[K mapBenchmarkKeyType](b *testing.B) {
+	m := make(map[K]uint64)
+	for i, v := range genValues[K](0, 1000) {
+		m[v] = uint64(i)
+	}
+	clear(m)
+	var key K
+	for i := 0; i < b.N; i++ {
+		sink = m[key]
+	}
+}
+
+func BenchmarkMapAccessEmpty(b *testing.B) {
+	b.Run("Key=int64", mapAccessEmptyBenchmark[int64])
+	b.Run("Key=int32", mapAccessEmptyBenchmark[int32])
+	b.Run("Key=string", mapAccessEmptyBenchmark[string])
+	b.Run("Key=mediumType", mapAccessEmptyBenchmark[mediumType])
+	b.Run("Key=bigType", mapAccessEmptyBenchmark[bigType])
 }

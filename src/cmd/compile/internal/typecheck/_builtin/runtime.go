@@ -25,7 +25,7 @@ func throwinit()
 func panicwrap()
 
 func gopanic(interface{})
-func gorecover(*int32) interface{}
+func gorecover() interface{}
 func goschedguarded()
 
 // Note: these declarations are just for wasm port.
@@ -49,11 +49,13 @@ func goPanicSlice3CU(x uint, y int)
 func goPanicSliceConvert(x int, y int)
 
 func printbool(bool)
-func printfloat(float64)
+func printfloat64(float64)
+func printfloat32(float32)
 func printint(int64)
 func printhex(uint64)
 func printuint(uint64)
-func printcomplex(complex128)
+func printcomplex128(complex128)
+func printcomplex64(complex64)
 func printstring(string)
 func printpointer(any)
 func printuintptr(uintptr)
@@ -152,14 +154,12 @@ func mapassign_fast32ptr(mapType *byte, hmap map[any]any, key unsafe.Pointer) (v
 func mapassign_fast64(mapType *byte, hmap map[any]any, key uint64) (val *any)
 func mapassign_fast64ptr(mapType *byte, hmap map[any]any, key unsafe.Pointer) (val *any)
 func mapassign_faststr(mapType *byte, hmap map[any]any, key string) (val *any)
-func mapiterinit(mapType *byte, hmap map[any]any, hiter *any)  // old maps
-func mapIterStart(mapType *byte, hmap map[any]any, hiter *any) // swiss maps
+func mapIterStart(mapType *byte, hmap map[any]any, hiter *any)
 func mapdelete(mapType *byte, hmap map[any]any, key *any)
 func mapdelete_fast32(mapType *byte, hmap map[any]any, key uint32)
 func mapdelete_fast64(mapType *byte, hmap map[any]any, key uint64)
 func mapdelete_faststr(mapType *byte, hmap map[any]any, key string)
-func mapiternext(hiter *any) // old maps
-func mapIterNext(hiter *any) // swiss maps
+func mapIterNext(hiter *any)
 func mapclear(mapType *byte, hmap map[any]any)
 
 // *byte is really *runtime.Type
@@ -294,5 +294,6 @@ var arm64HasATOMICS bool
 var loong64HasLAMCAS bool
 var loong64HasLAM_BH bool
 var loong64HasLSX bool
+var riscv64HasZbb bool
 
 func asanregisterglobals(unsafe.Pointer, uintptr)

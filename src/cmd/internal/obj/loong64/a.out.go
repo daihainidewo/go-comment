@@ -225,10 +225,6 @@ const (
 	REGZERO = REG_R0 // set to zero
 	REGLINK = REG_R1
 	REGSP   = REG_R3
-	REGRET  = REG_R20 // not use
-	REGARG  = -1      // -1 disables passing the first argument in register
-	REGRT1  = REG_R20 // reserved for runtime, duffzero and duffcopy
-	REGRT2  = REG_R21 // reserved for runtime, duffcopy
 	REGCTXT = REG_R29 // context for closures
 	REGG    = REG_R22 // G in loong64
 	REGTMP  = REG_R30 // used by the assembler
@@ -240,7 +236,7 @@ var LOONG64DWARFRegisters = map[int16]int16{}
 func init() {
 	// f assigns dwarfregisters[from:to] = (base):(to-from+base)
 	f := func(from, to, base int16) {
-		for r := int16(from); r <= to; r++ {
+		for r := from; r <= to; r++ {
 			LOONG64DWARFRegisters[r] = (r - from) + base
 		}
 	}
@@ -253,7 +249,13 @@ func init() {
 }
 
 const (
-	BIG = 2046
+	BIG_8  = 128 - 2 // FIXME (not sure if -2 is appropriate)
+	BIG_9  = 256 - 2
+	BIG_10 = 512 - 2
+	BIG_11 = 1024 - 2
+	BIG_12 = 2046
+	BIG_16 = 32768 - 2
+	BIG_32 = 2147483648 - 2
 )
 
 const (
@@ -401,10 +403,16 @@ const (
 	C_BRAN
 	C_SAUTO
 	C_LAUTO
-	C_ZOREG
-	C_SOREG
-	C_LOREG
-	C_ROFF // register offset
+	C_ZOREG    // An $0+reg memory op
+	C_SOREG_8  // An $n+reg memory arg where n is a 8 bit signed offset
+	C_SOREG_9  // An $n+reg memory arg where n is a 9 bit signed offset
+	C_SOREG_10 // An $n+reg memory arg where n is a 10 bit signed offset
+	C_SOREG_11 // An $n+reg memory arg where n is a 11 bit signed offset
+	C_SOREG_12 // An $n+reg memory arg where n is a 12 bit signed offset
+	C_SOREG_16 // An $n+reg memory arg where n is a 16 bit signed offset
+	C_LOREG_32 // An $n+reg memory arg where n is a 32 bit signed offset
+	C_LOREG_64 // An $n+reg memory arg where n is a 64 bit signed offset
+	C_ROFF     // register offset
 	C_ADDR
 	C_TLS_LE
 	C_TLS_IE
@@ -569,6 +577,14 @@ const (
 	AMOVVF
 	AMOVVD
 
+	// 2.2.1.2
+	AADDV16
+
+	// 2.2.1.3
+	AALSLW
+	AALSLWU
+	AALSLV
+
 	// 2.2.1.8
 	AORN
 	AANDN
@@ -663,6 +679,14 @@ const (
 	ABSTRPICKW
 	ABSTRPICKV
 
+	// 2.2.5.3
+	AMOVWP
+	AMOVVP
+
+	// 2.2.5.4. Prefetch Instructions
+	APRELD
+	APRELDX
+
 	// 2.2.9. CRC Check Instructions
 	ACRCWBW
 	ACRCWHW
@@ -741,6 +765,9 @@ const (
 	AFTINTRNEVF
 	AFTINTRNEVD
 
+	// 3.2.4.2
+	AFSEL
+
 	// LSX and LASX memory access instructions
 	AVMOVQ
 	AXVMOVQ
@@ -813,6 +840,31 @@ const (
 	AXVPCNTH
 	AXVPCNTW
 	AXVPCNTV
+
+	AVBITCLRB
+	AVBITCLRH
+	AVBITCLRW
+	AVBITCLRV
+	AVBITSETB
+	AVBITSETH
+	AVBITSETW
+	AVBITSETV
+	AVBITREVB
+	AVBITREVH
+	AVBITREVW
+	AVBITREVV
+	AXVBITCLRB
+	AXVBITCLRH
+	AXVBITCLRW
+	AXVBITCLRV
+	AXVBITSETB
+	AXVBITSETH
+	AXVBITSETW
+	AXVBITSETV
+	AXVBITREVB
+	AXVBITREVH
+	AXVBITREVW
+	AXVBITREVV
 
 	// LSX and LASX integer comparison instruction
 	AVSEQB
@@ -950,6 +1002,50 @@ const (
 	AXVFRSQRTF
 	AXVFRSQRTD
 
+	AVADDF
+	AVADDD
+	AVSUBF
+	AVSUBD
+	AVMULF
+	AVMULD
+	AVDIVF
+	AVDIVD
+	AXVADDF
+	AXVADDD
+	AXVSUBF
+	AXVSUBD
+	AXVMULF
+	AXVMULD
+	AXVDIVF
+	AXVDIVD
+
+	AVFCLASSF
+	AVFCLASSD
+	AXVFCLASSF
+	AXVFCLASSD
+
+	// LSX and LASX floating point conversion instructions
+	AVFRINTRNEF
+	AVFRINTRNED
+	AVFRINTRZF
+	AVFRINTRZD
+	AVFRINTRPF
+	AVFRINTRPD
+	AVFRINTRMF
+	AVFRINTRMD
+	AVFRINTF
+	AVFRINTD
+	AXVFRINTRNEF
+	AXVFRINTRNED
+	AXVFRINTRZF
+	AXVFRINTRZD
+	AXVFRINTRPF
+	AXVFRINTRPD
+	AXVFRINTRMF
+	AXVFRINTRMD
+	AXVFRINTF
+	AXVFRINTD
+
 	// LSX and LASX integer neg instructions
 	AVNEGB
 	AVNEGH
@@ -1018,6 +1114,29 @@ const (
 	AXVSHUF4IH
 	AXVSHUF4IW
 	AXVSHUF4IV
+
+	AVSHUFB
+	AVSHUFH
+	AVSHUFW
+	AVSHUFV
+	AXVSHUFB
+	AXVSHUFH
+	AXVSHUFW
+	AXVSHUFV
+
+	AVPERMIW
+	AXVPERMIW
+	AXVPERMIV
+	AXVPERMIQ
+
+	AVEXTRINSB
+	AVEXTRINSH
+	AVEXTRINSW
+	AVEXTRINSV
+	AXVEXTRINSB
+	AXVEXTRINSH
+	AXVEXTRINSW
+	AXVEXTRINSV
 
 	AVSETEQV
 	AVSETNEV

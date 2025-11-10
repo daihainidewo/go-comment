@@ -9,7 +9,6 @@ import (
 	"debug/elf"
 	"debug/macho"
 	"debug/pe"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"go/format"
@@ -1093,10 +1092,10 @@ func TestGoListTest(t *testing.T) {
 	tg.grepStdoutNot(`^testing \[bytes.test\]$`, "unexpected test copy of testing")
 	tg.grepStdoutNot(`^testing$`, "unexpected real copy of testing")
 
-	tg.run("list", "-test", "cmd/buildid", "cmd/doc")
+	tg.run("list", "-test", "cmd/buildid", "cmd/gofmt")
 	tg.grepStdout(`^cmd/buildid$`, "missing cmd/buildid")
-	tg.grepStdout(`^cmd/doc$`, "missing cmd/doc")
-	tg.grepStdout(`^cmd/doc\.test$`, "missing cmd/doc test")
+	tg.grepStdout(`^cmd/gofmt$`, "missing cmd/gofmt")
+	tg.grepStdout(`^cmd/gofmt\.test$`, "missing cmd/gofmt test")
 	tg.grepStdoutNot(`^cmd/buildid\.test$`, "unexpected cmd/buildid test")
 	tg.grepStdoutNot(`^testing`, "unexpected testing")
 
@@ -1507,15 +1506,17 @@ func main() {
 	tg.setenv("PKG_CONFIG_PATH", tg.path("."))
 	tg.run("run", tg.path("foo.go"))
 
-	if runtime.GOOS != "darwin" { // darwin doesn't like these ldflags
-		// test for ldflags
-		tg.tempFile("bar.pc", `
+	libs := `Libs: -Wl,-rpath=/path\ with\ spaces/bin`
+	if runtime.GOOS == "darwin" {
+		libs = "" // darwin linker doesn't have -rpath
+	}
+	// test for ldflags
+	tg.tempFile("bar.pc", `
 Name: bar
 Description: The bar library
 Version: 1.0.0
-Libs: -Wl,-rpath=/path\ with\ spaces/bin
+`+libs+`
 `)
-	}
 
 	tg.tempFile("bar.go", `package main
 /*
@@ -2130,38 +2131,6 @@ func testBuildmodePIE(t *testing.T, useCgo, setBuildmodeToPIE bool) {
 		}
 		if (dc & pe.IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) == 0 {
 			t.Error("IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE flag is not set")
-		}
-		if useCgo {
-			// Test that only one symbol is exported (#40795).
-			// PIE binaries don´t require .edata section but unfortunately
-			// binutils doesn´t generate a .reloc section unless there is
-			// at least one symbol exported.
-			// See https://sourceware.org/bugzilla/show_bug.cgi?id=19011
-			section := f.Section(".edata")
-			if section == nil {
-				t.Skip(".edata section is not present")
-			}
-			// TODO: deduplicate this struct from cmd/link/internal/ld/pe.go
-			type IMAGE_EXPORT_DIRECTORY struct {
-				_                 [2]uint32
-				_                 [2]uint16
-				_                 [2]uint32
-				NumberOfFunctions uint32
-				NumberOfNames     uint32
-				_                 [3]uint32
-			}
-			var e IMAGE_EXPORT_DIRECTORY
-			if err := binary.Read(section.Open(), binary.LittleEndian, &e); err != nil {
-				t.Fatalf("binary.Read failed: %v", err)
-			}
-
-			// Only _cgo_dummy_export should be exported
-			if e.NumberOfFunctions != 1 {
-				t.Fatalf("got %d exported functions; want 1", e.NumberOfFunctions)
-			}
-			if e.NumberOfNames != 1 {
-				t.Fatalf("got %d exported names; want 1", e.NumberOfNames)
-			}
 		}
 	default:
 		// testBuildmodePIE opens object files, so it needs to understand the object

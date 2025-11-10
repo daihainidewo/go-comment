@@ -37,7 +37,6 @@ type hchan struct {
 	dataqsiz uint           // size of the circular queue
 	buf      unsafe.Pointer // points to an array of dataqsiz elements
 	elemsize uint16
-	synctest bool // true if created in a synctest bubble
 	closed   uint32
 	timer    *timer // timer feeding this chan
 	elemtype *_type // element type
@@ -45,6 +44,7 @@ type hchan struct {
 	recvx    uint   // receive index
 	recvq    waitq  // list of recv waiters
 	sendq    waitq  // list of send waiters
+	bubble   *synctestBubble
 
 	// lock 保护 hchan 所有字段，以及几个在 sudog 作用于这个channel的字段
 	// 在持有 lock 时，不要修改另一个G的状态，通常是调用 ready，这会在栈缩容时导致死锁
@@ -120,8 +120,8 @@ func makechan(t *chantype, size int) *hchan {
 	c.elemsize = uint16(elem.Size_)
 	c.elemtype = elem
 	c.dataqsiz = uint(size)
-	if getg().syncGroup != nil {
-		c.synctest = true
+	if b := getg().bubble; b != nil {
+		c.bubble = b
 	}
 	lockInit(&c.lock, lockRankHchan)
 
@@ -203,8 +203,8 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		racereadpc(c.raceaddr(), callerpc, abi.FuncPCABIInternal(chansend))
 	}
 
-	if c.synctest && getg().syncGroup == nil {
-		panic(plainError("send on synctest channel from outside bubble"))
+	if c.bubble != nil && getg().bubble != c.bubble {
+		fatal("send on synctest channel from outside bubble")
 	}
 
 	// Fast path: check for failed non-blocking operation without acquiring the lock.
@@ -282,11 +282,11 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	}
 	// No stack splits between assigning elem and enqueuing mysg
 	// on gp.waiting where copystack can find it.
-	mysg.elem = ep
+	mysg.elem.set(ep)
 	mysg.waitlink = nil
 	mysg.g = gp
 	mysg.isSelect = false
-	mysg.c = c
+	mysg.c.set(c)
 	gp.waiting = mysg
 	gp.param = nil
 	// 将sudog存进等待发送的队列中
@@ -298,7 +298,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	// stack shrinking.
 	gp.parkingOnChan.Store(true)
 	reason := waitReasonChanSend
-	if c.synctest {
+	if c.bubble != nil {
 		reason = waitReasonSynctestChanSend
 	}
 	gopark(chanparkcommit, unsafe.Pointer(&c.lock), reason, traceBlockChanSend, 2)
@@ -319,7 +319,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	if mysg.releasetime > 0 {
 		blockevent(mysg.releasetime-t0, 2)
 	}
-	mysg.c = nil
+	mysg.c.set(nil)
 	releaseSudog(mysg)
 	if closed {
 		// 如果 channel 关闭 panic
@@ -339,9 +339,9 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 // sg must already be dequeued from c.
 // ep must be non-nil and point to the heap or the caller's stack.
 func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
-	if c.synctest && sg.g.syncGroup != getg().syncGroup {
+	if c.bubble != nil && getg().bubble != c.bubble {
 		unlockf()
-		panic(plainError("send on synctest channel from outside bubble"))
+		fatal("send on synctest channel from outside bubble")
 	}
 	if raceenabled {
 		if c.dataqsiz == 0 {
@@ -359,9 +359,9 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 			c.sendx = c.recvx // c.sendx = (c.sendx+1) % c.dataqsiz
 		}
 	}
-	if sg.elem != nil {
+	if sg.elem.get() != nil {
 		sendDirect(c.elemtype, sg, ep)
-		sg.elem = nil
+		sg.elem.set(nil)
 	}
 	gp := sg.g
 	unlockf()
@@ -419,7 +419,7 @@ func sendDirect(t *_type, sg *sudog, src unsafe.Pointer) {
 	// Once we read sg.elem out of sg, it will no longer
 	// be updated if the destination's stack gets copied (shrunk).
 	// So make sure that no preemption points can happen between read & use.
-	dst := sg.elem
+	dst := sg.elem.get()
 	typeBitsBulkBarrier(t, uintptr(dst), uintptr(src), t.Size_)
 	// No need for cgo write barrier checks because dst is always
 	// Go memory.
@@ -430,7 +430,7 @@ func recvDirect(t *_type, sg *sudog, dst unsafe.Pointer) {
 	// dst is on our stack or the heap, src is on another stack.
 	// The channel is locked, so src will not move during this
 	// operation.
-	src := sg.elem
+	src := sg.elem.get()
 	typeBitsBulkBarrier(t, uintptr(dst), uintptr(src), t.Size_)
 	memmove(dst, src, t.Size_)
 }
@@ -438,6 +438,9 @@ func recvDirect(t *_type, sg *sudog, dst unsafe.Pointer) {
 func closechan(c *hchan) {
 	if c == nil {
 		panic(plainError("close of nil channel"))
+	}
+	if c.bubble != nil && getg().bubble != c.bubble {
+		fatal("close of synctest channel from outside bubble")
 	}
 
 	lock(&c.lock)
@@ -463,9 +466,9 @@ func closechan(c *hchan) {
 		if sg == nil {
 			break
 		}
-		if sg.elem != nil {
-			typedmemclr(c.elemtype, sg.elem)
-			sg.elem = nil
+		if sg.elem.get() != nil {
+			typedmemclr(c.elemtype, sg.elem.get())
+			sg.elem.set(nil)
 		}
 		if sg.releasetime != 0 {
 			sg.releasetime = cputicks()
@@ -486,7 +489,7 @@ func closechan(c *hchan) {
 		if sg == nil {
 			break
 		}
-		sg.elem = nil
+		sg.elem.set(nil)
 		if sg.releasetime != 0 {
 			sg.releasetime = cputicks()
 		}
@@ -522,7 +525,7 @@ func empty(c *hchan) bool {
 	// c.timer is also immutable (it is set after make(chan) but before any channel operations).
 	// All timer channels have dataqsiz > 0.
 	if c.timer != nil {
-		c.timer.maybeRunChan()
+		c.timer.maybeRunChan(c)
 	}
 	return atomic.Loaduint(&c.qcount) == 0
 }
@@ -562,12 +565,12 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 		throw("unreachable")
 	}
 
-	if c.synctest && getg().syncGroup == nil {
-		panic(plainError("receive on synctest channel from outside bubble"))
+	if c.bubble != nil && getg().bubble != c.bubble {
+		fatal("receive on synctest channel from outside bubble")
 	}
 
 	if c.timer != nil {
-		c.timer.maybeRunChan()
+		c.timer.maybeRunChan(c)
 	}
 
 	// Fast path: check for failed non-blocking operation without acquiring the lock.
@@ -668,13 +671,13 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	}
 	// No stack splits between assigning elem and enqueuing mysg
 	// on gp.waiting where copystack can find it.
-	mysg.elem = ep
+	mysg.elem.set(ep)
 	mysg.waitlink = nil
 	gp.waiting = mysg
 
 	mysg.g = gp
 	mysg.isSelect = false
-	mysg.c = c
+	mysg.c.set(c)
 	gp.param = nil
 	c.recvq.enqueue(mysg)
 	if c.timer != nil {
@@ -687,7 +690,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	// stack shrinking.
 	gp.parkingOnChan.Store(true)
 	reason := waitReasonChanReceive
-	if c.synctest {
+	if c.bubble != nil {
 		reason = waitReasonSynctestChanReceive
 	}
 	gopark(chanparkcommit, unsafe.Pointer(&c.lock), reason, traceBlockChanRecv, 2)
@@ -706,7 +709,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	}
 	success := mysg.success
 	gp.param = nil
-	mysg.c = nil
+	mysg.c.set(nil)
 	releaseSudog(mysg)
 	return true, success
 }
@@ -726,9 +729,9 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 // sg must already be dequeued from c.
 // A non-nil ep must point to the heap or the caller's stack.
 func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
-	if c.synctest && sg.g.syncGroup != getg().syncGroup {
+	if c.bubble != nil && getg().bubble != c.bubble {
 		unlockf()
-		panic(plainError("receive on synctest channel from outside bubble"))
+		fatal("receive on synctest channel from outside bubble")
 	}
 	if c.dataqsiz == 0 {
 		// 无缓冲
@@ -755,14 +758,14 @@ func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 			typedmemmove(c.elemtype, ep, qp)
 		}
 		// copy data from sender to queue
-		typedmemmove(c.elemtype, qp, sg.elem)
+		typedmemmove(c.elemtype, qp, sg.elem.get())
 		c.recvx++
 		if c.recvx == c.dataqsiz {
 			c.recvx = 0
 		}
 		c.sendx = c.recvx // c.sendx = (c.sendx+1) % c.dataqsiz
 	}
-	sg.elem = nil
+	sg.elem.set(nil)
 	gp := sg.g
 	unlockf()
 	gp.param = unsafe.Pointer(sg)
@@ -854,7 +857,7 @@ func chanlen(c *hchan) int {
 	}
 	async := debug.asynctimerchan.Load() != 0
 	if c.timer != nil && async {
-		c.timer.maybeRunChan()
+		c.timer.maybeRunChan(c)
 	}
 	if c.timer != nil && !async {
 		// timer channels have a buffered implementation

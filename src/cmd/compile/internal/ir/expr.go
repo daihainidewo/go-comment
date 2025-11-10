@@ -191,6 +191,7 @@ type CallExpr struct {
 	KeepAlive []*Name // vars to be kept alive until call returns
 	IsDDD     bool
 	GoDefer   bool // whether this call is part of a go or defer statement
+	NoInline  bool // whether this call must not be inlined
 }
 
 func NewCallExpr(pos src.XPos, op Op, fun Node, args []Node) *CallExpr {
@@ -212,7 +213,7 @@ func (n *CallExpr) SetOp(op Op) {
 		ODELETE,
 		OGETG, OGETCALLERSP,
 		OMAKE, OMAX, OMIN, OPRINT, OPRINTLN,
-		ORECOVER, ORECOVERFP:
+		ORECOVER:
 		n.op = op
 	}
 }
@@ -616,7 +617,7 @@ func (o Op) IsSlice3() bool {
 	return false
 }
 
-// A SliceHeader expression constructs a slice header from its parts.
+// A SliceHeaderExpr constructs a slice header from its parts.
 type SliceHeaderExpr struct {
 	miniExpr
 	Ptr Node
@@ -664,7 +665,7 @@ func NewStarExpr(pos src.XPos, x Node) *StarExpr {
 func (n *StarExpr) Implicit() bool     { return n.flags&miniExprImplicit != 0 }
 func (n *StarExpr) SetImplicit(b bool) { n.flags.set(miniExprImplicit, b) }
 
-// A TypeAssertionExpr is a selector expression X.(Type).
+// A TypeAssertExpr is a selector expression X.(Type).
 // Before type-checking, the type is Ntype.
 type TypeAssertExpr struct {
 	miniExpr
@@ -676,6 +677,11 @@ type TypeAssertExpr struct {
 
 	// An internal/abi.TypeAssert descriptor to pass to the runtime.
 	Descriptor *obj.LSym
+
+	// When set to true, if this assert would panic, then use a nil pointer panic
+	// instead of an interface conversion panic.
+	// It must not be set for type asserts using the commaok form.
+	UseNilPanic bool
 }
 
 func NewTypeAssertExpr(pos src.XPos, x Node, typ *types.Type) *TypeAssertExpr {
@@ -853,6 +859,10 @@ func IsAddressable(n Node) bool {
 //
 // calling StaticValue on the "int(y)" expression returns the outer
 // "g()" expression.
+//
+// NOTE: StaticValue can return a result with a different type than
+// n's type because it can traverse through OCONVNOP operations.
+// TODO: consider reapplying OCONVNOP operations to the result. See https://go.dev/cl/676517.
 func StaticValue(n Node) Node {
 	for {
 		switch n1 := n.(type) {
@@ -907,12 +917,12 @@ FindRHS:
 				break FindRHS
 			}
 		}
-		base.Fatalf("%v missing from LHS of %v", n, defn)
+		base.FatalfAt(defn.Pos(), "%v missing from LHS of %v", n, defn)
 	default:
 		return nil
 	}
 	if rhs == nil {
-		base.Fatalf("RHS is nil: %v", defn)
+		base.FatalfAt(defn.Pos(), "RHS is nil: %v", defn)
 	}
 
 	if Reassigned(n) {

@@ -8,7 +8,6 @@ import (
 	"internal/abi"
 	"internal/chacha8rand"
 	"internal/goarch"
-	"internal/goexperiment"
 	"internal/runtime/atomic"
 	"internal/runtime/sys"
 	"unsafe"
@@ -43,12 +42,16 @@ const (
 
 	// _Grunning means this goroutine may execute user code. The
 	// stack is owned by this goroutine. It is not on a run queue.
-	// It is assigned an M and a P (g.m and g.m.p are valid).
+	// It is assigned an M (g.m is valid) and it usually has a P
+	// (g.m.p is valid), but there are small windows of time where
+	// it might not, namely upon entering and exiting _Gsyscall.
 	_Grunning // 2
 
 	// _Gsyscall means this goroutine is executing a system call.
 	// It is not executing user code. The stack is owned by this
 	// goroutine. It is not on a run queue. It is assigned an M.
+	// It may have a P attached, but it does not own it. Code
+	// executing in this state must not touch g.m.p.
 	_Gsyscall // 3
 
 	// _Gwaiting means this goroutine is blocked in the runtime.
@@ -88,6 +91,13 @@ const (
 	// ready()ing this G.
 	_Gpreempted // 9
 
+	// _Gleaked represents a leaked goroutine caught by the GC.
+	_Gleaked // 10
+
+	// _Gdeadextra is a _Gdead goroutine that's attached to an extra M
+	// used for cgo callbacks.
+	_Gdeadextra // 11
+
 	// _Gscan combined with one of the above states other than
 	// _Grunning indicates that GC is scanning the stack. The
 	// goroutine is not executing user code and the stack is owned
@@ -105,6 +115,8 @@ const (
 	_Gscansyscall   = _Gscan + _Gsyscall   // 0x1003
 	_Gscanwaiting   = _Gscan + _Gwaiting   // 0x1004
 	_Gscanpreempted = _Gscan + _Gpreempted // 0x1009
+	_Gscanleaked    = _Gscan + _Gleaked    // 0x100a
+	_Gscandeadextra = _Gscan + _Gdeadextra // 0x100b
 )
 
 const (
@@ -123,22 +135,15 @@ const (
 	// run user code or the scheduler. Only the M that owns this P
 	// is allowed to change the P's status from _Prunning. The M
 	// may transition the P to _Pidle (if it has no more work to
-	// do), _Psyscall (when entering a syscall), or _Pgcstop (to
-	// halt for the GC). The M may also hand ownership of the P
-	// off directly to another M (e.g., to schedule a locked G).
+	// do), or _Pgcstop (to halt for the GC). The M may also hand
+	// ownership of the P off directly to another M (for example,
+	// to schedule a locked G).
 	_Prunning
 
-	// _Psyscall means a P is not running user code. It has
-	// affinity to an M in a syscall but is not owned by it and
-	// may be stolen by another M. This is similar to _Pidle but
-	// uses lightweight transitions and maintains M affinity.
-	//
-	// Leaving _Psyscall must be done with a CAS, either to steal
-	// or retake the P. Note that there's an ABA hazard: even if
-	// an M successfully CASes its original P back to _Prunning
-	// after a syscall, it must understand the P may have been
-	// used by another M in the interim.
-	_Psyscall
+	// _Psyscall_unused is a now-defunct state for a P. A P is
+	// identified as "in a system call" by looking at the goroutine's
+	// state.
+	_Psyscall_unused
 
 	// _Pgcstop means a P is halted for STW and owned by the M
 	// that stopped the world. The M that stopped the world
@@ -327,6 +332,78 @@ type gobuf struct {
 	bp   uintptr // for framepointer-enabled architectures
 }
 
+// maybeTraceablePtr is a special pointer that is conditionally trackable
+// by the GC. It consists of an address as a uintptr (vu) and a pointer
+// to a data element (vp).
+//
+// maybeTraceablePtr values can be in one of three states:
+// 1. Unset: vu == 0 && vp == nil
+// 2. Untracked: vu != 0 && vp == nil
+// 3. Tracked: vu != 0 && vp != nil
+//
+// Do not set fields manually. Use methods instead.
+// Extend this type with additional methods if needed.
+type maybeTraceablePtr struct {
+	vp unsafe.Pointer // For liveness only.
+	vu uintptr        // Source of truth.
+}
+
+// untrack unsets the pointer but preserves the address.
+// This is used to hide the pointer from the GC.
+//
+//go:nosplit
+func (p *maybeTraceablePtr) setUntraceable() {
+	p.vp = nil
+}
+
+// setTraceable resets the pointer to the stored address.
+// This is used to make the pointer visible to the GC.
+//
+//go:nosplit
+func (p *maybeTraceablePtr) setTraceable() {
+	p.vp = unsafe.Pointer(p.vu)
+}
+
+// set sets the pointer to the data element and updates the address.
+//
+//go:nosplit
+func (p *maybeTraceablePtr) set(v unsafe.Pointer) {
+	p.vp = v
+	p.vu = uintptr(v)
+}
+
+// get retrieves the pointer to the data element.
+//
+//go:nosplit
+func (p *maybeTraceablePtr) get() unsafe.Pointer {
+	return unsafe.Pointer(p.vu)
+}
+
+// uintptr returns the uintptr address of the pointer.
+//
+//go:nosplit
+func (p *maybeTraceablePtr) uintptr() uintptr {
+	return p.vu
+}
+
+// maybeTraceableChan extends conditionally trackable pointers (maybeTraceablePtr)
+// to track hchan pointers.
+//
+// Do not set fields manually. Use methods instead.
+type maybeTraceableChan struct {
+	maybeTraceablePtr
+}
+
+//go:nosplit
+func (p *maybeTraceableChan) set(c *hchan) {
+	p.maybeTraceablePtr.set(unsafe.Pointer(c))
+}
+
+//go:nosplit
+func (p *maybeTraceableChan) get() *hchan {
+	return (*hchan)(p.maybeTraceablePtr.get())
+}
+
 // sudog 将g打包，用于需要等待信号触发的g。
 // 有对象池利用 acquireSudog 和 releaseSudog 获取和释放。
 // sudog (pseudo-g) represents a g in a wait list, such as for sending/receiving
@@ -350,7 +427,7 @@ type sudog struct {
 	next *sudog
 	prev *sudog
 	// 元素地址 可表示锁地址 可能指向栈
-	elem unsafe.Pointer // data element (may point to stack)
+	elem maybeTraceablePtr // data element (may point to stack)
 
 	// The following fields are never accessed concurrently.
 	// For channels, waitlink is only accessed by g.
@@ -387,11 +464,11 @@ type sudog struct {
 	// 信号量等待
 	// parent next prev 形成 treap
 	// waitlink waittail 相同 elem 的开链的头节点和尾节点
-	parent   *sudog // semaRoot binary tree
-	waitlink *sudog // g.waiting list or semaRoot
-	waittail *sudog // semaRoot
 	// chan 处理
-	c        *hchan // channel
+	parent   *sudog             // semaRoot binary tree
+	waitlink *sudog             // g.waiting list or semaRoot
+	waittail *sudog             // semaRoot
+	c        maybeTraceableChan // channel
 }
 
 type libcall struct {
@@ -507,37 +584,43 @@ type g struct {
 	// waiting 当前 g 被封装成等待的
 	// timer 缓存的 timer
 	// selectDone 标志 select 是否完成
-	raceignore    int8  // ignore race detection events
-	nocgocallback bool  // whether disable callback from C
-	tracking      bool  // whether we're tracking this G for sched latency statistics
-	trackingSeq   uint8 // used to decide whether to track this G
-	trackingStamp int64 // timestamp of when the G last started being tracked
-	runnableTime  int64 // the amount of time spent runnable, cleared when running, only used when tracking
-	lockedm       muintptr
-	fipsIndicator uint8
-	sig           uint32
-	writebuf      []byte
-	sigcode0      uintptr
-	sigcode1      uintptr
-	sigpc         uintptr
-	parentGoid    uint64          // goid of goroutine that created this goroutine
-	gopc          uintptr         // pc of go statement that created this goroutine
-	ancestors     *[]ancestorInfo // ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)
-	startpc       uintptr         // pc of goroutine function
-	racectx       uintptr
-	waiting       *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
-	cgoCtxt       []uintptr      // cgo traceback context
-	labels        unsafe.Pointer // profiler labels
-	timer         *timer         // cached timer for time.Sleep
-	sleepWhen     int64          // when to sleep until
-	selectDone    atomic.Uint32  // are we participating in a select and did someone win the race?
+	raceignore      int8  // ignore race detection events
+	nocgocallback   bool  // whether disable callback from C
+	tracking        bool  // whether we're tracking this G for sched latency statistics
+	trackingSeq     uint8 // used to decide whether to track this G
+	trackingStamp   int64 // timestamp of when the G last started being tracked
+	runnableTime    int64 // the amount of time spent runnable, cleared when running, only used when tracking
+	lockedm         muintptr
+	fipsIndicator   uint8
+	syncSafePoint   bool // set if g is stopped at a synchronous safe point.
+	runningCleanups atomic.Bool
+	sig             uint32
+	writebuf        []byte
+	sigcode0        uintptr
+	sigcode1        uintptr
+	sigpc           uintptr
+	parentGoid      uint64          // goid of goroutine that created this goroutine
+	gopc            uintptr         // pc of go statement that created this goroutine
+	ancestors       *[]ancestorInfo // ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)
+	startpc         uintptr         // pc of goroutine function
+	racectx         uintptr
+	waiting         *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
+	cgoCtxt         []uintptr      // cgo traceback context
+	labels          unsafe.Pointer // profiler labels
+	timer           *timer         // cached timer for time.Sleep
+	sleepWhen       int64          // when to sleep until
+	selectDone      atomic.Uint32  // are we participating in a select and did someone win the race?
 
 	// goroutineProfiled indicates the status of this goroutine's stack for the
 	// current in-progress goroutine profile
 	goroutineProfiled goroutineProfileStateHolder
 
-	coroarg   *coro // argument during coroutine transfers
-	syncGroup *synctestGroup
+	coroarg *coro // argument during coroutine transfers
+	bubble  *synctestBubble
+
+	// xRegs stores the extended register state if this G has been
+	// asynchronously preempted.
+	xRegs xRegPerG
 
 	// Per-G tracer state.
 	trace gTraceState
@@ -555,6 +638,10 @@ type g struct {
 	// and check for debt in the malloc hot path. The assist ratio
 	// determines how this corresponds to scan work debt.
 	gcAssistBytes int64
+
+	// valgrindStackID is used to track what memory is used for stacks when a program is
+	// built with the "valgrind" build tag, otherwise it is unused.
+	valgrindStackID uintptr
 }
 
 // gTrackingPeriod is the number of transitions out of _Grunning between
@@ -580,18 +667,27 @@ type m struct {
 	morebuf gobuf  // gobuf arg to morestack
 	divmod  uint32 // div/mod denominator for arm - known to liblink (cmd/internal/obj/arm/obj5.go)
 
-	// Fields not known to debuggers.
-	procid          uint64            // for debuggers, but offset not hard-coded
-	gsignal         *g                // signal-handling g
-	goSigStack      gsignalStack      // Go-allocated signal handling stack
-	sigmask         sigset            // storage for saved signal mask
-	tls             [tlsSlots]uintptr // thread-local storage (for x86 extern register)
-	mstartfn        func() // m 开始时调用的函数
-	curg            *g       // current running goroutine
-	caughtsig       guintptr // goroutine running during fatal signal
-	p               puintptr // attached p for executing go code (nil if not executing go code)
-	nextp           puintptr
-	oldp            puintptr // the p that was attached before executing a syscall
+	// Fields whose offsets are not known to debuggers.
+
+	procid     uint64            // for debuggers, but offset not hard-coded
+	gsignal    *g                // signal-handling g
+	goSigStack gsignalStack      // Go-allocated signal handling stack
+	sigmask    sigset            // storage for saved signal mask
+	tls        [tlsSlots]uintptr // thread-local storage (for x86 extern register)
+	mstartfn   func()
+	curg       *g       // current running goroutine
+	caughtsig  guintptr // goroutine running during fatal signal
+
+	// p is the currently attached P for executing Go code, nil if not executing user Go code.
+	//
+	// A non-nil p implies exclusive ownership of the P, unless curg is in _Gsyscall.
+	// In _Gsyscall the scheduler may mutate this instead. The point of synchronization
+	// is the _Gscan bit on curg's status. The scheduler must arrange to prevent curg
+	// from transitioning out of _Gsyscall if it intends to mutate p.
+	p puintptr
+
+	nextp           puintptr // The next P to install before executing. Implies exclusive ownership of this P.
+	oldp            puintptr // The P that was attached before executing a syscall.
 	id              int64
 	mallocing       int32 // 标记申请内存中
 	throwing        throwType // 抛出异常等级
@@ -609,8 +705,9 @@ type m struct {
 	isExtraInSig    bool          // m is an extra m in a signal handler
 	freeWait        atomic.Uint32 // Whether it is safe to free g0 and delete m (one of freeMRef, freeMStack, freeMWait)
 	needextram      bool
-	g0StackAccurate bool // whether the g0 stack has accurate bounds
-	traceback       uint8// traceback 等级 在 gotraceback 中使用
+	g0StackAccurate bool          // whether the g0 stack has accurate bounds
+	traceback       uint8		  // traceback 等级 在 gotraceback 中使用
+	allpSnapshot    []*p          // Snapshot of allp for use after dropping P in findRunnable, nil otherwise.
 	ncgocall        uint64        // number of cgo calls in total
 	ncgo            int32         // number of cgo calls currently in progress
 	cgoCallersUse   atomic.Uint32 // if non-zero, cgoCallers in use temporarily
@@ -639,12 +736,10 @@ type m struct {
 	freelink    *m // on sched.freem
 	trace       mTraceState
 
-	// these are here because they are too large to be on the stack
-	// of low-level NOSPLIT functions.
-	libcall   libcall
-	libcallpc uintptr  // for cpu profiler
-	libcallsp uintptr  // libcall 的sp
-	libcallg  guintptr // libcall 的g
+	// These are here to avoid using the G stack so the stack can move during the call.
+	libcallpc  uintptr // for cpu profiler
+	libcallsp  uintptr
+	libcallg   guintptr
 	winsyscall winlibcall // stores syscall parameters on windows
 
 	vdsoSP uintptr // SP for traceback while in VDSO call (0 if not in call)
@@ -682,9 +777,9 @@ type mPadded struct {
 
 	// Size the runtime.m structure so it fits in the 2048-byte size class, and
 	// not in the next-smallest (1792-byte) size class. That leaves the 11 low
-	// bits of muintptr values available for flags, as required for
-	// GOEXPERIMENT=spinbitmutex.
-	_ [goexperiment.SpinbitMutexInt * (2048 - mallocHeaderSize - mRedZoneSize - unsafe.Sizeof(m{}))]byte
+	// bits of muintptr values available for flags, as required by
+	// lock_spinbit.go.
+	_ [(1 - goarch.IsWasm) * (2048 - mallocHeaderSize - mRedZoneSize - unsafe.Sizeof(m{}))]byte
 }
 
 type p struct {
@@ -792,6 +887,10 @@ type p struct {
 	// Timer heap.
 	timers timers
 
+	// Cleanups.
+	cleanups       *cleanupBlock
+	cleanupsQueued uint64 // monotonic count of cleanups queued by this P
+
 	// maxStackScanDelta accumulates the amount of stack space held by
 	// live goroutines (i.e. those eligible for stack scanning).
 	// Flushed to gcController.maxStackScan once maxStackScanSlack
@@ -814,14 +913,23 @@ type p struct {
 	// gcStopTime is the nanotime timestamp that this P last entered _Pgcstop.
 	gcStopTime int64
 
+	// goroutinesCreated is the total count of goroutines created by this P.
+	goroutinesCreated uint64
+
+	// xRegs is the per-P extended register state used by asynchronous
+	// preemption. This is an empty struct on platforms that don't use extended
+	// register state.
+	xRegs xRegPerP
+
 	// Padding is no longer needed. False sharing is now not a worry because p is large enough
 	// that its size class is an integer multiple of the cache line size (for any of our architectures).
 }
 
 type schedt struct {
-	goidgen   atomic.Uint64 // 已分配的goroutine id的值
-	lastpoll  atomic.Int64  // time of last network poll, 0 if currently polling
-	pollUntil atomic.Int64  // time to which current poll is sleeping
+	goidgen    atomic.Uint64
+	lastpoll   atomic.Int64 // time of last network poll, 0 if currently polling
+	pollUntil  atomic.Int64 // time to which current poll is sleeping
+	pollingNet atomic.Int32 // 1 if some P doing non-blocking network poll
 
 	lock mutex // schedt 锁结构体
 
@@ -836,7 +944,8 @@ type schedt struct {
 	nmsys        int32    // 系统M个数，不包括锁定的M，只包括 templateThread 和 sysmon number of system m's not counted for deadlock
 	nmfreed      int64    // 累计释放 M 的个数 cumulative number of freed m's
 
-	ngsys atomic.Int32 // number of system goroutines
+	ngsys        atomic.Int32 // number of system goroutines
+	nGsyscallNoP atomic.Int32 // number of goroutines in syscalls without a P
 
 	pidle        puintptr // idle p's
 	npidle       atomic.Int32
@@ -895,6 +1004,8 @@ type schedt struct {
 	procresizetime int64 // nanotime() of last change to gomaxprocs
 	totaltime      int64 // ∫gomaxprocs dt up to procresizetime
 
+	customGOMAXPROCS bool // GOMAXPROCS was manually set from the environment or runtime.GOMAXPROCS
+
 	// sysmonlock protects sysmon's actions on the runtime.
 	//
 	// Acquire and hold this mutex to block sysmon from interacting
@@ -935,6 +1046,10 @@ type schedt struct {
 	// M, but waiting for locks within the runtime. This field stores the value
 	// for Ms that have exited.
 	totalRuntimeLockWaitTime atomic.Int64
+
+	// goroutinesCreated (plus the value of goroutinesCreated on each P in allp)
+	// is the sum of all goroutines created by the program.
+	goroutinesCreated atomic.Uint64
 }
 
 // Values for the flags field of a sigTabT.
@@ -961,7 +1076,7 @@ type _func struct {
 
 	// entryoff 基于 pc 的数据偏移量
 	// nameoff 函数名的偏移量
-	entryOff uint32 // start pc, as offset from moduledata.text/pcHeader.textStart
+	entryOff uint32 // start pc, as offset from moduledata.text
 	nameOff  int32  // function name, as index into moduledata.funcnametab.
 
 	// args 入参出参的个数
@@ -1078,14 +1193,13 @@ type _defer struct {
 //
 // A _panic value must only ever live on the stack.
 //
-// The argp and link fields are stack pointers, but don't need special
+// The gopanicFP and link fields are stack pointers, but don't need special
 // handling during stack growth: because they are pointer-typed and
 // _panic values only live on the stack, regular stack pointer
 // adjustment takes care of them.
 type _panic struct {
-	argp unsafe.Pointer // pointer to arguments of deferred call run during panic; cannot move - known to liblink
-	arg  any            // argument to panic
-	link *_panic        // link to earlier panic
+	arg  any     // argument to panic
+	link *_panic // link to earlier panic
 
 	// startPC and startSP track where _panic.start was called.
 	startPC uintptr
@@ -1105,9 +1219,11 @@ type _panic struct {
 	slotsPtr     unsafe.Pointer
 
 	recovered   bool // whether this panic has been recovered
-	reraised    bool // whether this panic was reraised
+	repanicked  bool // whether this panic repanicked
 	goexit      bool
 	deferreturn bool
+
+	gopanicFP unsafe.Pointer // frame pointer of the gopanic frame
 }
 
 // savedOpenDeferState tracks the extra state from _panic that's
@@ -1135,23 +1251,24 @@ const (
 	waitReasonZero                  waitReason = iota // ""
 	waitReasonGCAssistMarking                         // "GC assist marking"
 	waitReasonIOWait                                  // "IO wait"
-	waitReasonChanReceiveNilChan                      // "chan receive (nil chan)"
-	waitReasonChanSendNilChan                         // "chan send (nil chan)"
 	waitReasonDumpingHeap                             // "dumping heap"
 	waitReasonGarbageCollection                       // "garbage collection"
 	waitReasonGarbageCollectionScan                   // "garbage collection scan"
 	waitReasonPanicWait                               // "panicwait"
-	waitReasonSelect                                  // "select"
-	waitReasonSelectNoCases                           // "select (no cases)"
 	waitReasonGCAssistWait                            // "GC assist wait"
 	waitReasonGCSweepWait                             // "GC sweep wait"
 	waitReasonGCScavengeWait                          // "GC scavenge wait"
-	waitReasonChanReceive                             // "chan receive"
-	waitReasonChanSend                                // "chan send"
 	waitReasonFinalizerWait                           // "finalizer wait"
 	waitReasonForceGCIdle                             // "force gc (idle)"
+	waitReasonUpdateGOMAXPROCSIdle                    // "GOMAXPROCS updater (idle)"
 	waitReasonSemacquire                              // "semacquire"
 	waitReasonSleep                                   // "sleep"
+	waitReasonChanReceiveNilChan                      // "chan receive (nil chan)"
+	waitReasonChanSendNilChan                         // "chan send (nil chan)"
+	waitReasonSelectNoCases                           // "select (no cases)"
+	waitReasonSelect                                  // "select"
+	waitReasonChanReceive                             // "chan receive"
+	waitReasonChanSend                                // "chan send"
 	waitReasonSyncCondWait                            // "sync.Cond.Wait"
 	waitReasonSyncMutexLock                           // "sync.Mutex.Lock"
 	waitReasonSyncRWMutexRLock                        // "sync.RWMutex.RLock"
@@ -1173,9 +1290,11 @@ const (
 	waitReasonGCWeakToStrongWait                      // "GC weak to strong wait"
 	waitReasonSynctestRun                             // "synctest.Run"
 	waitReasonSynctestWait                            // "synctest.Wait"
-	waitReasonSynctestChanReceive                     // "chan receive (synctest)"
-	waitReasonSynctestChanSend                        // "chan send (synctest)"
-	waitReasonSynctestSelect                          // "select (synctest)"
+	waitReasonSynctestChanReceive                     // "chan receive (durable)"
+	waitReasonSynctestChanSend                        // "chan send (durable)"
+	waitReasonSynctestSelect                          // "select (durable)"
+	waitReasonSynctestWaitGroupWait                   // "sync.WaitGroup.Wait (durable)"
+	waitReasonCleanupWait                             // "cleanup wait"
 )
 
 var waitReasonStrings = [...]string{
@@ -1197,6 +1316,7 @@ var waitReasonStrings = [...]string{
 	waitReasonChanSend:              "chan send",
 	waitReasonFinalizerWait:         "finalizer wait",
 	waitReasonForceGCIdle:           "force gc (idle)",
+	waitReasonUpdateGOMAXPROCSIdle:  "GOMAXPROCS updater (idle)",
 	waitReasonSemacquire:            "semacquire",
 	waitReasonSleep:                 "sleep",
 	waitReasonSyncCondWait:          "sync.Cond.Wait",
@@ -1220,9 +1340,11 @@ var waitReasonStrings = [...]string{
 	waitReasonGCWeakToStrongWait:    "GC weak to strong wait",
 	waitReasonSynctestRun:           "synctest.Run",
 	waitReasonSynctestWait:          "synctest.Wait",
-	waitReasonSynctestChanReceive:   "chan receive (synctest)",
-	waitReasonSynctestChanSend:      "chan send (synctest)",
-	waitReasonSynctestSelect:        "select (synctest)",
+	waitReasonSynctestChanReceive:   "chan receive (durable)",
+	waitReasonSynctestChanSend:      "chan send (durable)",
+	waitReasonSynctestSelect:        "select (durable)",
+	waitReasonSynctestWaitGroupWait: "sync.WaitGroup.Wait (durable)",
+	waitReasonCleanupWait:           "cleanup wait",
 }
 
 func (w waitReason) String() string {
@@ -1232,23 +1354,45 @@ func (w waitReason) String() string {
 	return waitReasonStrings[w]
 }
 
+// isMutexWait returns true if the goroutine is blocked because of
+// sync.Mutex.Lock or sync.RWMutex.[R]Lock.
+//
+//go:nosplit
 func (w waitReason) isMutexWait() bool {
 	return w == waitReasonSyncMutexLock ||
 		w == waitReasonSyncRWMutexRLock ||
 		w == waitReasonSyncRWMutexLock
 }
 
-func (w waitReason) isWaitingForGC() bool {
-	return isWaitingForGC[w]
+// isSyncWait returns true if the goroutine is blocked because of
+// sync library primitive operations.
+//
+//go:nosplit
+func (w waitReason) isSyncWait() bool {
+	return waitReasonSyncCondWait <= w && w <= waitReasonSyncWaitGroupWait
 }
 
-// isWaitingForGC indicates that a goroutine is only entering _Gwaiting and
-// setting a waitReason because it needs to be able to let the GC take ownership
-// of its stack. The G is always actually executing on the system stack, in
-// these cases.
+// isChanWait is true if the goroutine is blocked because of non-nil
+// channel operations or a select statement with at least one case.
+//
+//go:nosplit
+func (w waitReason) isChanWait() bool {
+	return w == waitReasonSelect ||
+		w == waitReasonChanReceive ||
+		w == waitReasonChanSend
+}
+
+func (w waitReason) isWaitingForSuspendG() bool {
+	return isWaitingForSuspendG[w]
+}
+
+// isWaitingForSuspendG indicates that a goroutine is only entering _Gwaiting and
+// setting a waitReason because it needs to be able to let the suspendG
+// (used by the GC and the execution tracer) take ownership of its stack.
+// The G is always actually executing on the system stack in these cases.
 //
 // TODO(mknyszek): Consider replacing this with a new dedicated G status.
-var isWaitingForGC = [len(waitReasonStrings)]bool{
+var isWaitingForSuspendG = [len(waitReasonStrings)]bool{
 	waitReasonStoppingTheWorld:      true,
 	waitReasonGCMarkTermination:     true,
 	waitReasonGarbageCollection:     true,
@@ -1267,29 +1411,30 @@ func (w waitReason) isIdleInSynctest() bool {
 
 // isIdleInSynctest indicates that a goroutine is considered idle by synctest.Wait.
 var isIdleInSynctest = [len(waitReasonStrings)]bool{
-	waitReasonChanReceiveNilChan:  true,
-	waitReasonChanSendNilChan:     true,
-	waitReasonSelectNoCases:       true,
-	waitReasonSleep:               true,
-	waitReasonSyncCondWait:        true,
-	waitReasonSyncWaitGroupWait:   true,
-	waitReasonCoroutine:           true,
-	waitReasonSynctestRun:         true,
-	waitReasonSynctestWait:        true,
-	waitReasonSynctestChanReceive: true,
-	waitReasonSynctestChanSend:    true,
-	waitReasonSynctestSelect:      true,
+	waitReasonChanReceiveNilChan:    true,
+	waitReasonChanSendNilChan:       true,
+	waitReasonSelectNoCases:         true,
+	waitReasonSleep:                 true,
+	waitReasonSyncCondWait:          true,
+	waitReasonSynctestWaitGroupWait: true,
+	waitReasonCoroutine:             true,
+	waitReasonSynctestRun:           true,
+	waitReasonSynctestWait:          true,
+	waitReasonSynctestChanReceive:   true,
+	waitReasonSynctestChanSend:      true,
+	waitReasonSynctestSelect:        true,
 }
 
 var (
-	allm       *m    // 所有m的链表
-	gomaxprocs int32 // 最大proc个数
-	ncpu       int32 // cpu核心数
-	forcegc    forcegcstate
-	sched      schedt // 全局资源管理器
-	newprocs   int32  // 当前proc个数
-	sched      schedt
-	newprocs   int32
+	// 所有m的链表
+	// Linked-list of all Ms. Written under sched.lock, read atomically.
+	allm *m
+
+	gomaxprocs    int32 // 最大proc个数
+	numCPUStartup int32
+	forcegc       forcegcstate
+	sched         schedt // 全局资源管理器
+	newprocs      int32 // 当前proc个数
 )
 
 var (
@@ -1307,7 +1452,7 @@ var (
 	// be atomic. Length may change at safe points.
 	//
 	// Each P must update only its own bit. In order to maintain
-	// consistency, a P going idle must the idle mask simultaneously with
+	// consistency, a P going idle must set the idle mask simultaneously with
 	// updates to the idle P list under the sched.lock, otherwise a racing
 	// pidleget may clear the mask before pidleput sets the mask,
 	// corrupting the bitmap.

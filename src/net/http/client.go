@@ -181,8 +181,13 @@ func refererForURL(lastReq, newReq *url.URL, explicitRef string) string {
 // send 发送请求 接收响应
 // didTimeout is non-nil only if err != nil.
 func (c *Client) send(req *Request, deadline time.Time) (resp *Response, didTimeout func() bool, err error) {
+	cookieURL := req.URL
+	if req.Host != "" {
+		cookieURL = cloneURL(cookieURL)
+		cookieURL.Host = req.Host
+	}
 	if c.Jar != nil {
-		for _, cookie := range c.Jar.Cookies(req.URL) {
+		for _, cookie := range c.Jar.Cookies(cookieURL) {
 			// 填充cookie
 			req.AddCookie(cookie)
 		}
@@ -194,7 +199,7 @@ func (c *Client) send(req *Request, deadline time.Time) (resp *Response, didTime
 	if c.Jar != nil {
 		if rc := resp.Cookies(); len(rc) > 0 {
 			// 设置cookie
-			c.Jar.SetCookies(req.URL, rc)
+			c.Jar.SetCookies(cookieURL, rc)
 		}
 	}
 	return resp, nil, nil
@@ -708,6 +713,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 					resp.closeBody()
 					return nil, uerr(err)
 				}
+				req.GetBody = ireq.GetBody
 				req.ContentLength = ireq.ContentLength
 			}
 
@@ -720,8 +726,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 					stripSensitiveHeaders = true
 				}
 			}
-			copyHeaders(req, stripSensitiveHeaders)
-
+			copyHeaders(req, stripSensitiveHeaders, !includeBody)
 			// Add the Referer header from the most recent
 			// request URL to the new one, if it's not https->http:
 			if ref := refererForURL(reqs[len(reqs)-1].URL, req.URL, req.Header.Get("Referer")); ref != "" {
@@ -793,7 +798,7 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 // makeHeadersCopier makes a function that copies headers from the
 // initial Request, ireq. For every redirect, this function must be called
 // so that it can copy headers into the upcoming Request.
-func (c *Client) makeHeadersCopier(ireq *Request) func(req *Request, stripSensitiveHeaders bool) {
+func (c *Client) makeHeadersCopier(ireq *Request) func(req *Request, stripSensitiveHeaders, stripBodyHeaders bool) {
 	// The headers to copy are from the very initial request.
 	// We use a closured callback to keep a reference to these original headers.
 	var (
@@ -808,7 +813,7 @@ func (c *Client) makeHeadersCopier(ireq *Request) func(req *Request, stripSensit
 		}
 	}
 
-	return func(req *Request, stripSensitiveHeaders bool) {
+	return func(req *Request, stripSensitiveHeaders, stripBodyHeaders bool) {
 		// 把cookie和header填充进去
 		// 如果存在Jar，并且通过请求标头提供了一些初始Cookie，那么在进行重定向时，
 		// 我们可能需要更改初始Cookie，因为每次重定向最终都可能会修改先前存在的Cookie。
@@ -852,11 +857,21 @@ func (c *Client) makeHeadersCopier(ireq *Request) func(req *Request, stripSensit
 		// (at least the safe ones).
 		for k, vv := range ireqhdr {
 			sensitive := false
+			body := false
 			switch CanonicalHeaderKey(k) {
-			case "Authorization", "Www-Authenticate", "Cookie", "Cookie2":
+			case "Authorization", "Www-Authenticate", "Cookie", "Cookie2",
+				"Proxy-Authorization", "Proxy-Authenticate":
 				sensitive = true
+
+			case "Content-Encoding", "Content-Language", "Content-Location",
+				"Content-Type":
+				// Headers relating to the body which is removed for
+				// POST to GET redirects
+				// https://fetch.spec.whatwg.org/#http-redirect-fetch
+				body = true
+
 			}
-			if !(sensitive && stripSensitiveHeaders) {
+			if !(sensitive && stripSensitiveHeaders) && !(body && stripBodyHeaders) {
 				req.Header[k] = vv
 			}
 		}

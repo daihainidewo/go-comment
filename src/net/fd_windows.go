@@ -233,9 +233,29 @@ func (fd *netFD) accept() (*netFD, error) {
 	return netfd, nil
 }
 
-// Unimplemented functions.
+// Defined in os package.
+func newWindowsFile(h syscall.Handle, name string) *os.File
 
 func (fd *netFD) dup() (*os.File, error) {
-	// TODO: Implement this, perhaps using internal/poll.DupCloseOnExec.
-	return nil, syscall.EWINDOWS
+	// Disassociate the IOCP from the socket,
+	// it is not safe to share a duplicated handle
+	// that is associated with IOCP.
+	if err := fd.pfd.DisassociateIOCP(); err != nil {
+		return nil, err
+	}
+	var h syscall.Handle
+	var syserr error
+	err := fd.pfd.RawControl(func(fd uintptr) {
+		h, syserr = dupSocket(syscall.Handle(fd))
+	})
+	if err != nil {
+		err = syserr
+	}
+	if err != nil {
+		return nil, err
+	}
+	// All WSASocket calls must be match with a syscall.Closesocket call,
+	// but os.NewFile calls syscall.CloseHandle instead. We need to use
+	// a hidden function so that the returned file is aware of this fact.
+	return newWindowsFile(h, fd.name()), nil
 }

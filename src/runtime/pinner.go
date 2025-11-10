@@ -108,7 +108,7 @@ func pinnerGetPtr(i *any) unsafe.Pointer {
 	if etyp == nil {
 		panic(errorString("runtime.Pinner: argument is nil"))
 	}
-	if kind := etyp.Kind_ & abi.KindMask; kind != abi.Pointer && kind != abi.UnsafePointer {
+	if kind := etyp.Kind(); kind != abi.Pointer && kind != abi.UnsafePointer {
 		panic(errorString("runtime.Pinner: argument is not a pointer: " + toRType(etyp).string()))
 	}
 	if inUserArenaChunk(uintptr(e.data)) {
@@ -143,8 +143,8 @@ func isPinned(ptr unsafe.Pointer) bool {
 }
 
 // setPinned marks or unmarks a Go pointer as pinned, when the ptr is a Go pointer.
-// It will be ignored while try to pin a non-Go pointer,
-// and it will be panic while try to unpin a non-Go pointer,
+// It will be ignored while trying to pin a non-Go pointer.
+// It will panic while trying to unpin a non-Go pointer,
 // which should not happen in normal usage.
 func setPinned(ptr unsafe.Pointer, pin bool) bool {
 	span := spanOfHeap(uintptr(ptr))

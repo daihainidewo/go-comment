@@ -6,7 +6,9 @@ package runtime
 
 import (
 	"internal/goarch"
+	"internal/goexperiment"
 	"internal/runtime/atomic"
+	"internal/runtime/gc"
 	"internal/runtime/sys"
 	"unsafe"
 )
@@ -33,13 +35,38 @@ func init() {
 // Garbage collector work pool abstraction.
 //
 // This implements a producer/consumer model for pointers to grey
-// objects. A grey object is one that is marked and on a work
-// queue. A black object is marked and not on a work queue.
+// objects.
+//
+// For objects in workbufs, a grey object is one that is marked and
+// on a work queue. A black object is marked and not on a work queue.
+//
+// For objects in the span queue, a grey object is one that is marked
+// and has an unset scan bit. A black object is marked and has its scan
+// bit set. (Green Tea GC only.)
 //
 // Write barriers, root discovery, stack scanning, and object scanning
 // produce pointers to grey objects. Scanning consumes pointers to
 // grey objects, thus blackening them, and then scans them,
 // potentially producing new pointers to grey objects.
+//
+// Work queues must be prioritized in the following order wherever work
+// is processed.
+//
+// +----------------------------------------------------------+
+// | Priority | Work queue | Restrictions | Function          |
+// |----------------------------------------------------------|
+// | 1        | Workbufs   | P-local      | tryGetObjFast     |
+// | 2        | Span queue | P-local      | tryGetSpanFast    | [greenteagc]
+// | 3        | Workbufs   | None         | tryGetObj         |
+// | 4        | Span queue | None         | tryGetSpan        | [greenteagc]
+// | 5        | Span queue | None         | tryStealSpan      | [greenteagc]
+// +----------------------------------------------------------+
+//
+// The rationale behind this ordering comes from two insights:
+// 1. It's always preferable to look for P-local work first to avoid hammering on
+//    global lists.
+// 2. It's always preferable to scan individual objects first to increase the
+//    likelihood that spans will accumulate more objects to scan.
 
 // gcWork 提供生产消费的 GC 功能
 // 抢占标记为 disabled
@@ -63,6 +90,8 @@ func init() {
 // gcWork may locally hold GC work buffers. This can be done by
 // disabling preemption (systemstack or acquirem).
 type gcWork struct {
+	id int32 // same ID as the parent P
+
 	// wbuf1 和 wbuf2 是主要和次要的工作buffer
 	// wbuf1 始终是 push pop 的缓冲
 	// wbuf2 是将要丢弃的缓冲
@@ -86,6 +115,14 @@ type gcWork struct {
 	//
 	// Invariant: Both wbuf1 and wbuf2 are nil or neither are.
 	wbuf1, wbuf2 *workbuf
+
+	// spanq is a queue of spans to process.
+	//
+	// Only used if goexperiment.GreenTeaGC.
+	spanq spanQueue
+
+	// ptrBuf is a temporary buffer used by span scanning.
+	ptrBuf *[pageSize / goarch.PtrSize]uintptr
 
 	// 此 gcWork 上标记变黑的字节
 	// 这由 dispose 聚合到 bytesMarked 中
@@ -111,6 +148,15 @@ type gcWork struct {
 	// termination check. Specifically, this indicates that this
 	// gcWork may have communicated work to another gcWork.
 	flushedWork bool
+
+	// mayNeedWorker is a hint that we may need to spin up a new
+	// worker, and that gcDrain* should call enlistWorker. This flag
+	// is set only if goexperiment.GreenTeaGC. If !goexperiment.GreenTeaGC,
+	// enlistWorker is called directly instead.
+	mayNeedWorker bool
+
+	// stats are scan stats broken down by size class.
+	stats [gc.NumSizeClasses]sizeClassScanStats
 }
 
 // gcWork 的大部分方法都是 go:nowritebarrierrec
@@ -138,13 +184,13 @@ func (w *gcWork) init() {
 	w.wbuf2 = wbuf2
 }
 
-// put 将指针入队以便 GC 跟踪
+// putObj 将指针入队以便 GC 跟踪
 // obj 必须指向堆对象或者 oblet
-// put enqueues a pointer for the garbage collector to trace.
+// putObj enqueues a pointer for the garbage collector to trace.
 // obj must point to the beginning of a heap object or an oblet.
 //
 //go:nowritebarrierrec
-func (w *gcWork) put(obj uintptr) {
+func (w *gcWork) putObj(obj uintptr) {
 	flushed := false
 	wbuf := w.wbuf1
 	// Record that this may acquire the wbufSpans or heap lock to
@@ -179,18 +225,22 @@ func (w *gcWork) put(obj uintptr) {
 	// the end of put so that w is in a consistent state, since
 	// enlistWorker may itself manipulate w.
 	if flushed && gcphase == _GCmark {
-		// 刷新并且 GC 标记阶段
-		// 尝试唤醒一个 GC worker
-		gcController.enlistWorker()
+		if goexperiment.GreenTeaGC {
+			w.mayNeedWorker = true
+		} else {
+			// 刷新并且 GC 标记阶段
+			// 尝试唤醒一个 GC worker
+			gcController.enlistWorker()
+		}
 	}
 }
 
-// putFast 返回对象是否存入 workbuf
-// putFast does a put and reports whether it can be done quickly
+// putObjFast 返回对象是否存入 workbuf
+// putObjFast does a put and reports whether it can be done quickly
 // otherwise it returns false and the caller needs to call put.
 //
 //go:nowritebarrierrec
-func (w *gcWork) putFast(obj uintptr) bool {
+func (w *gcWork) putObjFast(obj uintptr) bool {
 	wbuf := w.wbuf1
 	if wbuf == nil || wbuf.nobj == len(wbuf.obj) {
 		return false
@@ -201,12 +251,12 @@ func (w *gcWork) putFast(obj uintptr) bool {
 	return true
 }
 
-// putBatch 批量存放指针对象
-// putBatch performs a put on every pointer in obj. See put for
+// putObjBatch 批量存放指针对象
+// putObjBatch performs a put on every pointer in obj. See put for
 // constraints on these pointers.
 //
 //go:nowritebarrierrec
-func (w *gcWork) putBatch(obj []uintptr) {
+func (w *gcWork) putObjBatch(obj []uintptr) {
 	if len(obj) == 0 {
 		return
 	}
@@ -235,21 +285,25 @@ func (w *gcWork) putBatch(obj []uintptr) {
 	}
 
 	if flushed && gcphase == _GCmark {
-		// 刷新且在 GC 标记阶段
-		// 尝试启动一个 GC worker
-		gcController.enlistWorker()
+		if goexperiment.GreenTeaGC {
+			w.mayNeedWorker = true
+		} else {
+			// 刷新且在 GC 标记阶段
+			// 尝试启动一个 GC worker
+			gcController.enlistWorker()
+		}
 	}
 }
 
-// tryGet 出队一个指针用于 GC 跟踪
-// tryGet dequeues a pointer for the garbage collector to trace.
+// tryGetObj 出队一个指针用于 GC 跟踪
+// tryGetObj dequeues a pointer for the garbage collector to trace.
 //
 // If there are no pointers remaining in this gcWork or in the global
 // queue, tryGet returns 0.  Note that there may still be pointers in
 // other gcWork instances or other caches.
 //
 //go:nowritebarrierrec
-func (w *gcWork) tryGet() uintptr {
+func (w *gcWork) tryGetObj() uintptr {
 	wbuf := w.wbuf1
 	if wbuf == nil {
 		w.init()
@@ -282,14 +336,14 @@ func (w *gcWork) tryGet() uintptr {
 	return wbuf.obj[wbuf.nobj]
 }
 
-// tryGetFast 类似 tryGet
+// tryGetObjFast 类似 tryGet
 // wbuf1 有可以用就返回 没有就返回 0
-// tryGetFast dequeues a pointer for the garbage collector to trace
+// tryGetObjFast dequeues a pointer for the garbage collector to trace
 // if one is readily available. Otherwise it returns 0 and
 // the caller is expected to call tryGet().
 //
 //go:nowritebarrierrec
-func (w *gcWork) tryGetFast() uintptr {
+func (w *gcWork) tryGetObjFast() uintptr {
 	wbuf := w.wbuf1
 	if wbuf == nil || wbuf.nobj == 0 {
 		// wbuf1 为空
@@ -333,6 +387,20 @@ func (w *gcWork) dispose() {
 			w.flushedWork = true
 		}
 		w.wbuf2 = nil
+	}
+	if !w.spanq.empty() {
+		w.spanq.flush() // Flush any local work.
+
+		// There's globally-visible work now, so make everyone aware of it.
+		//
+		// Note that we need to make everyone aware even if flush didn't
+		// flush any local work. The global work was always visible, but
+		// the bitmap bit may have been unset.
+		//
+		// See the comment in tryStealSpan, which explains how it relies
+		// on this behavior.
+		work.spanqMask.set(w.id)
+		w.flushedWork = true
 	}
 	if w.bytesMarked != 0 {
 		// 将当前 w 标记完成的字节添加到 work
@@ -378,9 +446,13 @@ func (w *gcWork) balance() {
 	}
 	// We flushed a buffer to the full list, so wake a worker.
 	if gcphase == _GCmark {
-		// 标记阶段
-		// 尝试唤醒一个 GC worker 清理 full
-		gcController.enlistWorker()
+		if goexperiment.GreenTeaGC {
+			w.mayNeedWorker = true
+		} else {
+			// 标记阶段
+			// 尝试唤醒一个 GC worker 清理 full
+			gcController.enlistWorker()
+		}
 	}
 }
 
@@ -389,7 +461,7 @@ func (w *gcWork) balance() {
 //
 //go:nowritebarrierrec
 func (w *gcWork) empty() bool {
-	return w.wbuf1 == nil || (w.wbuf1.nobj == 0 && w.wbuf2.nobj == 0)
+	return (w.wbuf1 == nil || (w.wbuf1.nobj == 0 && w.wbuf2.nobj == 0)) && w.spanq.empty()
 }
 
 // GC 工作池保存在工作缓冲区的数组中

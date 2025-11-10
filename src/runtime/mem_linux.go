@@ -197,3 +197,7 @@ func sysMapOS(v unsafe.Pointer, n uintptr, vmaName string) {
 		sysNoHugePageOS(v, n)
 	}
 }
+
+func needZeroAfterSysUnusedOS() bool {
+	return debug.madvdontneed == 0
+}

@@ -108,7 +108,7 @@ func (ci *Frames) Next() (frame Frame, more bool) {
 		}
 		funcInfo := findfunc(pc)
 		if !funcInfo.valid() {
-			if cgoSymbolizer != nil {
+			if cgoSymbolizerAvailable() {
 				// Pre-expand cgo frames. We could do this
 				// incrementally, too, but there's no way to
 				// avoid allocation in this case anyway.
@@ -295,6 +295,8 @@ func runtime_expandFinalInlineFrame(stk []uintptr) []uintptr {
 // expandCgoFrames expands frame information for pc, known to be
 // a non-Go function, using the cgoSymbolizer hook. expandCgoFrames
 // returns nil if pc could not be expanded.
+//
+// Preconditions: cgoSymbolizerAvailable returns true.
 func expandCgoFrames(pc uintptr) []Frame {
 	arg := cgoSymbolizerArg{pc: pc}
 	callCgoSymbolizer(&arg)
@@ -376,13 +378,19 @@ func (f *_func) funcInfo() funcInfo {
 
 // pcHeader holds data used by the pclntab lookups.
 type pcHeader struct {
-	magic          uint32  // 0xFFFFFFF1
-	pad1, pad2     uint8   // 0,0
-	minLC          uint8   // min instruction size
-	ptrSize        uint8   // size of a ptr in bytes
-	nfunc          int     // number of functions in the module
-	nfiles         uint    // number of entries in the file tab
-	textStart      uintptr // base for function entry PC offsets in this module, equal to moduledata.text
+	magic      uint32 // 0xFFFFFFF1
+	pad1, pad2 uint8  // 0,0
+	minLC      uint8  // min instruction size
+	ptrSize    uint8  // size of a ptr in bytes
+	nfunc      int    // number of functions in the module
+	nfiles     uint   // number of entries in the file tab
+
+	// The next field used to be textStart. This is no longer stored
+	// as it requires a relocation. Code should use the moduledata text
+	// field instead. This unused field can be removed in coordination
+	// with Delve.
+	_ uintptr
+
 	funcnameOffset uintptr // offset to the funcnametab variable from pcHeader
 	cuOffset       uintptr // offset to the cutab variable from pcHeader
 	filetabOffset  uintptr // offset to the filetab variable from pcHeader
@@ -627,10 +635,9 @@ func moduledataverify1(datap *moduledata) {
 	// Check that the pclntab's format is valid.
 	hdr := datap.pcHeader
 	if hdr.magic != 0xfffffff1 || hdr.pad1 != 0 || hdr.pad2 != 0 ||
-		hdr.minLC != sys.PCQuantum || hdr.ptrSize != goarch.PtrSize || hdr.textStart != datap.text {
+		hdr.minLC != sys.PCQuantum || hdr.ptrSize != goarch.PtrSize {
 		println("runtime: pcHeader: magic=", hex(hdr.magic), "pad1=", hdr.pad1, "pad2=", hdr.pad2,
-			"minLC=", hdr.minLC, "ptrSize=", hdr.ptrSize, "pcHeader.textStart=", hex(hdr.textStart),
-			"text=", hex(datap.text), "pluginpath=", datap.pluginpath)
+			"minLC=", hdr.minLC, "ptrSize=", hdr.ptrSize, "pluginpath=", datap.pluginpath)
 		throw("invalid function symbol table")
 	}
 
@@ -658,8 +665,15 @@ func moduledataverify1(datap *moduledata) {
 
 	min := datap.textAddr(datap.ftab[0].entryoff)
 	max := datap.textAddr(datap.ftab[nftab].entryoff)
-	if datap.minpc != min || datap.maxpc != max {
-		println("minpc=", hex(datap.minpc), "min=", hex(min), "maxpc=", hex(datap.maxpc), "max=", hex(max))
+	minpc := datap.minpc
+	maxpc := datap.maxpc
+	if GOARCH == "wasm" {
+		// On Wasm, the func table contains the function index, whereas
+		// the "PC" is function index << 16 + block index.
+		maxpc = alignUp(maxpc, 1<<16) // round up for end PC
+	}
+	if minpc != min || maxpc != max {
+		println("minpc=", hex(minpc), "min=", hex(min), "maxpc=", hex(maxpc), "max=", hex(max))
 		throw("minpc or maxpc invalid")
 	}
 
@@ -707,6 +721,11 @@ func (md *moduledata) textAddr(off32 uint32) uintptr {
 			throw("runtime: text offset out of range")
 		}
 	}
+	if GOARCH == "wasm" {
+		// On Wasm, a text offset (e.g. in the method table) is function index, whereas
+		// the "PC" is function index << 16 + block index.
+		res <<= 16
+	}
 	return res
 }
 
@@ -719,8 +738,17 @@ func (md *moduledata) textAddr(off32 uint32) uintptr {
 //
 //go:nosplit
 func (md *moduledata) textOff(pc uintptr) (uint32, bool) {
-	res := uint32(pc - md.text)
+	off := pc - md.text
+	if GOARCH == "wasm" {
+		// On Wasm, the func table contains the function index, whereas
+		// the "PC" is function index << 16 + block index.
+		off >>= 16
+	}
+	res := uint32(off)
 	if len(md.textsectmap) > 1 {
+		if GOARCH == "wasm" {
+			fatal("unexpected multiple text sections on Wasm")
+		}
 		for i, sect := range md.textsectmap {
 			if sect.baseaddr > pc {
 				// pc is not in any section.
@@ -930,6 +958,11 @@ func findfunc(pc uintptr) funcInfo {
 	}
 
 	x := uintptr(pcOff) + datap.text - datap.minpc // TODO: are datap.text and datap.minpc always equal?
+	if GOARCH == "wasm" {
+		// On Wasm, pcOff is the function index, whereas
+		// the "PC" is function index << 16 + block index.
+		x = uintptr(pcOff)<<16 + datap.text - datap.minpc
+	}
 	// b 在哪个 bucket
 	// i 在哪个 subbucket
 	b := x / abi.FuncTabBucketSize
@@ -1016,6 +1049,9 @@ func pcvalue(f funcInfo, off uint32, targetpc uintptr, strict bool) (int32, uint
 	// matches the cached contents.
 	const debugCheckCache = false
 
+	// If true, skip checking the cache entirely.
+	const skipCache = false
+
 	if off == 0 {
 		return -1, 0
 	}
@@ -1026,7 +1062,7 @@ func pcvalue(f funcInfo, off uint32, targetpc uintptr, strict bool) (int32, uint
 	var checkVal int32
 	var checkPC uintptr
 	ck := pcvalueCacheKey(targetpc)
-	{
+	if !skipCache {
 		mp := acquirem()
 		cache := &mp.pcvalueCache
 		// The cache can be used by the signal handler on this M. Avoid

@@ -7,7 +7,7 @@
 package poll
 
 import (
-	"internal/itoa"
+	"internal/strconv"
 	"internal/syscall/unix"
 	"io"
 	"sync/atomic"
@@ -49,10 +49,6 @@ type FD struct {
 	// 是否是文件流
 	// Whether this is a file rather than a network socket.
 	isFile bool
-}
-
-func (fd *FD) initIO() error {
-	return nil
 }
 
 // Init 初始化FD，FD.Sysfd 必须已经设置，可以重复设置
@@ -392,7 +388,7 @@ func (fd *FD) Write(p []byte) (int, error) {
 				// If we don't check this we will panic
 				// with slice bounds out of range.
 				// Use a more informative panic.
-				panic("invalid return from write: got " + itoa.Itoa(n) + " from a write of " + itoa.Itoa(max-nn))
+				panic("invalid return from write: got " + strconv.Itoa(n) + " from a write of " + strconv.Itoa(max-nn))
 			}
 			nn += n
 		}

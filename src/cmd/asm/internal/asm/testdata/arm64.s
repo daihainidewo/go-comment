@@ -630,6 +630,8 @@ TEXT	foo(SB), DUPOK|NOSPLIT, $-8
 	FMOVS	F1, 0x44332211(R2)	// FMOVS	F1, 1144201745(R2)
 	FMOVD	F1, 0x1007000(R2)	// FMOVD	F1, 16805888(R2)
 	FMOVD	F1, 0x44332211(R2)	// FMOVD	F1, 1144201745(R2)
+	FMOVQ	F1, 0x1003000(R2)	// FMOVQ	F1, 16789504(R2)
+	FMOVQ	F1, 0x44332211(R2)	// FMOVQ	F1, 1144201745(R2)
 
 	MOVB	0x1000000(R1), R2	// MOVB		16777216(R1), R2
 	MOVB	0x44332211(R1), R2	// MOVB		1144201745(R1), R2
@@ -643,6 +645,8 @@ TEXT	foo(SB), DUPOK|NOSPLIT, $-8
 	FMOVS	0x44332211(R1), F2	// FMOVS	1144201745(R1), F2
 	FMOVD	0x1000000(R1), F2	// FMOVD	16777216(R1), F2
 	FMOVD	0x44332211(R1), F2	// FMOVD	1144201745(R1), F2
+	FMOVQ	0x1000000(R1), F2	// FMOVQ	16777216(R1), F2
+	FMOVQ	0x44332211(R1), F2	// FMOVQ	1144201745(R1), F2
 
 // shifted or extended register offset.
 	MOVD	(R2)(R6.SXTW), R4               // 44c866f8
@@ -1893,5 +1897,13 @@ next:
 	BTI	C                                  // 5f2403d5
 	BTI	J                                  // 9f2403d5
 	BTI	JC                                 // df2403d5
+
+// Pointer Authentication Codes (PAC)
+	PACIASP                                    // 3f2303d5
+	AUTIASP                                    // bf2303d5
+	PACIBSP                                    // 7f2303d5
+	AUTIBSP                                    // ff2303d5
+	AUTIA1716                                  // 9f2103d5
+	AUTIB1716                                  // df2103d5
 
 	END
