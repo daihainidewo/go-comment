@@ -461,7 +461,7 @@ func bogoShim() {
 			}
 
 			if *expectVersion != 0 && cs.Version != uint16(*expectVersion) {
-				log.Fatalf("expected ssl version %q, got %q", uint16(*expectVersion), cs.Version)
+				log.Fatalf("expected ssl version %d, got %d", *expectVersion, cs.Version)
 			}
 			if *declineALPN && cs.NegotiatedProtocol != "" {
 				log.Fatal("unexpected ALPN protocol")
@@ -476,11 +476,11 @@ func bogoShim() {
 				log.Fatal("did not expect ECH, but it was accepted")
 			}
 
-			if *expectHRR && !cs.testingOnlyDidHRR {
+			if *expectHRR && !cs.HelloRetryRequest {
 				log.Fatal("expected HRR but did not do it")
 			}
 
-			if *expectNoHRR && cs.testingOnlyDidHRR {
+			if *expectNoHRR && cs.HelloRetryRequest {
 				log.Fatal("expected no HRR but did do it")
 			}
 
@@ -542,7 +542,6 @@ func orderlyShutdown(tlsConn *Conn) {
 }
 
 func TestBogoSuite(t *testing.T) {
-	testenv.MustHaveGoBuild(t)
 	if testing.Short() {
 		t.Skip("skipping in short mode")
 	}
@@ -589,10 +588,8 @@ func TestBogoSuite(t *testing.T) {
 	}
 
 	cmd := testenv.Command(t, testenv.GoToolPath(t), args...)
-	out := &strings.Builder{}
-	cmd.Stderr = out
 	cmd.Dir = filepath.Join(bogoDir, "ssl/test/runner")
-	err = cmd.Run()
+	out, err := cmd.CombinedOutput()
 	// NOTE: we don't immediately check the error, because the failure could be either because
 	// the runner failed for some unexpected reason, or because a test case failed, and we
 	// cannot easily differentiate these cases. We check if the JSON results file was written,
@@ -707,7 +704,6 @@ func ensureLocalBogo(t *testing.T, localBogoDir string) {
 	}
 
 	t.Logf("using fresh local bogo checkout from %q", localBogoDir)
-	return
 }
 
 func generateReport(results bogoResults, outPath string) error {

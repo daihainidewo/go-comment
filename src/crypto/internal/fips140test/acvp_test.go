@@ -23,7 +23,7 @@ import (
 	"bytes"
 	"crypto/elliptic"
 	"crypto/internal/cryptotest"
-	"crypto/internal/entropy/v1.0.0"
+	entropy "crypto/internal/entropy/v1.0.0"
 	"crypto/internal/fips140"
 	"crypto/internal/fips140/aes"
 	"crypto/internal/fips140/aes/gcm"
@@ -120,46 +120,6 @@ const (
 )
 
 var (
-	// SHA2 algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-sha.html#section-7.2
-	// SHA3 and SHAKE algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-sha3.html#name-sha3-and-shake-algorithm-ca
-	// cSHAKE algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-xof.html#section-7.2
-	// HMAC algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-fussell-acvp-mac.html#section-7
-	// PBKDF2 algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-pbkdf.html#section-7.3
-	// ML-KEM algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-ml-kem.html#section-7.3
-	// HMAC DRBG algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-vassilev-acvp-drbg.html#section-7.2
-	// EDDSA algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-eddsa.html#section-7
-	// ECDSA and DetECDSA algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-fussell-acvp-ecdsa.html#section-7
-	// AES algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-symmetric.html#section-7.3
-	// HKDF KDA algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-hammett-acvp-kas-kdf-hkdf.html#section-7.3
-	// OneStepNoCounter KDA algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-hammett-acvp-kas-kdf-onestepnocounter.html#section-7.2
-	// TLS 1.2 KDF algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-kdf-tls.html#section-7.2
-	// TLS 1.3 KDF algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-hammett-acvp-kdf-tls-v1.3.html#section-7.2
-	// SSH KDF algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-kdf-ssh.html#section-7.2
-	// ECDH algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-hammett-acvp-kas-ssc-ecc.html#section-7.3
-	// HMAC DRBG and CTR DRBG algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-vassilev-acvp-drbg.html#section-7.2
-	// KDF-Counter and KDF-Feedback algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-kbkdf.html#section-7.3
-	// RSA algorithm capabilities:
-	//   https://pages.nist.gov/ACVP/draft-celi-acvp-rsa.html#section-7.3
-	//go:embed acvp_capabilities.json
-	capabilitiesJson []byte
 
 	// Separate capabilities specific to testing the entropy source's SHA2-384 implementation.
 	// This implementation differs from the FIPS module's SHA2-384 in its supported input sizes.
@@ -2147,9 +2107,9 @@ func TestACVP(t *testing.T) {
 
 	const (
 		bsslModule    = "boringssl.googlesource.com/boringssl.git"
-		bsslVersion   = "v0.0.0-20250207174145-0bb19f6126cb"
-		goAcvpModule  = "github.com/cpu/go-acvp"
-		goAcvpVersion = "v0.0.0-20250126154732-de1ba727a0be"
+		bsslVersion   = "v0.0.0-20251111011041-baaf868e6e8f"
+		goAcvpModule  = "github.com/geomys/acvp-testdata"
+		goAcvpVersion = "v0.0.0-20251201200548-d893de8b8b1c"
 	)
 
 	// In crypto/tls/bogo_shim_test.go the test is skipped if run on a builder with runtime.GOOS == "windows"
@@ -2157,7 +2117,7 @@ func TestACVP(t *testing.T) {
 
 	// Stat the acvp test config file so the test will be re-run if it changes, invalidating cached results
 	// from the old config.
-	if _, err := os.Stat("acvp_test.config.json"); err != nil {
+	if _, err := os.Stat(testConfigFile); err != nil {
 		t.Fatalf("failed to stat config file: %s", err)
 	}
 
@@ -2168,16 +2128,13 @@ func TestACVP(t *testing.T) {
 
 	// Build the acvptool binary.
 	toolPath := filepath.Join(t.TempDir(), "acvptool.exe")
-	goTool := testenv.GoToolPath(t)
-	cmd := testenv.Command(t, goTool,
+	cmd := testenv.Command(t, testenv.GoToolPath(t),
 		"build",
 		"-o", toolPath,
 		"./util/fipstools/acvp/acvptool")
 	cmd.Dir = bsslDir
-	out := &strings.Builder{}
-	cmd.Stderr = out
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to build acvptool: %s\n%s", err, out.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build acvptool: %s\n%s", err, out)
 	}
 
 	// Similarly, fetch the ACVP data module that has vectors/expected answers.
@@ -2187,7 +2144,7 @@ func TestACVP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to fetch cwd: %s", err)
 	}
-	configPath := filepath.Join(cwd, "acvp_test.config.json")
+	configPath := filepath.Join(cwd, testConfigFile)
 	t.Logf("running check_expected.go\ncwd: %q\ndata_dir: %q\nconfig: %q\ntool: %q\nmodule-wrapper: %q\n",
 		cwd, dataDir, configPath, toolPath, os.Args[0])
 
@@ -2199,21 +2156,21 @@ func TestACVP(t *testing.T) {
 		filepath.Join(bsslDir, "util/fipstools/acvp/acvptool/test/check_expected.go"),
 		"-tool",
 		toolPath,
-		// Note: module prefix must match Wrapper value in acvp_test.config.json.
+		// Note: module prefix must match Wrapper value in testConfigFile.
 		"-module-wrappers", "go:" + os.Args[0],
 		"-tests", configPath,
 	}
-	cmd = testenv.Command(t, goTool, args...)
+	cmd = testenv.Command(t, testenv.GoToolPath(t), args...)
 	cmd.Dir = dataDir
 	cmd.Env = append(os.Environ(),
 		"ACVP_WRAPPER=1",
 		"GODEBUG=fips140=on",
 	)
-	output, err := cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	t.Logf("\n%s", out)
 	if err != nil {
-		t.Fatalf("failed to run acvp tests: %s\n%s", err, string(output))
+		t.Fatalf("failed to run acvp tests: %s", err)
 	}
-	t.Log(string(output))
 }
 
 func TestTooFewArgs(t *testing.T) {

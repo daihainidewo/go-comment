@@ -44,7 +44,7 @@ func newScriptEngine() *script.Engine {
 		return script.OnceCondition(summary, func() (bool, error) { return f(), nil })
 	}
 	add("bzr", lazyBool("the 'bzr' executable exists and provides the standard CLI", hasWorkingBzr))
-	add("git-min-vers", script.PrefixCondition("<suffix> indicates a minimum git version", hasAtLeastGitVersion))
+	add("git-sha256", script.OnceCondition("the local 'git' version is recent enough to support sha256 object/commit hashes", gitSupportsSHA256))
 
 	interrupt := func(cmd *exec.Cmd) error { return cmd.Process.Signal(os.Interrupt) }
 	gracePeriod := 30 * time.Second // arbitrary
@@ -398,7 +398,8 @@ func hasWorkingBzr() bool {
 	return err == nil
 }
 
-var gitVersLineExtract = regexp.MustCompile(`git version\s+([\d.]+)`)
+// Capture the major, minor and (optionally) patch version, but ignore anything later
+var gitVersLineExtract = regexp.MustCompile(`git version\s+(\d+\.\d+(?:\.\d+)?)`)
 
 func gitVersion() (string, error) {
 	gitOut, runErr := exec.Command("git", "version").CombinedOutput()
@@ -412,10 +413,14 @@ func gitVersion() (string, error) {
 	return "v" + string(matches[1]), nil
 }
 
-func hasAtLeastGitVersion(s *script.State, minVers string) (bool, error) {
+func hasAtLeastGitVersion(minVers string) (bool, error) {
 	gitVers, gitVersErr := gitVersion()
 	if gitVersErr != nil {
 		return false, gitVersErr
 	}
 	return semver.Compare(minVers, gitVers) <= 0, nil
+}
+
+func gitSupportsSHA256() (bool, error) {
+	return hasAtLeastGitVersion("v2.29")
 }

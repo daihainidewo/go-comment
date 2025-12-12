@@ -596,7 +596,7 @@ func (t *table) tombstones() uint16 {
 	return (t.capacity*maxAvgGroupLoad)/abi.MapGroupSlots - t.used - t.growthLeft
 }
 
-// Clear deletes all entries from the map resulting in an empty map.
+// Clear deletes all entries from the table resulting in an empty table.
 func (t *table) Clear(typ *abi.MapType) {
 	mgl := t.maxGrowthLeft()
 	if t.used == 0 && t.growthLeft == mgl { // no current entries and no tombstones
@@ -1260,8 +1260,10 @@ func (t *table) grow(typ *abi.MapType, m *Map, newCapacity uint16) {
 
 // probeSeq maintains the state for a probe sequence that iterates through the
 // groups in a table. The sequence is a triangular progression of the form
+// hash, hash + 1, hash + 1 + 2, hash + 1 + 2 + 3, ..., modulo mask + 1.
+// The i-th term of the sequence is
 //
-//	p(i) := (i^2 + i)/2 + hash (mod mask+1)
+//	p(i) := hash + (i^2 + i)/2 (mod mask+1)
 //
 // The sequence effectively outputs the indexes of *groups*. The group
 // machinery allows us to check an entire group with minimal branching.

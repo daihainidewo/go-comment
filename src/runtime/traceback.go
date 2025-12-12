@@ -8,6 +8,7 @@ import (
 	"internal/abi"
 	"internal/bytealg"
 	"internal/goarch"
+	"internal/runtime/pprof/label"
 	"internal/runtime/sys"
 	"internal/stringslite"
 	"unsafe"
@@ -1282,6 +1283,19 @@ func goroutineheader(gp *g) {
 	if bubble := gp.bubble; bubble != nil {
 		print(", synctest bubble ", bubble.id)
 	}
+	if gp.labels != nil && debug.tracebacklabels.Load() == 1 {
+		labels := (*label.Set)(gp.labels).List
+		if len(labels) > 0 {
+			print(" labels:{")
+			for i, kv := range labels {
+				print(quoted(kv.Key), ": ", quoted(kv.Value))
+				if i < len(labels)-1 {
+					print(", ")
+				}
+			}
+			print("}")
+		}
+	}
 	print("]:\n")
 }
 
@@ -1379,16 +1393,19 @@ func tracebackHexdump(stk stack, frame *stkframe, bad uintptr) {
 
 	// Print the hex dump.
 	print("stack: frame={sp:", hex(frame.sp), ", fp:", hex(frame.fp), "} stack=[", hex(stk.lo), ",", hex(stk.hi), ")\n")
-	hexdumpWords(lo, hi, func(p uintptr) byte {
-		switch p {
-		case frame.fp:
-			return '>'
-		case frame.sp:
-			return '<'
-		case bad:
-			return '!'
+	hexdumpWords(lo, hi-lo, func(p uintptr, m hexdumpMarker) {
+		if p == frame.fp {
+			m.start()
+			println("FP")
 		}
-		return 0
+		if p == frame.sp {
+			m.start()
+			println("SP")
+		}
+		if p == bad {
+			m.start()
+			println("bad")
+		}
 	})
 }
 

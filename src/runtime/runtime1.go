@@ -48,7 +48,7 @@ func gotraceback() (level int32, all, crash bool) {
 	t := atomic.Load(&traceback_cache)
 	// 根据当前设置 重新计算 是否 crash 和 all
 	crash = t&tracebackCrash != 0
-	all = gp.m.throwing >= throwTypeUser || t&tracebackAll != 0
+	all = gp.m.throwing > throwTypeUser || t&tracebackAll != 0
 	if gp.m.traceback != 0 {
 		// 优先使用 m 设置的等级
 		level = int32(gp.m.traceback)
@@ -372,6 +372,10 @@ var debug struct {
 	// but allowing it is convenient for testing and for programs
 	// that do an os.Setenv in main.init or main.main.
 	asynctimerchan atomic.Int32
+
+	// tracebacklabels controls the inclusion of goroutine labels in the
+	// goroutine status header line.
+	tracebacklabels atomic.Int32
 }
 
 var dbgvars = []*dbgVar{
@@ -406,6 +410,7 @@ var dbgvars = []*dbgVar{
 	{name: "traceallocfree", atomic: &debug.traceallocfree},
 	{name: "tracecheckstackownership", value: &debug.traceCheckStackOwnership},
 	{name: "tracebackancestors", value: &debug.tracebackancestors},
+	{name: "tracebacklabels", atomic: &debug.tracebacklabels, def: 0},
 	{name: "tracefpunwindoff", value: &debug.tracefpunwindoff},
 	{name: "updatemaxprocs", value: &debug.updatemaxprocs, def: 1},
 }

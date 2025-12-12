@@ -176,7 +176,11 @@ This analyzer finds declarations of functions of this form:
 and suggests a fix to turn them into inlinable wrappers around
 go1.26's built-in new(expr) function:
 
+	//go:fix inline
 	func varOf(x int) *int { return new(x) }
+
+(The directive comment causes the 'inline' analyzer to suggest
+that calls to such functions are inlined.)
 
 In addition, this analyzer suggests a fix for each call
 to one of the functions before it is transformed, so that
@@ -187,19 +191,26 @@ is replaced by:
 
 	use(new(123))
 
-(Wrapper functions such as varOf are common when working with Go
+Wrapper functions such as varOf are common when working with Go
 serialization packages such as for JSON or protobuf, where pointers
-are often used to express optionality.)
+are often used to express optionality.
 
 # Analyzer omitzero
 
 omitzero: suggest replacing omitempty with omitzero for struct fields
 
-The omitzero analyzer identifies uses of the `omitempty` JSON struct tag on
-fields that are themselves structs. The `omitempty` tag has no effect on
-struct-typed fields. The analyzer offers two suggestions: either remove the
+The omitzero analyzer identifies uses of the `omitempty` JSON struct
+tag on fields that are themselves structs. For struct-typed fields,
+the `omitempty` tag has no effect on the behavior of json.Marshal and
+json.Unmarshal. The analyzer offers two suggestions: either remove the
 tag, or replace it with `omitzero` (added in Go 1.24), which correctly
 omits the field if the struct value is zero.
+
+However, some other serialization packages (notably kubebuilder, see
+https://book.kubebuilder.io/reference/markers.html) may have their own
+interpretation of the `json:",omitzero"` tag, so removing it may affect
+program behavior. For this reason, the omitzero modernizer will not
+make changes in any package that contains +kubebuilder annotations.
 
 Replacing `omitempty` with `omitzero` is a change in behavior. The
 original code would always encode the struct field, whereas the
@@ -326,6 +337,44 @@ iterator offered by the same data type:
 	}
 
 where x is one of various well-known types in the standard library.
+
+# Analyzer stringscut
+
+stringscut: replace strings.Index etc. with strings.Cut
+
+This analyzer replaces certain patterns of use of [strings.Index] and string slicing by [strings.Cut], added in go1.18.
+
+For example:
+
+	idx := strings.Index(s, substr)
+	if idx >= 0 {
+	    return s[:idx]
+	}
+
+is replaced by:
+
+	before, _, ok := strings.Cut(s, substr)
+	if ok {
+	    return before
+	}
+
+And:
+
+	idx := strings.Index(s, substr)
+	if idx >= 0 {
+	    return
+	}
+
+is replaced by:
+
+	found := strings.Contains(s, substr)
+	if found {
+	    return
+	}
+
+It also handles variants using [strings.IndexByte] instead of Index, or the bytes package instead of strings.
+
+Fixes are offered only in cases in which there are no potential modifications of the idx, s, or substr expressions between their definition and use.
 
 # Analyzer stringscutprefix
 

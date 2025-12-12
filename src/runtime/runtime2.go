@@ -592,9 +592,12 @@ type g struct {
 	runnableTime    int64 // the amount of time spent runnable, cleared when running, only used when tracking
 	lockedm         muintptr
 	fipsIndicator   uint8
+	fipsOnlyBypass  bool
+	ditWanted       bool // set if g wants to be executed with DIT enabled
 	syncSafePoint   bool // set if g is stopped at a synchronous safe point.
 	runningCleanups atomic.Bool
 	sig             uint32
+	secret          int32 // current nesting of runtime/secret.Do calls.
 	writebuf        []byte
 	sigcode0        uintptr
 	sigcode1        uintptr
@@ -669,14 +672,15 @@ type m struct {
 
 	// Fields whose offsets are not known to debuggers.
 
-	procid     uint64            // for debuggers, but offset not hard-coded
-	gsignal    *g                // signal-handling g
-	goSigStack gsignalStack      // Go-allocated signal handling stack
-	sigmask    sigset            // storage for saved signal mask
-	tls        [tlsSlots]uintptr // thread-local storage (for x86 extern register)
-	mstartfn   func()
-	curg       *g       // current running goroutine
-	caughtsig  guintptr // goroutine running during fatal signal
+	procid       uint64            // for debuggers, but offset not hard-coded
+	gsignal      *g                // signal-handling g
+	goSigStack   gsignalStack      // Go-allocated signal handling stack
+	sigmask      sigset            // storage for saved signal mask
+	tls          [tlsSlots]uintptr // thread-local storage (for x86 extern register)
+	mstartfn     func()
+	curg         *g       // current running goroutine
+	caughtsig    guintptr // goroutine running during fatal signal
+	signalSecret uint32   // whether we have secret information in our signal stack
 
 	// p is the currently attached P for executing Go code, nil if not executing user Go code.
 	//
@@ -715,11 +719,13 @@ type m struct {
 	park            note
 	alllink         *m // on allm
 	schedlink       muintptr
+	idleNode        listNodeManual
 	lockedg         guintptr
 	createstack     [32]uintptr // stack that created this thread, it's used for StackRecord.Stack0, so it must align with it.
 	lockedExt       uint32      // tracking for external LockOSThread
 	lockedInt       uint32      // tracking for internal lockOSThread
 	mWaitList       mWaitList   // list of runtime lock waiters
+	ditEnabled      bool        // set if DIT is currently enabled on this M
 
 	mLockProfile mLockProfile // fields relating to runtime.lock contention
 	profStack    []uintptr    // used for memory/block/mutex stack traces
@@ -768,6 +774,9 @@ type m struct {
 	// Up to 10 locks held by this m, maintained by the lock ranking code.
 	locksHeldLen int
 	locksHeld    [10]heldLockInfo
+
+	// self points this M until mexit clears it to return nil.
+	self mWeakPointer
 }
 
 const mRedZoneSize = (16 << 3) * asanenabledBit // redZoneSize(2048)
@@ -782,6 +791,37 @@ type mPadded struct {
 	_ [(1 - goarch.IsWasm) * (2048 - mallocHeaderSize - mRedZoneSize - unsafe.Sizeof(m{}))]byte
 }
 
+// mWeakPointer is a "weak" pointer to an M. A weak pointer for each M is
+// available as m.self. Users may copy mWeakPointer arbitrarily, and get will
+// return the M if it is still live, or nil after mexit.
+//
+// The zero value is treated as a nil pointer.
+//
+// Note that get may race with M exit. A successful get will keep the m object
+// alive, but the M itself may be exited and thus not actually usable.
+type mWeakPointer struct {
+	m *atomic.Pointer[m]
+}
+
+func newMWeakPointer(mp *m) mWeakPointer {
+	w := mWeakPointer{m: new(atomic.Pointer[m])}
+	w.m.Store(mp)
+	return w
+}
+
+func (w mWeakPointer) get() *m {
+	if w.m == nil {
+		return nil
+	}
+	return w.m.Load()
+}
+
+// clear sets the weak pointer to nil. It cannot be used on zero value
+// mWeakPointers.
+func (w mWeakPointer) clear() {
+	w.m.Store(nil)
+}
+
 type p struct {
 	id          int32      // 编号
 	status      uint32     // one of pidle/prunning/...
@@ -793,6 +833,17 @@ type p struct {
 	mcache      *mcache    // mcache 内存管理
 	pcache      pageCache  // 页缓存
 	raceprocctx uintptr
+
+	// oldm is the previous m this p ran on.
+	//
+	// We are not assosciated with this m, so we have no control over its
+	// lifecycle. This value is an m.self object which points to the m
+	// until the m exits.
+	//
+	// Note that this m may be idle, running, or exiting. It should only be
+	// used with mgetSpecific, which will take ownership of the m only if
+	// it is idle.
+	oldm mWeakPointer
 
 	// 本地的defer对象池
 	deferpool    []*_defer // pool of available defer structs (see panic.go)
@@ -849,8 +900,8 @@ type p struct {
 	palloc persistentAlloc // per-P to avoid mutex
 
 	// Per-P GC state
-	gcAssistTime         int64 // Nanoseconds in assistAlloc
-	gcFractionalMarkTime int64 // Nanoseconds in fractional mark worker (atomic)
+	gcAssistTime         int64        // Nanoseconds in assistAlloc
+	gcFractionalMarkTime atomic.Int64 // Nanoseconds in fractional mark worker
 
 	// limiterEvent tracks events for the GC CPU limiter.
 	limiterEvent limiterEvent
@@ -864,6 +915,18 @@ type p struct {
 	// gcMarkWorkerStartTime is the nanotime() at which the most recent
 	// mark worker started.
 	gcMarkWorkerStartTime int64
+
+	// nextGCMarkWorker is the next mark worker to run. This may be set
+	// during start-the-world to assign a worker to this P. The P runs this
+	// worker on the next call to gcController.findRunnableGCWorker. If the
+	// P runs something else or stops, it must release this worker via
+	// gcController.releaseNextGCMarkWorker.
+	//
+	// See comment in gcBgMarkWorker about the lifetime of
+	// gcBgMarkWorkerNode.
+	//
+	// Only accessed by this P or during STW.
+	nextGCMarkWorker *gcBgMarkWorkerNode
 
 	// gcw 是 p 的 GC 工作缓冲区缓存
 	// 由写屏障填充 mutator 助手释放
@@ -936,7 +999,7 @@ type schedt struct {
 	// When increasing nmidle, nmidlelocked, nmsys, or nmfreed, be
 	// sure to call checkdead().
 
-	midle        muintptr // 空闲M队列 idle m's waiting for work
+	midle        listHeadManual // 空闲M队列 idle m's waiting for work
 	nmidle       int32    // 空闲M的个数 number of idle m's waiting for work
 	nmidlelocked int32    // 锁定状态的M个数 number of locked m's waiting for work
 	mnext        int64    // 下一个 M 的 id number of m's that have been created and next M ID
@@ -945,7 +1008,7 @@ type schedt struct {
 	nmfreed      int64    // 累计释放 M 的个数 cumulative number of freed m's
 
 	ngsys        atomic.Int32 // number of system goroutines
-	nGsyscallNoP atomic.Int32 // number of goroutines in syscalls without a P
+	nGsyscallNoP atomic.Int32 // number of goroutines in syscalls without a P but whose M is not isExtraInC
 
 	pidle        puintptr // idle p's
 	npidle       atomic.Int32
@@ -1472,9 +1535,9 @@ var (
 	// must be set. An idle P (passed to pidleput) cannot add new timers while
 	// idle, so if it has no timers at that time, its mask may be cleared.
 	//
-	// Thus, we get the following effects on timer-stealing in findrunnable:
+	// Thus, we get the following effects on timer-stealing in findRunnable:
 	//
-	//   - Idle Ps with no timers when they go idle are never checked in findrunnable
+	//   - Idle Ps with no timers when they go idle are never checked in findRunnable
 	//     (for work- or timer-stealing; this is the ideal case).
 	//   - Running Ps must always be checked.
 	//   - Idle Ps whose timers are stolen must continue to be checked until they run

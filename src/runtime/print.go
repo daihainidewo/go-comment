@@ -5,7 +5,6 @@
 package runtime
 
 import (
-	"internal/goarch"
 	"internal/strconv"
 	"unsafe"
 )
@@ -13,6 +12,10 @@ import (
 // The compiler knows that a print of a value of this type
 // should use printhex instead of printuint (decimal).
 type hex uint64
+
+// The compiler knows that a print of a value of this type should use
+// printquoted instead of printstring.
+type quoted string
 
 func bytes(s string) (ret []byte) {
 	rp := (*slice)(unsafe.Pointer(&ret))
@@ -170,22 +173,65 @@ func printint(v int64) {
 
 var minhexdigits = 0 // protected by printlock
 
-func printhex(v uint64) {
+func printhexopts(include0x bool, mindigits int, v uint64) {
 	const dig = "0123456789abcdef"
 	var buf [100]byte
 	i := len(buf)
 	for i--; i > 0; i-- {
 		buf[i] = dig[v%16]
-		if v < 16 && len(buf)-i >= minhexdigits {
+		if v < 16 && len(buf)-i >= mindigits {
 			break
 		}
 		v /= 16
 	}
-	i--
-	buf[i] = 'x'
-	i--
-	buf[i] = '0'
+	if include0x {
+		i--
+		buf[i] = 'x'
+		i--
+		buf[i] = '0'
+	}
 	gwrite(buf[i:])
+}
+
+func printhex(v uint64) {
+	printhexopts(true, minhexdigits, v)
+}
+
+func printquoted(s string) {
+	printlock()
+	gwrite([]byte(`"`))
+	for _, r := range s {
+		switch r {
+		case '\n':
+			gwrite([]byte(`\n`))
+			continue
+		case '\r':
+			gwrite([]byte(`\r`))
+			continue
+		case '\t':
+			gwrite([]byte(`\t`))
+			print()
+			continue
+		case '\\', '"':
+			gwrite([]byte{byte('\\'), byte(r)})
+			continue
+		}
+		// For now, only allow basic printable ascii through unescaped
+		if r >= ' ' && r <= '~' {
+			gwrite([]byte{byte(r)})
+		} else if r < 127 {
+			gwrite(bytes(`\x`))
+			printhexopts(false, 2, uint64(r))
+		} else if r < 0x1_0000 {
+			gwrite(bytes(`\u`))
+			printhexopts(false, 4, uint64(r))
+		} else {
+			gwrite(bytes(`\U`))
+			printhexopts(false, 8, uint64(r))
+		}
+	}
+	gwrite([]byte{byte('"')})
+	printunlock()
 }
 
 func printpointer(p unsafe.Pointer) {
@@ -211,44 +257,4 @@ func printeface(e eface) {
 
 func printiface(i iface) {
 	print("(", i.tab, ",", i.data, ")")
-}
-
-// hexdumpWords prints a word-oriented hex dump of [p, end).
-//
-// If mark != nil, it will be called with each printed word's address
-// and should return a character mark to appear just before that
-// word's value. It can return 0 to indicate no mark.
-func hexdumpWords(p, end uintptr, mark func(uintptr) byte) {
-	printlock()
-	var markbuf [1]byte
-	markbuf[0] = ' '
-	minhexdigits = int(unsafe.Sizeof(uintptr(0)) * 2)
-	for i := uintptr(0); p+i < end; i += goarch.PtrSize {
-		if i%16 == 0 {
-			if i != 0 {
-				println()
-			}
-			print(hex(p+i), ": ")
-		}
-
-		if mark != nil {
-			markbuf[0] = mark(p + i)
-			if markbuf[0] == 0 {
-				markbuf[0] = ' '
-			}
-		}
-		gwrite(markbuf[:])
-		val := *(*uintptr)(unsafe.Pointer(p + i))
-		print(hex(val))
-		print(" ")
-
-		// Can we symbolize val?
-		fn := findfunc(val)
-		if fn.valid() {
-			print("<", funcname(fn), "+", hex(val-fn.entry()), "> ")
-		}
-	}
-	minhexdigits = 0
-	println()
-	printunlock()
 }

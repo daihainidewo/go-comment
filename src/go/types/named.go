@@ -120,6 +120,7 @@ type Named struct {
 	fromRHS    Type           // the declaration RHS this type is derived from
 	tparams    *TypeParamList // type parameters, or nil
 	underlying Type           // underlying type, or nil
+	finite     bool           // whether the type has finite size
 
 	// methods declared for this type (not the method set of this type)
 	// Signatures are type-checked lazily.
@@ -151,10 +152,11 @@ type instance struct {
 //	unpacked
 //	└── hasMethods
 //	└── hasUnder
+//	└── hasFinite
 //
 // That is, descent down the tree is mostly linear (initial through unpacked), except upon
-// reaching the leaves (hasMethods and hasUnder). A type may occupy any combination of the
-// leaf states at once (they are independent states).
+// reaching the leaves (hasMethods, hasUnder, and hasFinite). A type may occupy any
+// combination of the leaf states at once (they are independent states).
 //
 // To represent this independence, the set of active states is represented with a bit set. State
 // transitions are monotonic. Once a state bit is set, it remains set.
@@ -162,12 +164,14 @@ type instance struct {
 // The above constraints significantly narrow the possible bit sets for a named type. With bits
 // set left-to-right, they are:
 //
-//	0000 | initial
-//	1000 | lazyLoaded
-//	1100 | unpacked, which implies lazyLoaded
-//	1110 | hasMethods, which implies unpacked (which in turn implies lazyLoaded)
-//	1101 | hasUnder, which implies unpacked ...
-//	1111 | both hasMethods and hasUnder which implies unpacked ...
+//	00000 | initial
+//	10000 | lazyLoaded
+//	11000 | unpacked, which implies lazyLoaded
+//	11100 | hasMethods, which implies unpacked (which in turn implies lazyLoaded)
+//	11010 | hasUnder, which implies unpacked ...
+//	11001 | hasFinite, which implies unpacked ...
+//	11110 | both hasMethods and hasUnder which implies unpacked ...
+//	...   | (other combinations of leaf states)
 //
 // To read the state of a named type, use [Named.stateHas]; to write, use [Named.setState].
 type stateMask uint32
@@ -178,6 +182,7 @@ const (
 	unpacked                         // methods might be unexpanded (for instances)
 	hasMethods                       // methods are all expanded (for instances)
 	hasUnder                         // underlying type is available
+	hasFinite                        // size finiteness is available
 )
 
 // NewNamed returns a new named type for the given type name, underlying type, and associated methods.
@@ -305,6 +310,10 @@ func (n *Named) setState(m stateMask) {
 		}
 		// hasUnder => unpacked
 		if m&hasUnder != 0 {
+			assert(u)
+		}
+		// hasFinite => unpacked
+		if m&hasFinite != 0 {
 			assert(u)
 		}
 	}
@@ -459,7 +468,7 @@ func (t *Named) expandMethod(i int) *Func {
 	check := t.check
 	// Ensure that the original method is type-checked.
 	if check != nil {
-		check.objDecl(origm, nil)
+		check.objDecl(origm)
 	}
 
 	origSig := origm.typ.(*Signature)
@@ -616,13 +625,18 @@ func (t *Named) String() string { return TypeString(t, nil) }
 // type set to T. Aliases are skipped because their underlying type is
 // not memoized.
 //
-// This method also checks for cycles among alias and named types, which will
-// yield no underlying type. If such a cycle is found, the underlying type is
-// set to Typ[Invalid] and a cycle is reported.
+// resolveUnderlying assumes that there are no direct cycles; if there were
+// any, they were broken (by setting the respective types to invalid) during
+// the directCycles check phase.
 func (n *Named) resolveUnderlying() {
 	assert(n.stateHas(unpacked))
 
-	var seen map[*Named]int // allocated lazily
+	var seen map[*Named]bool // for debugging only
+	if debug {
+		seen = make(map[*Named]bool)
+	}
+
+	var path []*Named
 	var u Type
 	for rhs := Type(n); u == nil; {
 		switch t := rhs.(type) {
@@ -633,17 +647,9 @@ func (n *Named) resolveUnderlying() {
 			rhs = unalias(t)
 
 		case *Named:
-			if i, ok := seen[t]; ok {
-				// compute cycle path
-				path := make([]Object, len(seen))
-				for t, j := range seen {
-					path[j] = t.obj
-				}
-				path = path[i:]
-				// only called during type checking, hence n.check != nil
-				n.check.cycleError(path, firstInSrc(path))
-				u = Typ[Invalid]
-				break
+			if debug {
+				assert(!seen[t])
+				seen[t] = true
 			}
 
 			// don't recalculate the underlying
@@ -652,10 +658,10 @@ func (n *Named) resolveUnderlying() {
 				break
 			}
 
-			if seen == nil {
-				seen = make(map[*Named]int)
+			if debug {
+				seen[t] = true
 			}
-			seen[t] = len(seen)
+			path = append(path, t)
 
 			t.unpack()
 			assert(t.rhs() != nil || t.allowNilRHS)
@@ -666,7 +672,7 @@ func (n *Named) resolveUnderlying() {
 		}
 	}
 
-	for t := range seen {
+	for _, t := range path {
 		func() {
 			t.mu.Lock()
 			defer t.mu.Unlock()

@@ -2449,6 +2449,8 @@ var blockedLinknames = map[string][]string{
 	"runtime.mapdelete_faststr":  {"runtime"},
 	// New internal linknames in Go 1.25
 	// Pushed from runtime
+	"crypto/subtle.setDITEnabled":                    {"crypto/subtle"},
+	"crypto/subtle.setDITDisabled":                   {"crypto/subtle"},
 	"internal/cpu.riscvHWProbe":                      {"internal/cpu"},
 	"internal/runtime/cgroup.throw":                  {"internal/runtime/cgroup"},
 	"internal/runtime/maps.typeString":               {"internal/runtime/maps"},
@@ -2464,10 +2466,11 @@ var blockedLinknames = map[string][]string{
 	// Experimental features
 	"runtime.goroutineLeakGC":    {"runtime/pprof"},
 	"runtime.goroutineleakcount": {"runtime/pprof"},
+	"runtime.freegc":             {}, // disallow all packages
 	// Others
 	"net.newWindowsFile":                   {"net"},              // pushed from os
 	"testing/synctest.testingSynctestTest": {"testing/synctest"}, // pushed from testing
-	"runtime.addmoduledata":                {},                   // disallow all package
+	"runtime.addmoduledata":                {},                   // disallow all packages
 }
 
 // check if a linkname reference to symbol s from pkg is allowed
@@ -2821,7 +2824,7 @@ type ErrorReporter struct {
 //
 // Logging an error means that on exit cmd/link will delete any
 // output file and return a non-zero error code.
-func (reporter *ErrorReporter) Errorf(s Sym, format string, args ...interface{}) {
+func (reporter *ErrorReporter) Errorf(s Sym, format string, args ...any) {
 	if s != 0 && reporter.ldr.SymName(s) != "" {
 		// Note: Replace is needed here because symbol names might have % in them,
 		// due to the use of LinkString for names of instantiating types.
@@ -2840,7 +2843,7 @@ func (l *Loader) GetErrorReporter() *ErrorReporter {
 }
 
 // Errorf method logs an error message. See ErrorReporter.Errorf for details.
-func (l *Loader) Errorf(s Sym, format string, args ...interface{}) {
+func (l *Loader) Errorf(s Sym, format string, args ...any) {
 	l.errorReporter.Errorf(s, format, args...)
 }
 

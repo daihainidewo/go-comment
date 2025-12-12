@@ -360,6 +360,13 @@ func panicmemAddr(addr uintptr) {
 	panic(errorAddressString{msg: "invalid memory address or nil pointer dereference", addr: addr})
 }
 
+var simdImmError = error(errorString("out-of-range immediate for simd intrinsic"))
+
+func panicSimdImm() {
+	panicCheck2("simd immediate error")
+	panic(simdImmError)
+}
+
 // 创建新的defer函数fn，这是由编译器将defer关键字转换成这个函数调用的
 // Create a new deferred function fn, which has no arguments and results.
 // The compiler turns a defer statement into a call to this.
@@ -795,7 +802,7 @@ func printpanics(p *_panic) {
 	}
 	print("panic: ")
 	printpanicval(p.arg)
-	if p.repanicked {
+	if p.recovered && p.repanicked {
 		print(" [recovered, repanicked]")
 	} else if p.recovered {
 		print(" [recovered]")
@@ -852,10 +859,7 @@ var panicnil = &godebugInc{name: "panicnil"}
 // The compiler emits calls to this function.
 //
 // gopanic should be an internal detail,
-// but widely used packages access it using linkname.
-// Notable members of the hall of shame include:
-//   - go.undefinedlabs.com/scopeagent
-//   - github.com/goplus/igop
+// but historically, widely used packages access it using linkname.
 //
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.

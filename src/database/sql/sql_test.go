@@ -4200,102 +4200,6 @@ func TestNamedValueCheckerSkip(t *testing.T) {
 	}
 }
 
-type rcsDriver struct {
-	fakeDriver
-}
-
-func (d *rcsDriver) Open(dsn string) (driver.Conn, error) {
-	c, err := d.fakeDriver.Open(dsn)
-	fc := c.(*fakeConn)
-	fc.db.allowAny = true
-	return &rcsConn{fc}, err
-}
-
-type rcsConn struct {
-	*fakeConn
-}
-
-func (c *rcsConn) PrepareContext(ctx context.Context, q string) (driver.Stmt, error) {
-	stmt, err := c.fakeConn.PrepareContext(ctx, q)
-	if err != nil {
-		return stmt, err
-	}
-	return &rcsStmt{stmt.(*fakeStmt)}, nil
-}
-
-type rcsStmt struct {
-	*fakeStmt
-}
-
-func (s *rcsStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	rows, err := s.fakeStmt.QueryContext(ctx, args)
-	if err != nil {
-		return rows, err
-	}
-	return &rcsRows{rows.(*rowsCursor)}, nil
-}
-
-type rcsRows struct {
-	*rowsCursor
-}
-
-func (r *rcsRows) ScanColumn(dest any, index int) error {
-	switch d := dest.(type) {
-	case *int64:
-		*d = 42
-		return nil
-	}
-
-	return driver.ErrSkip
-}
-
-func TestRowsColumnScanner(t *testing.T) {
-	Register("RowsColumnScanner", &rcsDriver{})
-	db, err := Open("RowsColumnScanner", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	_, err = db.ExecContext(ctx, "CREATE|t|str=string,n=int64")
-	if err != nil {
-		t.Fatal("exec create", err)
-	}
-
-	_, err = db.ExecContext(ctx, "INSERT|t|str=?,n=?", "foo", int64(1))
-	if err != nil {
-		t.Fatal("exec insert", err)
-	}
-	var (
-		str string
-		i64 int64
-		i   int
-		f64 float64
-		ui  uint
-	)
-	err = db.QueryRowContext(ctx, "SELECT|t|str,n,n,n,n|").Scan(&str, &i64, &i, &f64, &ui)
-	if err != nil {
-		t.Fatal("select", err)
-	}
-
-	list := []struct{ got, want any }{
-		{str, "foo"},
-		{i64, int64(42)},
-		{i, int(1)},
-		{f64, float64(1)},
-		{ui, uint(1)},
-	}
-
-	for index, item := range list {
-		if !reflect.DeepEqual(item.got, item.want) {
-			t.Errorf("got %#v wanted %#v for index %d", item.got, item.want, index)
-		}
-	}
-}
-
 func TestOpenConnector(t *testing.T) {
 	Register("testctx", &fakeDriverCtx{})
 	db, err := Open("testctx", "people")
@@ -5134,4 +5038,51 @@ func TestIssue69728(t *testing.T) {
 	if !reflect.DeepEqual(v1, v2) {
 		t.Errorf("not equal; v1 = %v, v2 = %v", v1, v2)
 	}
+}
+
+func TestColumnConverterWithUnknownInputCount(t *testing.T) {
+	db := OpenDB(&unknownInputsConnector{})
+	stmt, err := db.Prepare("SELECT ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = stmt.Exec(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+type unknownInputsConnector struct{}
+
+func (unknownInputsConnector) Connect(context.Context) (driver.Conn, error) {
+	return unknownInputsConn{}, nil
+}
+
+func (unknownInputsConnector) Driver() driver.Driver { return nil }
+
+type unknownInputsConn struct{}
+
+func (unknownInputsConn) Prepare(string) (driver.Stmt, error) { return unknownInputsStmt{}, nil }
+func (unknownInputsConn) Close() error                        { return nil }
+func (unknownInputsConn) Begin() (driver.Tx, error)           { return nil, nil }
+
+type unknownInputsStmt struct{}
+
+func (unknownInputsStmt) Close() error  { return nil }
+func (unknownInputsStmt) NumInput() int { return -1 }
+func (unknownInputsStmt) Exec(args []driver.Value) (driver.Result, error) {
+	if _, ok := args[0].(string); !ok {
+		return nil, fmt.Errorf("Expected string, got %T", args[0])
+	}
+	return nil, nil
+}
+func (unknownInputsStmt) Query([]driver.Value) (driver.Rows, error) { return nil, nil }
+func (unknownInputsStmt) ColumnConverter(idx int) driver.ValueConverter {
+	return unknownInputsValueConverter{}
+}
+
+type unknownInputsValueConverter struct{}
+
+func (unknownInputsValueConverter) ConvertValue(v any) (driver.Value, error) {
+	return "string", nil
 }
